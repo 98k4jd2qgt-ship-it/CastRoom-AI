@@ -1,0 +1,21 @@
+{
+  "demoMode": true,
+  "pet": {
+    "subtitleLanguage": "zh-CN",
+    "ttsLanguage": "ja-JP",
+    "inputTimeoutMs": 12000,
+    "alwaysOnTop": true,
+    "passThroughByDefault": true
+  },
+  "privacy": {
+    "microphoneEnabled": false,
+    "foregroundAppAwarenessEnabled": false,
+    "diagnosticsUploadEnabled": false
+  },
+  "memory": {
+    "shortTermDays": 7,
+    "promotionMentionThreshold": 3,
+    "requireUserConfirmation": true,
+    "autoWriteLongTermEnabled": false
+  }
+}

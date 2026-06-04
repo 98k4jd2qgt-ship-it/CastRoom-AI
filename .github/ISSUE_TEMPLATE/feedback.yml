@@ -1,0 +1,52 @@
+name: Feedback
+description: Share early user feedback about the CastRoom AI experience.
+title: "[Feedback]: "
+labels: ["feedback"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Early feedback is useful, especially around room flow, Director pacing, memory behavior, setup, and confusing UI states. Do not include private memories, API keys, private prompts, or personal logs.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feedback area
+      options:
+        - Room
+        - Director
+        - Channels
+        - Prompt Center
+        - Memory Graph
+        - AI setup
+        - Packaging
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: good
+    attributes:
+      label: What felt good?
+      placeholder: What worked, felt interesting, or made you want to keep testing?
+    validations:
+      required: false
+  - type: textarea
+    id: confusing
+    attributes:
+      label: What was confusing?
+      placeholder: What was hard to understand, awkward, slow, or surprising?
+    validations:
+      required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: Suggested improvement
+      placeholder: What would make this easier or more useful?
+    validations:
+      required: false
+  - type: input
+    id: app-version
+    attributes:
+      label: CastRoom AI version or build
+      placeholder: v0.1.0
+    validations:
+      required: false

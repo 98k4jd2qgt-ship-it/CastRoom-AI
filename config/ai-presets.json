@@ -1,0 +1,27 @@
+{
+  "presets": [
+    {
+      "id": "compatible-api",
+      "name": "Compatible API service",
+      "tutorialUrl": "",
+      "baseUrl": "https://api.example.com/v1",
+      "recommendedChatModel": "chat-model",
+      "recommendedVisionModel": "image-model",
+      "recommendedEmbeddingModel": "embedding-model",
+      "recommendedTtsModel": "voice-model",
+      "recommendedSttModel": "speech-model",
+      "supportsVision": true,
+      "supportsStreaming": true,
+      "supportsEmbeddings": true,
+      "supportsTts": true,
+      "supportsStt": true,
+      "authMode": "bearer",
+      "chatPath": "/chat/completions",
+      "modelsPath": "/models",
+      "embeddingsPath": "/embeddings",
+      "ttsPath": "/audio/speech",
+      "sttPath": "/audio/transcriptions",
+      "notes": "Use the API guide from your chosen AI service. Most users only need to paste an API Key; Advanced is for custom addresses, model names, authentication, and request paths."
+    }
+  ]
+}

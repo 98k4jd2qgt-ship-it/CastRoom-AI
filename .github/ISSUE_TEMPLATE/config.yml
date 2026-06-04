@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: CastRoom AI latest release
+    url: https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest
+    about: Download the newest Windows build before reporting an issue.
+  - name: CastRoom AI support notes
+    url: https://98k4jd2qgt-ship-it.github.io/castroom-ai-support/
+    about: Read support notes and AI service information.

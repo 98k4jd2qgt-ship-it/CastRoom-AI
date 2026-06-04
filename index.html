@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CastRoom AI</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      (function () {
+        function escapeHtml(value) {
+          return String(value || "").replace(/[&<>"']/g, function (char) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char];
+          });
+        }
+
+        function showBootError(error) {
+          var root = document.getElementById("app");
+          if (!root || root.childElementCount > 0) {
+            return;
+          }
+          var message = error && error.message ? error.message : String(error || "Unknown startup error");
+          root.innerHTML =
+            '<main style="min-height:100vh;display:grid;place-items:center;padding:32px;background:#0b0d10;color:#edf1f5;font-family:Segoe UI,system-ui,sans-serif;">' +
+            '<section style="max-width:680px;width:100%;padding:22px;border:1px solid rgba(255,255,255,.12);border-radius:10px;background:rgba(255,255,255,.04);">' +
+            '<p style="margin:0 0 8px;color:rgba(237,241,245,.9);line-height:1.55;font-weight:700;">CastRoom AI &#27809;&#26377;&#25104;&#21151;&#25171;&#24320;&#12290;</p>' +
+            '<p style="margin:0 0 12px;color:rgba(237,241,245,.66);line-height:1.55;">&#35831;&#22797;&#21046;&#19979;&#38754;&#36825;&#19968;&#34892;&#38169;&#35823;&#21457;&#32473;&#24320;&#21457;&#32773;&#65292;&#19981;&#38656;&#35201;&#28165;&#31354;&#37197;&#32622;&#12290;</p>' +
+            '<code style="display:block;white-space:pre-wrap;overflow-wrap:anywhere;color:#ffb4b4;">' +
+            escapeHtml(message) +
+            "</code></section></main>";
+        }
+        window.addEventListener("error", function (event) {
+          showBootError(event.error || event.message);
+        });
+        window.addEventListener("unhandledrejection", function (event) {
+          showBootError(event.reason);
+        });
+      })();
+    </script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+* text=auto
+
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.cmd text eol=crlf
+
+*.png binary -diff
+*.jpg binary -diff
+*.jpeg binary -diff
+*.gif binary -diff
+*.ico binary -diff
+*.gguf binary -diff
+*.exe binary -diff
+*.dll binary -diff
+*.msi binary -diff
+*.zip binary -diff

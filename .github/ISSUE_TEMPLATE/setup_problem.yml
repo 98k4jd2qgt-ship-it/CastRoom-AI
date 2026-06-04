@@ -1,0 +1,77 @@
+name: Setup problem
+description: Get help with downloading, installing, launching, or configuring CastRoom AI.
+title: "[Setup]: "
+labels: ["setup"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for install, launch, package, local AI, or external endpoint setup problems. Do not paste API keys, passwords, private prompts, or private model credentials.
+  - type: dropdown
+    id: release-asset
+    attributes:
+      label: Release asset used
+      options:
+        - Portable zip
+        - Setup exe
+        - MSI
+        - Source build
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: app-version
+    attributes:
+      label: CastRoom AI version or build
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 23H2
+    validations:
+      required: true
+  - type: dropdown
+    id: failed-step
+    attributes:
+      label: Where did setup fail?
+      options:
+        - Download
+        - Extract portable zip
+        - Run CastRoom AI.exe
+        - Installer launch
+        - First app startup
+        - Local AI setup
+        - External AI endpoint setup
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message or visible symptom
+      description: Paste only sanitized text. Remove keys, tokens, local private paths, and private content.
+      placeholder: What error did you see?
+    validations:
+      required: true
+  - type: dropdown
+    id: ai-provider-status
+    attributes:
+      label: AI provider or local model status
+      options:
+        - Local model available
+        - Local model not available
+        - External endpoint configured
+        - External endpoint not configured
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you already tried?
+      placeholder: Example: re-downloaded the zip, extracted to another folder, restarted the app.
+    validations:
+      required: false

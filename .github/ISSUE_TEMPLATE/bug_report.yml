@@ -1,0 +1,83 @@
+name: Bug report
+description: Report a reproducible CastRoom AI bug.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please do not include API keys, passwords, Steam credentials, private memories, private prompts, or logs that contain secrets.
+  - type: input
+    id: app-version
+    attributes:
+      label: CastRoom AI version or build
+      description: Example: v0.1.0, release tag, commit, or build date.
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: Include Windows 10/11 and build number if available.
+      placeholder: Windows 11 23H2
+    validations:
+      required: true
+  - type: dropdown
+    id: release-asset
+    attributes:
+      label: Release asset used
+      options:
+        - Portable zip
+        - Setup exe
+        - MSI
+        - Source build
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: ai-setup
+    attributes:
+      label: AI setup
+      options:
+        - Local AI
+        - External endpoint
+        - Not configured
+        - Both local and external
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the exact actions that trigger the bug.
+      placeholder: |
+        1. Open CastRoom AI
+        2. Go to ...
+        3. Click ...
+        4. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional. Remove API keys, private content, local usernames, and personal data before posting.
+      placeholder: Paste sanitized logs or attach screenshots.
+    validations:
+      required: false
