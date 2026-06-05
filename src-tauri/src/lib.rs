@@ -4046,6 +4046,10 @@ fn query_memory_graph_visible_claims(connection: &Connection, context: &serde_js
         .get("includeArchived")
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
+    let include_needs_review = context
+        .get("includeNeedsReview")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let viewer = context.get("viewer").unwrap_or(&serde_json::Value::Null);
     let viewer_type = memory_graph_json_string(viewer, "type", "global");
     let pack_id = memory_graph_json_optional_string(viewer, "packId");
@@ -4059,7 +4063,7 @@ fn query_memory_graph_visible_claims(connection: &Connection, context: &serde_js
              FROM memory_claims c
              LEFT JOIN memory_visibility v ON v.claim_id = c.id
              WHERE c.scope = ?1
-               AND (c.status = 'active' OR (?2 = 1 AND c.status = 'disputed') OR (?7 = 1 AND c.status IN ('archived', 'superseded', 'rejected')))
+               AND (c.status = 'active' OR (?2 = 1 AND c.status = 'disputed') OR (?7 = 1 AND c.status IN ('archived', 'superseded', 'rejected')) OR (?9 = 1 AND c.status = 'needs_review'))
                AND (
                  c.visibility IN ('public', 'global')
                  OR (?3 = 1 AND (v.director_visible = 1 OR c.visibility = 'director_only'))
@@ -4081,7 +4085,8 @@ fn query_memory_graph_visible_claims(connection: &Connection, context: &serde_js
                 faction_id,
                 limit,
                 if include_archived { 1 } else { 0 },
-                pack_id
+                pack_id,
+                if include_needs_review { 1 } else { 0 }
             ],
             memory_graph_claim_row_to_json,
         )
@@ -4099,6 +4104,7 @@ fn query_memory_graph_view(connection: &Connection, context: &serde_json::Value)
     let mut query_context = context.clone();
     query_context["limit"] = serde_json::json!(500);
     query_context["includeDisputed"] = serde_json::json!(true);
+    query_context["includeNeedsReview"] = serde_json::json!(true);
     let claims_value = query_memory_graph_visible_claims(connection, &query_context)?;
     let all_claims = claims_value
         .get("claims")
@@ -4112,10 +4118,29 @@ fn query_memory_graph_view(connection: &Connection, context: &serde_json::Value)
         })
         .collect::<Vec<_>>();
     let visible_claim_count = all_claims.len();
+    let pending_review_count = all_claims
+        .iter()
+        .filter(|claim| memory_graph_json_string(claim, "status", "active") == "needs_review")
+        .count();
+    let has_status_filter = filters
+        .get("statuses")
+        .and_then(|value| value.as_array())
+        .map(|values| !values.is_empty())
+        .unwrap_or(false);
     let issues = build_memory_graph_issues(&all_claims, connection)?;
     let issue_claim_ids = memory_graph_issue_claim_ids_for_mode(&issues, &mode);
     let claims = if mode == "browse" {
         all_claims
+            .into_iter()
+            .filter(|claim| {
+                let status = memory_graph_json_string(claim, "status", "active");
+                status != "needs_review"
+                    || has_status_filter
+                    || memory_graph_json_f64(claim, "confidence", 0.0) >= 0.8
+                    || memory_graph_json_i64(claim, "evidenceCount", 1) >= 3
+                    || memory_graph_claim_connected_to_expanded_node(claim, &expanded_node_ids)
+            })
+            .collect::<Vec<_>>()
     } else {
         all_claims
             .into_iter()
@@ -4156,25 +4181,8 @@ fn query_memory_graph_view(connection: &Connection, context: &serde_json::Value)
             truncated = true;
             break;
         }
-        if !memory_graph_push_view_node(&mut nodes, &mut node_ids, max_nodes, memory_graph_claim_view_node(&claim)) {
-            truncated = true;
-            break;
-        }
-        memory_graph_push_view_edge(
-            &mut edges,
-            &mut edge_ids,
-            &node_ids,
-            serde_json::json!({
-                "id": memory_graph_stable_id("view-edge", &format!("{scope_node_id}:ABOUT:{claim_node_id}")),
-                "from": scope_node_id,
-                "to": claim_node_id,
-                "type": "ABOUT",
-                "label": "scope",
-                "visibility": visibility,
-                "dashed": memory_graph_visibility_is_private(&memory_graph_json_string(&claim, "visibility", "public"))
-            }),
-        );
         let subject_node_id = memory_graph_json_string(&claim, "subjectNodeId", "");
+        let mut rendered_as_relationship = false;
         if let Some(subject) = read_memory_graph_node_by_id(connection, &subject_node_id)? {
             let subject_view_id = format!("entity:{subject_node_id}");
             if memory_graph_push_view_node(
@@ -4188,50 +4196,71 @@ fn query_memory_graph_view(connection: &Connection, context: &serde_json::Value)
                     &mut edge_ids,
                     &node_ids,
                     serde_json::json!({
-                        "id": memory_graph_stable_id("view-edge", &format!("{subject_view_id}:ASSERTED_BY:{claim_node_id}")),
-                        "from": subject_view_id,
-                        "to": claim_node_id,
-                        "type": "ASSERTED_BY",
-                        "label": memory_graph_json_string(&claim, "predicate", "states"),
-                        "visibility": memory_graph_json_string(&claim, "visibility", "public"),
-                        "dashed": memory_graph_visibility_is_private(&memory_graph_json_string(&claim, "visibility", "public"))
+                        "id": memory_graph_stable_id("view-edge", &format!("{scope_node_id}:ABOUT:{subject_view_id}")),
+                        "from": scope_node_id,
+                        "to": subject_view_id,
+                        "type": "ABOUT",
+                        "label": "scope",
+                        "visibility": visibility,
+                        "dashed": memory_graph_visibility_is_private(&visibility)
                     }),
                 );
+                if let Some(object_node_id) = memory_graph_json_optional_string(&claim, "objectNodeId") {
+                    if let Some(object) = read_memory_graph_node_by_id(connection, &object_node_id)? {
+                        if !memory_graph_should_hide_object_node(&claim, &object) {
+                            let object_view_id = format!("entity:{object_node_id}");
+                            if memory_graph_push_view_node(
+                                &mut nodes,
+                                &mut node_ids,
+                                max_nodes,
+                                memory_graph_entity_view_node_with_role(&object, "object", Some(&claim)),
+                            ) {
+                                let predicate = memory_graph_json_string(&claim, "predicate", "states");
+                                memory_graph_push_view_edge(
+                                    &mut edges,
+                                    &mut edge_ids,
+                                    &node_ids,
+                                    serde_json::json!({
+                                        "id": memory_graph_stable_id("view-edge", &format!("{subject_view_id}:{predicate}:{object_view_id}:{claim_id}")),
+                                        "from": subject_view_id,
+                                        "to": object_view_id,
+                                        "type": memory_graph_relationship_view_edge_type(&claim),
+                                        "label": predicate,
+                                        "visibility": memory_graph_json_string(&claim, "visibility", "public"),
+                                        "dashed": memory_graph_visibility_is_private(&memory_graph_json_string(&claim, "visibility", "public")),
+                                        "sourceClaimId": claim_id
+                                    }),
+                                );
+                                rendered_as_relationship = true;
+                            } else {
+                                truncated = true;
+                            }
+                        }
+                    }
+                }
             } else {
                 truncated = true;
             }
         }
-        if let Some(object_node_id) = memory_graph_json_optional_string(&claim, "objectNodeId") {
-            if let Some(object) = read_memory_graph_node_by_id(connection, &object_node_id)? {
-                if memory_graph_should_hide_object_node(&claim, &object) {
-                    continue;
-                }
-                let object_view_id = format!("entity:{object_node_id}");
-                if memory_graph_push_view_node(
-                    &mut nodes,
-                    &mut node_ids,
-                    max_nodes,
-                    memory_graph_entity_view_node_with_role(&object, "object", Some(&claim)),
-                ) {
-                    let predicate = memory_graph_json_string(&claim, "predicate", "states");
-                    memory_graph_push_view_edge(
-                        &mut edges,
-                        &mut edge_ids,
-                        &node_ids,
-                        serde_json::json!({
-                            "id": memory_graph_stable_id("view-edge", &format!("{claim_node_id}:{predicate}:{object_view_id}")),
-                            "from": claim_node_id,
-                            "to": object_view_id,
-                            "type": if predicate == "has_goal" { "HAS_GOAL" } else { "ABOUT" },
-                            "label": predicate,
-                            "visibility": memory_graph_json_string(&claim, "visibility", "public"),
-                            "dashed": memory_graph_visibility_is_private(&memory_graph_json_string(&claim, "visibility", "public"))
-                        }),
-                    );
-                } else {
-                    truncated = true;
-                }
+        if !rendered_as_relationship {
+            if !memory_graph_push_view_node(&mut nodes, &mut node_ids, max_nodes, memory_graph_claim_view_node(&claim)) {
+                truncated = true;
+                break;
             }
+            memory_graph_push_view_edge(
+                &mut edges,
+                &mut edge_ids,
+                &node_ids,
+                serde_json::json!({
+                    "id": memory_graph_stable_id("view-edge", &format!("{scope_node_id}:ABOUT:{claim_node_id}")),
+                    "from": scope_node_id,
+                    "to": claim_node_id,
+                    "type": "ABOUT",
+                    "label": "scope",
+                    "visibility": visibility,
+                    "dashed": memory_graph_visibility_is_private(&memory_graph_json_string(&claim, "visibility", "public"))
+                }),
+            );
         }
         if truncated {
             break;
@@ -4259,7 +4288,8 @@ fn query_memory_graph_view(connection: &Connection, context: &serde_json::Value)
         "truncated": truncated,
         "hiddenPrivateCount": count_hidden_private_memory_graph_claims(connection, &scope, context)?,
         "visibleClaimCount": visible_claim_count,
-        "modeClaimCount": mode_claim_count
+        "modeClaimCount": mode_claim_count,
+        "pendingReviewCount": pending_review_count
     }))
 }
 
@@ -4267,6 +4297,7 @@ fn query_memory_graph_issues(connection: &Connection, context: &serde_json::Valu
     let mut query_context = context.clone();
     query_context["limit"] = serde_json::json!(500);
     query_context["includeDisputed"] = serde_json::json!(true);
+    query_context["includeNeedsReview"] = serde_json::json!(true);
     let claims_value = query_memory_graph_visible_claims(connection, &query_context)?;
     let claims = claims_value
         .get("claims")
@@ -4586,7 +4617,20 @@ fn memory_graph_viewer_can_read_edge_visibility(visibility: &str, context: &serd
 
 fn memory_graph_view_edge_type(edge_type: &str) -> String {
     match edge_type {
-        "CONFLICTS_WITH" | "SUPERSEDES" | "MEMBER_OF" | "HAS_GOAL" | "KNOWN_BY" | "ASSERTED_BY" => edge_type.to_string(),
+        "CONFLICTS_WITH" | "SUPERSEDES" | "MEMBER_OF" | "HAS_GOAL" | "KNOWN_BY" | "ASSERTED_BY" | "OWNS" | "LOCATED_IN" | "TARGETS" | "SUPPORTS" | "MENTIONS" => edge_type.to_string(),
+        _ => "ABOUT".to_string(),
+    }
+}
+
+fn memory_graph_relationship_view_edge_type(claim: &serde_json::Value) -> String {
+    let predicate = memory_graph_json_string(claim, "predicate", "mentions");
+    let kind = memory_graph_json_string(claim, "kind", "fact");
+    match (predicate.as_str(), kind.as_str()) {
+        ("has_goal", _) | (_, "goal") => "HAS_GOAL".to_string(),
+        ("located_in", _) => "LOCATED_IN".to_string(),
+        ("has_item", _) | (_, "item") => "OWNS".to_string(),
+        ("asserts_stance", _) | (_, "stance") | (_, "argument") => "SUPPORTS".to_string(),
+        (_, "secret") | (_, "clue") => "MENTIONS".to_string(),
         _ => "ABOUT".to_string(),
     }
 }
@@ -4690,7 +4734,7 @@ fn memory_graph_claim_category_group(claim: &serde_json::Value) -> &'static str 
     if status == "disputed" || kind == "conflict" {
         return "conflict";
     }
-    if confidence < 0.45 || status == "rejected" || status == "archived" {
+    if status == "needs_review" || confidence < 0.45 || status == "rejected" || status == "archived" {
         return "quality";
     }
     if kind == "judgement" {

@@ -58,7 +58,7 @@ const ROOM_APP_SAFETY_TERMS = [
 ];
 const ROOM_APP_SAFETY_PATTERN = new RegExp(`(${ROOM_APP_SAFETY_TERMS.join("|")})`, "i");
 const ROOM_FACT_REWRITE_PATTERN =
-  /(actually|retcon|change|make it|set|override|ignore the condition|allow access|reveal the secret|knows the secret|has the key|is now open|door is open|unlock(?:ed)?)/i;
+  /(actually|retcon|change|make it|set|override|ignore the condition|allow access|reveal the secret|knows the secret|has the key|is now open|door is open|unlock(?:ed)?|opened\s+(?:the\s+)?(?:lock|locked door|locked gate)|(?:lock|locked door|locked gate|door lock)\s+(?:is|was|has been)\s+(?:open|opened|unlocked))/i;
 const ROOM_FACT_REWRITE_CN_TERMS = [
   "\u5176\u5b9e",
   "\u6539\u6210",
@@ -69,6 +69,8 @@ const ROOM_FACT_REWRITE_CN_TERMS = [
   "\u89e3\u9664\u9650\u5236",
   String.raw`\u73b0\u5728.*(?:\u6253\u5f00|\u89e3\u9501|\u77e5\u9053|\u6301\u6709|\u62e5\u6709)`,
   String.raw`\u95e8(?:\u5df2\u7ecf|\u73b0\u5728|\u88ab)?(?:\u6253\u5f00|\u89e3\u9501)`,
+  String.raw`(?:\u9501|\u95e8\u9501|\u6302\u9501)(?:\u5df2\u7ecf|\u73b0\u5728|\u88ab)?(?:\u6253\u5f00|\u89e3\u9501)`,
+  String.raw`\u6211.*(?:\u6253\u5f00\u4e86|\u89e3\u5f00\u4e86|\u64ac\u5f00\u4e86).*(?:\u9501|\u95e8\u9501|\u6302\u9501)`,
   String.raw`\u94a5\u5319(?:\u5728|\u5f52|\u5c5e\u4e8e)`,
   "\u77e5\u9053\u79d8\u5bc6",
   "\u516c\u5f00\u79d8\u5bc6",
@@ -77,7 +79,7 @@ const ROOM_FACT_REWRITE_CN_TERMS = [
 ];
 const ROOM_FACT_REWRITE_CN_PATTERN = new RegExp(`(${ROOM_FACT_REWRITE_CN_TERMS.join("|")})`);
 const ROOM_ACTION_REQUIRES_JUDGE_PATTERN =
-  /(force|steal|attack|break|destroy|teleport|instantly|without permission|pick.*lock|persuade|sneak|inspect|search|try to|attempt to|judge whether)/i;
+  /(force|steal|attack|break|destroy|teleport|instantly|without permission|pick.*lock|unlock|open.*lock|lock.*open|persuade|sneak|inspect|search|try to|attempt to|judge whether)/i;
 const ROOM_ACTION_REQUIRES_JUDGE_CN_TERMS = [
   "\u5f3a\u884c",
   "\u5077\u8d70",
@@ -90,6 +92,9 @@ const ROOM_ACTION_REQUIRES_JUDGE_CN_TERMS = [
   "\u4e0d\u7ecf\u5141\u8bb8",
   "\u64ac",
   "\u5f00\u9501",
+  "\u89e3\u9501",
+  String.raw`\u6253\u5f00.*\u9501`,
+  String.raw`\u9501.*\u6253\u5f00`,
   "\u8bf4\u670d",
   "\u6f5c\u5165",
   "\u68c0\u67e5",

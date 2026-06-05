@@ -269,7 +269,7 @@ interface SimulationBeatCandidate {
 }
 
 export function resolveRoomFlowMode(room: RoomState): RoomFlowMode {
-  return room.autoChat ? "auto_simulation" : "player_reactive";
+  return room.autoChat && roomAdvancePolicy(room) === "continuous" ? "auto_simulation" : "player_reactive";
 }
 
 export function resolveSimulationObjective(room: RoomState): SimulationObjective {
@@ -591,12 +591,13 @@ export function executeRoomPlannedTurn(
     .filter((item) => item.id !== participant.id && getChannelVisibleRoleIds(room, room.activeChannelId).includes(item.id))
     .map((item) => item.id);
   const consecutiveAutoTurns = input.trigger === "user" ? 0 : room.autoSpeechState.consecutiveAutoTurns + 1;
-  const nextTurnAt = room.autoChat ? input.nowMs + getRoomDelayMs(room) : null;
+  const shouldContinueAuto = shouldContinueRoomAutoAfterBeat(room);
+  const nextTurnAt = shouldContinueAuto ? input.nowMs + getRoomDelayMs(room) : null;
 
   return {
     type: "turn",
     reason,
-    status: room.autoChat ? "cooling_down" : "paused",
+    status: shouldContinueAuto ? "cooling_down" : "paused",
     nextTurnAt,
     consecutiveAutoTurns,
     userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
@@ -1228,7 +1229,28 @@ function plannedTurnTarget(
   if (intent === "auto_simulation" || intent === "team_strategy") {
     return "all";
   }
-  return addressing.target === "all" ? { targets: [{ type: "user", userId: room.userProfile.userId }] } : addressing.target;
+  return addressing.target;
+}
+
+function shouldTargetUserForDirectorDirective(
+  room: RoomState,
+  userInput: string,
+  modeIntent: DirectorModeIntent | undefined,
+  reason: RoomDirectorScheduleResult["reason"],
+): boolean {
+  if (reason !== "mentioned") {
+    return false;
+  }
+  if (!userInput.trim()) {
+    return false;
+  }
+  if (resolveRoomFlowMode(room) === "auto_simulation") {
+    return false;
+  }
+  if (modeIntent?.mode === "debate" || modeIntent?.mode === "team_channel") {
+    return false;
+  }
+  return /(@\s*(?:you|你)|对我|问我|让我|向我|问用户|给用户|ask the user|to the user|to me)/i.test(userInput);
 }
 
 function plannedTurnGoal(intent: RoomInputIntent, participant: RoomParticipant, index: number, room: RoomState): string {
@@ -2146,7 +2168,11 @@ function createResponseObligation(
   engagement: RoomEngagementDecision | null,
 ): RoomResponseObligation | null {
   const text = (input.userInput ?? "").trim();
-  if (input.trigger !== "user" || !text || !room.isOpen || engagement?.kind !== "required") {
+  const channel = getActiveRoomChannel(room);
+  const shouldEnsureResponse =
+    engagement?.kind === "required" ||
+    (engagement?.kind === "optional" && engagement.reason === "ambient_room_input" && channel.type === "public");
+  if (input.trigger !== "user" || !text || !room.isOpen || !shouldEnsureResponse) {
     return null;
   }
   return {
@@ -2312,6 +2338,80 @@ function waitDecisionFor(
   };
 }
 
+function shouldContinueRoomAutoAfterBeat(room: RoomState): boolean {
+  return room.autoChat && roomAdvancePolicy(room) === "continuous";
+}
+
+function createPolicyPendingFollowup(
+  room: RoomState,
+  decision: RoomAdvanceDecision,
+  reason: RoomScheduleReason,
+  nowMs: number,
+): RoomPendingFollowup | null {
+  const continuation = buildAutonomousContinuation(room, decision);
+  if (!continuation || continuation.nextMove !== "role_turn" || !continuation.targetRoleId) {
+    return null;
+  }
+  const participant = room.participants.find((item) => item.id === continuation.targetRoleId);
+  if (!participant) {
+    return null;
+  }
+  const eligibility = validateNextSpeakerEligibility(room, {
+    roleId: continuation.targetRoleId,
+    priority: 92,
+    reason: `policy_followup ${reason}`,
+  });
+  if (!eligibility.ok) {
+    return null;
+  }
+  return {
+    id: crypto.randomUUID(),
+    source: "system",
+    mode: "one_shot",
+    nextMove: "role_turn",
+    targetRoleId: participant.id,
+    reason,
+    createdAt: nowMs,
+    expiresAt: nowMs + Math.max(getRoomDelayMs(room) * 4, 30_000),
+    runCount: 0,
+    maxRuns: 1,
+    summary: continuation.summary ?? decision.reason,
+  };
+}
+
+function policyBlockedAutoResult(
+  room: RoomState,
+  reason: RoomScheduleReason,
+  blockingNeed: RoomBlockingNeed,
+  nowMs: number,
+  delayMs: number,
+): RoomScheduleResult {
+  const { continuationAssessment, advanceDecision } = waitDecisionFor(room, blockingNeed);
+  if (advanceDecision.action === "pause") {
+    return withContinuationDecision(stop("waiting_user", "waiting_user", room, null), continuationAssessment, advanceDecision);
+  }
+  if (advanceDecision.action === "fill_gap") {
+    const pendingFollowup = createPolicyPendingFollowup(room, advanceDecision, reason, nowMs);
+    if (pendingFollowup) {
+      return withContinuationDecision(
+        {
+          ...stop(reason, "cooling_down", room, nowMs + delayMs),
+          pendingFollowup,
+          fallbackAction: {
+            action: "pending_followup",
+            reason: advanceDecision.reason,
+            targetRoleId: pendingFollowup.targetRoleId,
+            summary: pendingFollowup.summary,
+          },
+        },
+        continuationAssessment,
+        advanceDecision,
+      );
+    }
+  }
+  return withContinuationDecision(directorHandoff(reason, room, nowMs + delayMs), continuationAssessment, advanceDecision);
+}
+
 function createPendingFollowupSpeechIntent(
   room: RoomState,
   pending: RoomPendingFollowup | null,
@@ -2415,23 +2515,11 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
     }
 
     if (!pendingFollowup && hasQuestionLoop(room)) {
-      return finalizeScheduleResult(directorHandoff("question_loop", room, nowMs + delayMs));
+      return finalizeScheduleResult(policyBlockedAutoResult(room, "question_loop", "user_answer_expected", nowMs, delayMs));
     }
 
     if (!pendingFollowup && room.simulation?.playerIntervention !== "watch" && lastMessageTargetsUserQuestion(room)) {
-      const { continuationAssessment, advanceDecision } = waitDecisionFor(room, "user_answer_expected");
-      if (advanceDecision.action === "pause") {
-        return finalizeScheduleResult(
-          withContinuationDecision(stop("waiting_user", "waiting_user", room, null), continuationAssessment, advanceDecision),
-        );
-      }
-      return finalizeScheduleResult(
-        withContinuationDecision(
-          directorHandoff("waiting_user", room, nowMs + delayMs),
-          continuationAssessment,
-          advanceDecision,
-        ),
-      );
+      return finalizeScheduleResult(policyBlockedAutoResult(room, "waiting_user", "user_answer_expected", nowMs, delayMs));
     }
   }
 
@@ -2456,6 +2544,14 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   if (!pendingFollowup && plannedTurn && !staleDebatePlan && !staleSpeakerPlan) {
     const plannedResult = executeRoomPlannedTurn(plannedTurn, room, input, reason);
     if (plannedResult.type === "turn" && plannedResult.message && isRepetition(room, plannedResult.message.text)) {
+      if (trigger === "auto" && room.autoChat && room.director.enabled) {
+        return finalizeScheduleResult({
+          ...policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs),
+          plannerResult,
+          discussionPlan: terminateRoomPlan(discussionPlan, "repeated") ?? undefined,
+          plannedTurn,
+        });
+      }
       return finalizeScheduleResult({
         ...stop("repetition_guard", "waiting_user", room, null),
         plannerResult,
@@ -2491,8 +2587,8 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
       return finalizeScheduleResult({
         type: "huddle",
         reason,
-        status: room.autoChat ? "cooling_down" : "paused",
-        nextTurnAt: room.autoChat ? nowMs + delayMs : null,
+        status: shouldContinueRoomAutoAfterBeat(room) ? "cooling_down" : "paused",
+        nextTurnAt: shouldContinueRoomAutoAfterBeat(room) ? nowMs + delayMs : null,
         consecutiveAutoTurns,
         userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
         speechIntent,
@@ -2508,22 +2604,12 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   if (!speechIntent || speechIntent.decision !== "speak") {
     if (trigger === "auto" && room.autoChat && room.director.enabled) {
       if (room.simulation?.playerIntervention !== "watch" && recentDirectorWaitingForUser(room)) {
-        const { continuationAssessment, advanceDecision } = waitDecisionFor(room, "soft_user_preference");
-        if (advanceDecision.action === "pause") {
-          return finalizeScheduleResult(
-            withContinuationDecision(stop("waiting_user", "waiting_user", room, null), continuationAssessment, advanceDecision),
-          );
-        }
         return finalizeScheduleResult(
-          withContinuationDecision(
-            {
-              ...directorHandoff("waiting_user", room, nowMs + delayMs),
-              discussionPlan: stalePlanResult,
-              observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
-            },
-            continuationAssessment,
-            advanceDecision,
-          ),
+          {
+            ...policyBlockedAutoResult(room, "waiting_user", "soft_user_preference", nowMs, delayMs),
+            discussionPlan: stalePlanResult,
+            observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
+          },
         );
       }
       return finalizeScheduleResult({
@@ -2569,17 +2655,9 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   if (isRepetition(room, text)) {
     if (trigger === "auto" && room.autoChat && room.director.enabled) {
       if (room.simulation?.playerIntervention !== "watch" && recentDirectorWaitingForUser(room)) {
-        const { continuationAssessment, advanceDecision } = waitDecisionFor(room, "soft_user_preference");
-        if (advanceDecision.action === "pause") {
-          return finalizeScheduleResult(
-            withContinuationDecision(stop("waiting_user", "waiting_user", room, null), continuationAssessment, advanceDecision),
-          );
-        }
-        return finalizeScheduleResult(
-          withContinuationDecision(directorHandoff("repetition_guard", room, nowMs + delayMs), continuationAssessment, advanceDecision),
-        );
+        return finalizeScheduleResult(policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs));
       }
-      return finalizeScheduleResult(directorHandoff("repetition_guard", room, null));
+      return finalizeScheduleResult(policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs));
     }
     return finalizeScheduleResult(stop("repetition_guard", "waiting_user", room, null));
   }
@@ -2591,8 +2669,8 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
         ? room.autoSpeechState.userTriggeredFollowUps + 1
         : room.autoSpeechState.userTriggeredFollowUps;
   const consecutiveAutoTurns = trigger === "user" ? 0 : room.autoSpeechState.consecutiveAutoTurns + 1;
-  const nextTurnAt = room.autoChat ? nowMs + delayMs : null;
-  const status = room.autoChat ? "cooling_down" : "paused";
+  const nextTurnAt = shouldContinueRoomAutoAfterBeat(room) ? nowMs + delayMs : null;
+  const status = shouldContinueRoomAutoAfterBeat(room) ? "cooling_down" : "paused";
 
   return finalizeScheduleResult(
     consumeResponseObligationAfterVisibleCommit({
@@ -2679,7 +2757,10 @@ export function scheduleRoomDirectorTurn(input: {
   const factionVisibility = !isPrivateWhisper && channelVisibility.visibility === "faction_huddle" ? channelVisibility : null;
   const planAllowsPublicText = shouldCommitDirectorPublicText(plan);
   const shouldCommitPublicText =
-    planAllowsPublicText && Boolean(structuredOutcome.publicText.trim()) && structuredOutcome.publicTextReason !== "none";
+    planAllowsPublicText &&
+    Boolean(structuredOutcome.publicText.trim()) &&
+    structuredOutcome.publicTextReason !== "none" &&
+    !isDirectorPublicSchedulingText(structuredOutcome.publicText);
   const message: ConsoleMessage | undefined = shouldCommitPublicText
     ? {
         id: crypto.randomUUID(),
@@ -3925,25 +4006,26 @@ function createDirectorTurnPlan(input: {
   reason: RoomDirectorScheduleResult["reason"];
   directorMemory?: RoomDirectorMemorySnapshot;
 }): DirectorTurnPlan {
+  const publicUserInput = sanitizeDirectorNarrationSource(input.userInput);
   const frameInterpretation = resolveRoomFrameInterpretation({
     room: input.room,
-    userInput: input.userInput,
+    userInput: publicUserInput,
     targetingDirector: true,
     now: input.nowLabel,
   });
-  const modeIntent = resolveDirectorModeIntent(input.room, input.userInput, frameInterpretation);
+  const modeIntent = resolveDirectorModeIntent(input.room, publicUserInput, frameInterpretation);
   const policy = getDirectorModePolicy(input.room);
   const verdictDue = isDebateFinalVerdictDue(input.room);
   const requestedMove = verdictDue ? "judge" : input.requestedMove ?? modeIntent.move;
   const move = policy.allowedMoves.includes(requestedMove) ? requestedMove : policy.defaultMove;
-  const judgement = move === "judge" ? createJudgementCheck(input.room, input.userInput, input.directorMemory) : undefined;
-  const sceneDelta = createSceneDelta(input.room, move, input.userInput, judgement, modeIntent);
-  const continuityWrites = createContinuityWrites(input.room, move, input.userInput, judgement);
-  const secretWrites = createSecretWrites(input.room, move, input.userInput);
-  const publicText = createDirectorPlanText(input.room, move, input.userInput, sceneDelta, judgement, modeIntent);
+  const judgement = move === "judge" ? createJudgementCheck(input.room, publicUserInput, input.directorMemory) : undefined;
+  const sceneDelta = createSceneDelta(input.room, move, publicUserInput, judgement, modeIntent);
+  const continuityWrites = createContinuityWrites(input.room, move, publicUserInput, judgement);
+  const secretWrites = createSecretWrites(input.room, move, publicUserInput);
+  const publicText = createDirectorPlanText(input.room, move, publicUserInput, sceneDelta, judgement, modeIntent);
   const waitForUser = Boolean(modeIntent.waitForUser) || move === "pause" || judgement?.outcome === "needs_player_choice";
-  const privateDirectives = createDirectorPrivateDirectives(input.room, move, input.userInput, modeIntent);
-  const publicTextReason = verdictDue ? "ruling" : directorPublicTextReason(input.room, move, modeIntent, judgement);
+  const privateDirectives = createDirectorPrivateDirectives(input.room, move, publicUserInput, modeIntent, input.reason);
+  const publicTextReason = verdictDue ? "ruling" : directorPublicTextReason(input.room, move, publicUserInput, modeIntent, judgement);
 
   return {
     move,
@@ -4051,11 +4133,14 @@ function createJudgementCheck(
   const actor = detectActor(room, userInput);
   const intent = detectIntent(userInput, action);
   const difficulty = detectDifficulty(action, knownFacts, room);
-  const evidence = knownFacts
+  const relevantFacts = knownFacts
     .filter((fact) => isRelevantFact(action, fact) && !isJudgementEchoEvidence(action, fact))
     .map((fact) => trimForReply(fact, 96))
     .slice(0, 4);
-  const outcome = judgeOutcome(action, difficulty, evidence);
+  const evidence = isGatedWorldStateAction(action)
+    ? relevantFacts.filter((fact) => isActionSupportEvidence(action, fact))
+    : relevantFacts;
+  const outcome = judgeOutcome(action, difficulty, evidence, isGatedWorldStateAction(action));
 
   return {
     actor,
@@ -4076,11 +4161,14 @@ function createContinuityWrites(
   judgement?: JudgementCheck,
 ): ContinuityWrite[] {
   const writes: ContinuityWrite[] = [];
-  const ownership = extractOwnershipWrite(room, userInput);
-  if (ownership) {
-    writes.push(ownership);
-  }
   if (judgement) {
+    if (!canWriteFactFromJudgement(judgement)) {
+      return writes;
+    }
+    const ownership = extractOwnershipWrite(room, userInput);
+    if (ownership) {
+      writes.push(ownership);
+    }
     writes.push({
       label: "Judgement",
       detail: `${judgement.actor}: ${judgement.action} -> ${judgement.outcome}. ${judgement.consequence}`,
@@ -4138,11 +4226,16 @@ function createSecretWrites(room: RoomState, move: RoomDirectorMove, userInput: 
   ];
 }
 
+function canWriteFactFromJudgement(judgement: JudgementCheck): boolean {
+  return judgement.outcome === "success" || judgement.outcome === "partial_success";
+}
+
 function createDirectorPrivateDirectives(
   room: RoomState,
   move: RoomDirectorMove,
   userInput: string,
   modeIntent?: DirectorModeIntent,
+  reason: RoomDirectorScheduleResult["reason"] = "recipe",
 ): RoomDirectorPrivateDirective[] {
   if (move === "pause" || modeIntent?.waitForUser) {
     return [];
@@ -4170,7 +4263,9 @@ function createDirectorPrivateDirectives(
       room,
       participant: nextParticipant,
       goal,
-      target: isDebateRoom(room) ? "all" : { targets: [{ type: "user", userId: room.userProfile.userId }] },
+      target: shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)
+        ? { targets: [{ type: "user", userId: room.userProfile.userId }] }
+        : "all",
       reason: collaborationTask ? "follow_up" : isDebateRoom(room) ? "debate_turn" : "mode_turn",
       sourceMove: move,
       maxLength: isDebateRoom(room) ? 260 : 180,
@@ -4181,17 +4276,12 @@ function createDirectorPrivateDirectives(
 function directorPublicTextReason(
   room: RoomState,
   move: RoomDirectorMove,
+  userInput: string,
   modeIntent: DirectorModeIntent | undefined,
   judgement: JudgementCheck | undefined,
 ): RoomDirectorPublicTextReason {
   if (judgement) {
     return "ruling";
-  }
-  if (move === "pause" || modeIntent?.waitForUser) {
-    return "choice";
-  }
-  if (move === "recap") {
-    return "recap";
   }
   if (modeIntent?.mode === "debate") {
     if (modeIntent.key === "debate_setup") {
@@ -4205,11 +4295,20 @@ function directorPublicTextReason(
     }
     return "none";
   }
-  if (move === "choice") {
+  if (modeIntent?.waitForUser && move !== "pause") {
     return "choice";
   }
+  if (move === "recap" && isPrivateRoomChannelActive(room)) {
+    return "recap";
+  }
+  if (move === "recap" && isExplicitPublicDirectorTextRequest(userInput, move)) {
+    return "recap";
+  }
+  if ((move === "cue" || move === "twist") && isExplicitPublicDirectorTextRequest(userInput, move)) {
+    return "narration";
+  }
   if (move === "cue" || move === "twist") {
-    return "round_transition";
+    return "narration";
   }
   return "none";
 }
@@ -4218,7 +4317,73 @@ export function shouldCommitDirectorPublicText(plan: DirectorTurnPlan | undefine
   if (!plan?.publicText?.trim()) {
     return false;
   }
-  return (plan.publicTextReason ?? "round_transition") !== "none";
+  return (plan.publicTextReason ?? "none") !== "none" && !isDirectorPublicSchedulingText(plan.publicText);
+}
+
+export function isDirectorPublicSchedulingText(text: string): boolean {
+  return (
+    isDirectorInternalPromptText(text) ||
+    /(?:\bacts\s+next\b|\bnext\s+(?:speaker|role|turn|direction)\b|\bprivate\s*directives?\b|\bschedule(?:s|d|ing)?\b|\bcue\s+(?:the\s+)?(?:next\s+)?role\b|\brole\s+turn\b|\btarget\s+role\b|\bLight\s+recap\b|\bAdd\s+only\s+one\s+useful\s+next\s+direction\b|\u5148\u628a\u8bdd\u9898\u6536\u4e00\u4e0b|\u63a5\u4e0b\u6765\u53ea\u8865|\u6709\u7528\u65b9\u5411|\u4e0b\u4e00(?:\u4f4d|\u4e2a|\u8f6e)|\u8f6e\u5230|\u8bf7.{0,24}(?:\u53d1\u8a00|\u63a5\u8bdd|\u56de\u5e94|\u8865\u4e00\u53e5)|\u8c03\u5ea6|\u79c1\u4e0b\u63d0\u9192|\u540e\u53f0\u6307\u4ee4)/i.test(text)
+  );
+}
+
+function isDirectorInternalPromptText(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) {
+    return false;
+  }
+  return /(?:\bDirector\s+check\b|\bNaturally\s+settle\s+the\s+current\s+pace\b|\bgive\s+the\s+next\s+cue\b|\bReason\s*:\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\b|\b(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup)\b|\u8bf7\u81ea\u7136\u5730\u6536\u675f\u5f53\u524d\u8282\u594f|\u7ed9\u51fa\u4e0b\u4e00\u6b65\u63d0\u793a|\u539f\u56e0\s*[：:]\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown))/i.test(normalized);
+}
+
+function sanitizeDirectorNarrationSource(text: string): string {
+  if (!text.trim()) {
+    return "";
+  }
+  const withoutInternalLines = stripMentions(text)
+    .split(/\r?\n/)
+    .filter((line) => !isDirectorInternalPromptText(line))
+    .join(" ")
+    .replace(/\bReason\s*:\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\b\.?/gi, "")
+    .replace(/\u539f\u56e0\s*[：:]\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\u3002?/gi, "")
+    .trim();
+  if (withoutInternalLines) {
+    return trimForReply(withoutInternalLines);
+  }
+  if (isDirectorInternalPromptText(text)) {
+    return "";
+  }
+  return trimForReply(
+    stripMentions(text)
+      .replace(/\bReason\s*:\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\b\.?/gi, "")
+      .replace(/\u539f\u56e0\s*[：:]\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\u3002?/gi, "")
+      .trim(),
+  );
+}
+
+function directorNarrationPrefersChinese(room: RoomState, userInput: string): boolean {
+  const recentText = room.messages.slice(-3).map((message) => message.text).join(" ");
+  return prefersChinese(`${userInput} ${room.topic} ${recentText}`);
+}
+
+function isExplicitPublicDirectorTextRequest(userInput: string, move: RoomDirectorMove): boolean {
+  const normalized = stripMentions(userInput).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const asksPublic = /(公开|全员|大家|宣布|播报|告诉大家|向全体|public|announce|all)/i.test(normalized);
+  const asksRecap = /(总结|复盘|回顾|收束|recap|summary)/i.test(normalized);
+  const asksHostCue = /(主持|开场|下一轮|推进|继续|cue|host|next round|continue)/i.test(normalized);
+  if (move === "recap") {
+    return asksPublic || asksRecap;
+  }
+  if (move === "cue" || move === "twist") {
+    return asksPublic && asksHostCue;
+  }
+  return asksPublic;
+}
+
+function isPrivateRoomChannelActive(room: RoomState): boolean {
+  return room.activeChannelId.startsWith("faction:") || room.activeChannelId.startsWith("private:");
 }
 
 function createModeDirectorPublicText(
@@ -4269,6 +4434,12 @@ function createModeDirectorPublicText(
         ? "局面多了一层阻力，但它没有推翻已经发生的事；接下来要看角色怎么处理。"
         : "A complication appears without rewriting what already happened; the next step depends on how the roles handle it.";
     }
+    if (move === "cue") {
+      const scene = trimForReply(room.director.sceneBoard.currentScene || room.topic, 72);
+      return chinese
+        ? `${scene || "房间"}短暂安静了一下，刚才被忽略的细节重新压回到众人面前。`
+        : `${scene || "The room"} falls quiet for a beat, and an overlooked detail presses back into view.`;
+    }
     return chinese
       ? "场面继续向前推进，但只有已经看见或确认的内容会成为事实。"
       : "The scene moves forward, but only visible or established details become facts.";
@@ -4279,6 +4450,16 @@ function createModeDirectorPublicText(
       return chinese
         ? "现在还不能把真相一次性摊开；先确认哪些线索已经公开，哪些仍只属于少数人知道。"
         : "The full truth should not be laid out at once; first separate public clues from what only a few people know.";
+    }
+    if (move === "cue") {
+      if (/(\u7ebf\u7d22|clue)/i.test(userInput)) {
+        return chinese
+          ? "一条线索被推到明面上：它还不能证明真相，但足够让房间里的判断偏移一下。"
+          : "A clue moves into the open: it proves nothing yet, but it is enough to shift the room's attention.";
+      }
+      return chinese
+        ? "有个细节忽然变得不太对劲：它还不能证明什么，但足够让房间里的判断偏移一下。"
+        : "One detail starts to feel wrong: it proves nothing yet, but it is enough to shift the room's attention.";
     }
     return chinese
       ? "这条线索能解释一部分，但还缺少动机、时机或证据之间的连接。"
@@ -4326,9 +4507,6 @@ function createModeDirectorPublicText(
   if (move === "pause") {
     return chinese ? "先停一下，等 " + player + " 决定要不要换话题或继续。" : "Pause here until " + player + " decides whether to switch topics or continue.";
   }
-  if (topic) {
-    return chinese ? "先把话题收一下：" + topic + "。接下来只补一个有用方向。" : "Light recap: " + topic + ". Add only one useful next direction.";
-  }
   return null;
 }
 
@@ -4340,7 +4518,7 @@ function createDirectorPlanText(
   judgement?: JudgementCheck,
   modeIntent?: DirectorModeIntent,
 ): string {
-  const chinese = prefersChinese(userInput);
+  const chinese = directorNarrationPrefersChinese(room, userInput);
   const player = room.userProfile.displayName;
   const clues = [...(sceneDelta.addClues ?? []), ...room.director.sceneBoard.openClues].slice(0, 2).join(" / ") || (chinese ? "暂无公开线索" : "no open clues yet");
 
@@ -4355,8 +4533,26 @@ function createDirectorPlanText(
     return modeText;
   }
   if (move === "cue") {
-    const clue = trimForReply(userInput) || (chinese ? "有个细节值得继续追" : "A useful clue surfaces");
-    return chinese ? `新的线索浮了出来：${clue}。` : `A clue comes into focus: ${clue}.`;
+    const mode = modeIntent?.mode ?? resolveDirectorModeIntent(room, userInput).mode;
+    const detail = trimForReply(userInput || room.director.sceneBoard.currentScene || room.topic, 96);
+    if (mode === "casual") {
+      return chinese
+        ? "话题短暂停了一下，刚才那句话还留在房间里，等着有人自然接上。"
+        : "The conversation pauses for a beat, leaving the last remark in the room for someone to pick up naturally.";
+    }
+    if (mode === "story") {
+      return chinese
+        ? "场面停了一拍，一个可回应的变化从刚才的行动里露出来。"
+        : "The scene holds for a beat, and a response-worthy change emerges from the last action.";
+    }
+    if (mode === "mystery") {
+      return chinese
+        ? "有个细节开始显得不对劲，但它还没有足够证据变成结论。"
+        : "One detail starts to feel wrong, but it is not enough to become a conclusion yet.";
+    }
+    return chinese
+      ? `房间里的注意力重新落到这里：${detail || "还有一件事没有被接住"}。`
+      : `The room's attention settles here: ${detail || "one point still needs a response"}.`;
   }
   if (move === "twist") {
     return chinese ? "局面忽然多了一层麻烦，但还没有人看清全部原因。" : "The scene gains a complication, but not everyone can see why yet.";
@@ -4469,12 +4665,15 @@ function detectDifficulty(action: string, facts: string[], room: RoomState): Jud
   return "normal";
 }
 
-function judgeOutcome(action: string, difficulty: JudgementDifficulty, evidence: string[]): JudgementOutcome {
+function judgeOutcome(action: string, difficulty: JudgementDifficulty, evidence: string[], gatedWorldStateAction = false): JudgementOutcome {
   if (difficulty === "blocked") {
     return "blocked";
   }
   if (/(怎么办|选择|哪一个|which|what should)/i.test(action)) {
     return "needs_player_choice";
+  }
+  if (gatedWorldStateAction && evidence.length === 0) {
+    return "fail";
   }
   if (difficulty === "easy") {
     return "success";
@@ -4521,6 +4720,18 @@ function isRelevantFact(action: string, fact: string): boolean {
     (/门|锁|door|lock/.test(action) && /门|锁|door|lock/.test(fact)) ||
     (/秘密|线索|secret|clue/.test(action) && /秘密|线索|secret|clue/.test(fact))
   );
+}
+
+function isGatedWorldStateAction(action: string): boolean {
+  return /(?:\block\b|\blocked\b|\bunlock\b|\bunlocked\b|\bpick\s+lock\b|\bkey\b|\baccess\b|[\u9501\u94a5]|\u95e8\u9501|\u6302\u9501|\u5f00\u9501|\u89e3\u9501|\u64ac\u9501|\u901a\u884c\u6743|\u6743\u9650)/i.test(action);
+}
+
+function isActionSupportEvidence(action: string, fact: string): boolean {
+  const lowerFact = fact.toLowerCase();
+  if (!isGatedWorldStateAction(action)) {
+    return true;
+  }
+  return /(?:\bkey\b|\btool\b|\bpermission\b|\baccess\b|\bskill\b|\bcan\s+(?:open|unlock|pick)\b|\bhas\s+(?:the\s+)?key\b|\bunlocked\b|\bnot\s+locked\b|[\u94a5\u5de5\u5177]|\u94a5\u5319|\u6743\u9650|\u901a\u884c|\u6388\u6743|\u53ef\u4ee5(?:\u6253\u5f00|\u89e3\u9501|\u901a\u8fc7)|\u672a\u4e0a\u9501|\u6ca1\u4e0a\u9501|\u5df2\u89e3\u9501)/i.test(lowerFact);
 }
 
 function isJudgementEchoEvidence(action: string, fact: string): boolean {

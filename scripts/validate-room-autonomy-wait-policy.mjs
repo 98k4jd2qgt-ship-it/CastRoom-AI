@@ -5,11 +5,16 @@ const main = fs.readFileSync("src/main.ts", "utf8");
 const failures = [];
 
 const scheduleRoomTurn = sliceFunction(scheduler, "scheduleRoomTurn");
-mustInclude(scheduleRoomTurn, "waitDecisionFor(room, \"user_answer_expected\")", "user-answer wait signal is policy-gated");
-mustInclude(scheduleRoomTurn, "advanceDecision.action === \"pause\"", "schedule uses advance decision before pausing");
+mustInclude(scheduleRoomTurn, "policyBlockedAutoResult(room, \"question_loop\", \"user_answer_expected\"", "question-loop wait signal is policy-gated");
+mustInclude(scheduleRoomTurn, "policyBlockedAutoResult(room, \"waiting_user\", \"user_answer_expected\"", "user-answer wait signal is policy-gated");
 mustInclude(scheduleRoomTurn, "directorHandoff(\"waiting_user\", room, nowMs + delayMs)", "wait signal can hand off to Director");
 mustNotInclude(scheduleRoomTurn, "lastMessageTargetsUserQuestion(room)) {\n      return stop(\"waiting_user\"", "direct user-question stop");
 mustNotInclude(scheduleRoomTurn, "recentDirectorWaitingForUser(room)) {\n        return stop(\"waiting_user\"", "direct Director waiting stop");
+
+const policyBlockedAutoResult = sliceFunction(scheduler, "policyBlockedAutoResult");
+mustInclude(policyBlockedAutoResult, "advanceDecision.action === \"pause\"", "schedule uses advance decision before pausing");
+mustInclude(policyBlockedAutoResult, "advanceDecision.action === \"fill_gap\"", "fill-gap produces a finite continuation branch");
+mustInclude(policyBlockedAutoResult, "createPolicyPendingFollowup", "fill-gap uses one-shot pending follow-up");
 
 mustInclude(scheduler, "blockingNeed === \"privacy_or_safety\"", "privacy remains hard blocker");
 mustInclude(scheduler, "blockingNeed === \"provider_failure\"", "provider failure remains hard blocker");

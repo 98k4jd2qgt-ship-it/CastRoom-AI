@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting a bug. Please do not include API keys, passwords, Steam credentials, private memories, private prompts, or logs that contain secrets.
+        Thanks for reporting a bug. Please do not include API keys, passwords, account credentials, private memories, private prompts, or logs that contain secrets.
   - type: input
     id: app-version
     attributes:

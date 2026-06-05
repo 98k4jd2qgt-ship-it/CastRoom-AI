@@ -7,14 +7,17 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.0-test";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-05";
 const outDir = path.join(root, "artifacts", "github-release", version);
 
 const requiredFiles = [
-  "CastRoom-AI_0.1.0_windows-portable.zip",
-  "CastRoom-AI_0.1.0_x64-setup.exe",
-  "CastRoom-AI_0.1.0_x64_en-US.msi",
+  `CastRoom-AI_${assetStamp}_windows-portable.zip`,
   "SHA256SUMS.txt",
   "RELEASE_NOTES.md",
+];
+const optionalAssetFiles = [
+  `CastRoom-AI_${assetStamp}_x64-setup.exe`,
+  `CastRoom-AI_${assetStamp}_x64_en-US.msi`,
 ];
 
 function fail(message) {
@@ -45,6 +48,12 @@ for (const file of requiredFiles) {
   }
 }
 
+for (const file of fs.readdirSync(outDir)) {
+  if (/CastRoom-AI_0\.1\.0_.*\.(zip|exe|msi)$/i.test(file)) {
+    fail(`old 0.1.0 release asset must not be present: ${file}`);
+  }
+}
+
 const sums = fs.readFileSync(path.join(outDir, "SHA256SUMS.txt"), "utf8").trim().split(/\r?\n/);
 const expected = new Map();
 for (const line of sums) {
@@ -55,7 +64,12 @@ for (const line of sums) {
   expected.set(match[2], match[1]);
 }
 
-for (const file of requiredFiles.filter((file) => file.endsWith(".exe") || file.endsWith(".msi") || file.endsWith(".zip"))) {
+const assetFiles = [
+  ...requiredFiles.filter((file) => file.endsWith(".exe") || file.endsWith(".msi") || file.endsWith(".zip")),
+  ...optionalAssetFiles.filter((file) => fs.existsSync(path.join(outDir, file))),
+];
+
+for (const file of assetFiles) {
   const expectedHash = expected.get(file);
   if (!expectedHash) {
     fail(`missing checksum entry for ${file}`);
@@ -66,7 +80,7 @@ for (const file of requiredFiles.filter((file) => file.endsWith(".exe") || file.
   }
 }
 
-const portableZip = path.join(outDir, "CastRoom-AI_0.1.0_windows-portable.zip");
+const portableZip = path.join(outDir, `CastRoom-AI_${assetStamp}_windows-portable.zip`);
 const portableEntries = new Set(
   execFileSync(
     "powershell.exe",

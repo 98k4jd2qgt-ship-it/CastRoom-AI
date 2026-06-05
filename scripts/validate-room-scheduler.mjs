@@ -461,22 +461,55 @@ async function validateSchedulerBehavior() {
   expect(mentionPlan.intent === "direct_mention", "@Mio should classify as a direct mention");
   expect(mentionPlan.plan?.turns[0]?.speakerId === "mio", "@Mio should give Mio the first planned turn");
 
+  const ambientChat = scheduler.scheduleRoomTurn({
+    room: { ...room, autoChat: false, flowMode: "player_reactive" },
+    trigger: "user",
+    userInput: "The weather is nice today. Maybe we can go out for a walk.",
+    nowMs: Date.parse("2026-05-16T01:01:30.000Z"),
+    nowLabel: "01:01",
+  });
+  expect(ambientChat.type === "turn", "ordinary public chat should create one visible role reply even when Room Flow is off");
+  expect(ambientChat.message?.target === "all", "ordinary public chat should reply to All, not @You");
+  expect(ambientChat.message?.mentions?.length === 0, "ordinary public chat should not mention @You");
+  expect(ambientChat.nextTurnAt === null, "ordinary one-shot chat should not enable continuous autoplay");
+  expect(ambientChat.responseObligation?.reason === "user_message", "ordinary public chat should record a light response obligation");
+  expect(ambientChat.engagementDecision?.kind === "optional", "ordinary public chat should remain optional engagement, not a forced mention");
+
   const autoPlan = scheduler.createDirectorRoomPlan({
-    room: { ...room, autoChat: true, flowMode: "auto_simulation" },
+    room: { ...room, autoChat: true, flowMode: "auto_simulation", advancePolicy: "continuous" },
     trigger: "auto",
     userInput: "",
     nowIso: "2026-05-16T01:02:00.000Z",
   });
-  expect(autoPlan.intent === "auto_simulation", "auto trigger with Room Flow on should create auto_simulation intent");
+  expect(autoPlan.intent === "auto_simulation", "continuous Room Flow should create auto_simulation intent");
   expect((autoPlan.plan?.turns.length ?? 0) <= 1, "local auto simulation should schedule at most one turn per tick");
   expect(Boolean(autoPlan.plan?.turns[0]?.beatType), "auto simulation should plan a Simulation Beat");
   expect(autoPlan.plan?.turns[0]?.target === "all", "auto simulation beats should not target the user by default");
+
+  const fillGapPlan = scheduler.createDirectorRoomPlan({
+    room: { ...room, autoChat: true, flowMode: "auto_simulation", advancePolicy: "fill_gap" },
+    trigger: "auto",
+    userInput: "",
+    nowIso: "2026-05-16T01:02:10.000Z",
+  });
+  expect(fillGapPlan.intent !== "auto_simulation", "fill-gap Room Flow should not enter continuous auto_simulation mode");
+
+  const fillGapTurn = scheduler.scheduleRoomTurn({
+    room: { ...room, autoChat: true, flowMode: "auto_simulation", advancePolicy: "fill_gap" },
+    trigger: "auto",
+    userInput: "",
+    nowMs: Date.parse("2026-05-16T01:02:15.000Z"),
+    nowLabel: "01:02",
+  });
+  expect(fillGapTurn.type === "turn", "fill-gap Room Flow should fill one visible beat");
+  expect(fillGapTurn.nextTurnAt === null, "fill-gap Room Flow should stop after one beat");
 
   const storyPlan = scheduler.createDirectorRoomPlan({
     room: {
       ...room,
       autoChat: true,
       flowMode: "auto_simulation",
+      advancePolicy: "continuous",
       promptProfileId: "story",
       simulationObjective: "scene_play",
       simulation: { ...room.simulation, style: "story", beatIndex: 0 },
@@ -495,6 +528,7 @@ async function validateSchedulerBehavior() {
       ...room,
       autoChat: true,
       flowMode: "auto_simulation",
+      advancePolicy: "continuous",
       promptProfileId: "debate",
       simulationObjective: "debate",
       simulation: { ...room.simulation, style: "match", beatIndex: 2 },
@@ -631,9 +665,20 @@ async function validateSchedulerBehavior() {
     userInput: "@director \u7ed9\u4e00\u4e2a\u7ebf\u7d22",
     reason: "mentioned",
   });
-  const mysteryDirectorText = mysteryDirectorResult.type === "turn" ? mysteryDirectorResult.message.text : "";
   expect(mysteryDirectorResult.type === "turn" && mysteryDirectorResult.move === "cue", "Mystery clue requests should route to cue.");
-  expect(/\u7ebf\u7d22|clue/i.test(mysteryDirectorText), "Mystery Director should use clue-oriented public wording.");
+  expect(mysteryDirectorResult.type === "turn" && mysteryDirectorResult.message, "Mystery cue should publish a narrator beat in the public room.");
+  expect(
+    mysteryDirectorResult.type === "turn" && mysteryDirectorResult.message?.target === "all" && mysteryDirectorResult.message?.visibility === "public",
+    "Mystery cue narration should land in the public room timeline.",
+  );
+  expect(
+    mysteryDirectorResult.type === "turn" && /(\u7ebf\u7d22|clue)/i.test(mysteryDirectorResult.plan?.publicText ?? ""),
+    "Mystery Director should keep clue-oriented narration wording.",
+  );
+  expect(
+    mysteryDirectorResult.type === "turn" && (mysteryDirectorResult.plan?.privateDirectives?.length ?? 0) >= 1,
+    "Mystery public narration should still drive a private role directive.",
+  );
 
   const studyDirectorResult = scheduler.scheduleRoomDirectorTurn({
     room: modeDirectorRoom("study", "study-moderator"),
@@ -746,12 +791,14 @@ function createRoomFixture() {
     expandedInspectorSection: null,
     promptProfileId: "casual-chat",
     autoSpeechPolicy: {
-      speed: "normal",
       maxUserTriggeredFollowUps: 2,
       maxIdleBurstTurns: 3,
-      minDelayMs: 1000,
-      maxDelayMs: 3000,
-      allowDirectorIntervention: true,
+      cooldownTurns: 1,
+      speedDelaysMs: {
+        slow: 12000,
+        normal: 7000,
+        fast: 4000,
+      },
     },
     autoSpeechState: {
       status: "paused",

@@ -116,10 +116,12 @@ for (const text of ["记住我喜欢67", "记住我喜欢67", "remember that I l
 const compressed = store.listCompressedMemories("character:semantic-demo").filter((entry) => entry.text.includes("67"));
 expect(compressed.length === 1, `legacy list should show one deduped compressed preference, got ${compressed.length}: ${compressed.map((entry) => entry.text).join(" | ")}`);
 expect(compressed[0]?.text === "用户偏好：67", `legacy list should show compressed claim text, got ${compressed[0]?.text ?? "<none>"}`);
+expect(compressed[0]?.status === "needs_review", `deduped compressed preference should wait for confirmation, got ${compressed[0]?.status ?? "<none>"}`);
 expect(
   !compressed.some((entry) => /用户相关事实|角色相关事实|房间相关事实|^preference\s*:/i.test(entry.text)),
   `legacy compressed memory should not keep wrapped raw text: ${compressed.map((entry) => entry.text).join(" | ")}`,
 );
+store.confirmCandidate(compressed[0].id);
 
 const promptLines = store.getPromptMemory("character:semantic-demo").filter((line) => line.includes("67"));
 expect(promptLines.length === 1, `prompt memory should inject one semantic claim, got ${promptLines.length}: ${promptLines.join(" | ")}`);

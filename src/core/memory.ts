@@ -39,6 +39,7 @@ import {
   memoryGraphClaimFromCompressedEntry,
   memoryGraphClaimTextForPrompt,
   type MemoryGraphClaim,
+  type MemoryGraphQueryContext,
   type MemoryGraphViewContext,
   type MemoryGraphViewModel,
   type MemoryClaimInput,
@@ -168,7 +169,7 @@ export class MemoryStore {
     shortTermDays: 7,
     promotionMentionThreshold: 3,
     semanticDedupEnabled: true,
-    requireUserConfirmation: false,
+    requireUserConfirmation: true,
     autoWriteLongTermEnabled: true,
     sensitiveAutoPromoteEnabled: false,
   };
@@ -185,15 +186,10 @@ export class MemoryStore {
   private readonly graph = new InMemoryMemoryGraphRepository();
 
   recordMemoryEvent(event: MemoryEvent): MemoryCompressionResult {
-    const graphWriteCount = this.syncExtractionEventToGraph(event);
-
     if (event.kind === "mention") {
       const normalizedText = normalizeForMemory(event.text);
       if (!normalizedText || classifySensitivity(event.text) === "forbidden") {
         return { ok: true, saved: false, reason: "filtered" };
-      }
-      if (graphWriteCount > 0 && isExplicitMemoryRequest(event.text)) {
-        return { ok: true, saved: true, reason: "saved" };
       }
       const entry = this.recordShortTermMention({
         scope: event.scope,
@@ -204,7 +200,7 @@ export class MemoryStore {
       });
       return entry
         ? { ok: true, saved: true, reason: "saved", entry: this.compressedMemories.get(entry.id) }
-        : { ok: true, saved: graphWriteCount > 0, reason: graphWriteCount > 0 ? "saved" : "not_promoted" };
+        : { ok: true, saved: false, reason: "not_promoted" };
     }
 
     if (event.kind === "room_message") {
@@ -212,21 +208,28 @@ export class MemoryStore {
       const summary = this.updateRollingSummary(event.input.scope);
       return entry
         ? { ok: true, saved: true, reason: "saved", entry: this.compressedMemories.get(entry.id), summary }
-        : { ok: true, saved: graphWriteCount > 0, reason: graphWriteCount > 0 ? "saved" : "updated_summary", summary };
+        : { ok: true, saved: true, reason: "updated_summary", summary };
     }
 
     if (event.kind === "room_observation") {
       const entry = this.recordRoomObservation(event.input);
+      if (entry) {
+        this.syncExtractionEventToGraph(event);
+      }
       return { ok: true, saved: Boolean(entry), reason: entry ? "saved" : "filtered" };
     }
 
     if (event.kind === "director") {
       this.recordDirectorMemory(event.input as unknown as RecordDirectorMemoryInput);
+      this.syncExtractionEventToGraph(event);
       return { ok: true, saved: true, reason: "saved" };
     }
 
     if (event.kind === "faction_huddle") {
       const snapshot = this.recordFactionHuddle(event.input as unknown as RecordFactionHuddleInput);
+      if (snapshot) {
+        this.syncExtractionEventToGraph(event);
+      }
       return { ok: true, saved: Boolean(snapshot), reason: snapshot ? "saved" : "filtered" };
     }
 
@@ -395,13 +398,18 @@ export class MemoryStore {
   }
 
   listGraphClaims(scope?: MemoryScope): MemoryGraphClaim[] {
+    return this.listGraphClaimsForViewer(scope);
+  }
+
+  listGraphClaimsForViewer(scope?: MemoryScope, viewer?: MemoryGraphQueryContext["viewer"]): MemoryGraphClaim[] {
     const scopes = scope ? [scope] : this.memoryGraphScopes();
     return scopes.flatMap((entryScope) =>
       this.graph.queryVisibleClaimsSync({
         scope: entryScope,
-        viewer: entryScope === "global" ? { type: "global" } : entryScope.startsWith("room:") ? { type: "room_public", roomId: entryScope.slice("room:".length).split(":")[0] } : { type: "one_on_one", packId: entryScope.slice("character:".length) },
+        viewer: viewer ?? defaultMemoryGraphViewer(entryScope),
         limit: 256,
         includeDisputed: true,
+        includeNeedsReview: true,
       }),
     );
   }
@@ -1169,6 +1177,15 @@ export class MemoryStore {
     }
     candidate.confirmed = true;
     candidate.requiresConfirmation = false;
+    const current = this.compressedMemories.get(candidate.id) ?? compressedEntryFromCandidate(candidate);
+    const activeEntry: CompressedMemoryEntry = {
+      ...current,
+      status: "active",
+      text: trimMemoryText(candidate.fact, MAX_COMPRESSED_FACT_CHARS),
+      lastSeenAt: new Date().toISOString(),
+    };
+    this.compressedMemories.set(activeEntry.id, activeEntry);
+    this.syncCompressedMemoryToGraph(activeEntry);
     return candidate;
   }
 
@@ -1192,17 +1209,23 @@ export class MemoryStore {
       existing.evidenceCount = mention.count;
       existing.mentionCount = mention.count;
       existing.lastSeenAt = mention.lastSeenAt;
-      existing.requiresConfirmation = false;
-      existing.confirmed = true;
       const current = this.compressedMemories.get(candidateId);
       const conflictIds = findMemoryConflictIds(
         this.listCompressedMemories(mention.scope).filter((entry) => entry.id !== candidateId),
         compressed,
       );
+      const requiresConfirmation = this.policy.requireUserConfirmation || conflictIds.length > 0;
+      existing.requiresConfirmation = requiresConfirmation && !existing.confirmed;
+      existing.confirmed = existing.confirmed && conflictIds.length === 0;
       const nextText = refineLongTermText(current?.text, compressed.text);
       if (current && current.text !== nextText) {
         this.versionHistory.unshift(createMemoryVersionEntry(current, nextText, "refine", mention.lastSeenAt, [mention.id]));
       }
+      const nextStatus: CompressedMemoryEntry["status"] = conflictIds.length > 0
+        ? "disputed"
+        : existing.confirmed
+          ? "active"
+          : "needs_review";
       this.compressedMemories.set(candidateId, {
         ...(current ?? compressed),
         text: nextText,
@@ -1212,7 +1235,7 @@ export class MemoryStore {
         evidenceCount: mention.count,
         confidence: Math.max(current?.confidence ?? 0, compressed.confidence),
         lastSeenAt: mention.lastSeenAt,
-        status: conflictIds.length > 0 ? "disputed" : "active",
+        status: nextStatus,
         conflictWithIds: conflictIds.length > 0 ? conflictIds : current?.conflictWithIds,
       });
       this.syncCompressedMemoryToGraph(this.compressedMemories.get(candidateId));
@@ -1222,7 +1245,7 @@ export class MemoryStore {
     const conflictIds = findMemoryConflictIds(this.listCompressedMemories(mention.scope), compressed);
     const entry: CompressedMemoryEntry = {
       ...compressed,
-      status: conflictIds.length > 0 ? "disputed" : "active",
+      status: conflictIds.length > 0 ? "disputed" : this.policy.requireUserConfirmation ? "needs_review" : "active",
       conflictWithIds: conflictIds.length > 0 ? conflictIds : undefined,
     };
     this.compressedMemories.set(entry.id, entry);
@@ -1252,7 +1275,7 @@ export class MemoryStore {
       lastSeenAt: mention.lastSeenAt,
       createdAt: new Date().toISOString(),
       sensitivity,
-      requiresConfirmation: false,
+      requiresConfirmation: entry.status === "needs_review" || entry.status === "disputed",
       confirmed: entry.status === "active",
     };
 
@@ -1281,7 +1304,10 @@ export class MemoryStore {
   private syncExtractionEventToGraph(event: MemoryEvent): number {
     const claims = extractGraphClaimsFromMemoryEvent(event);
     for (const claim of claims) {
-      this.graph.mergeClaimSync(claim);
+      this.graph.mergeClaimSync({
+        ...claim,
+        status: claim.authority === "developer" ? "active" : "needs_review",
+      });
     }
     return claims.length;
   }

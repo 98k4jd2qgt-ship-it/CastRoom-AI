@@ -84,7 +84,7 @@ for (const forbidden of ["d3", "cytoscape", "vis-network"]) {
 const { InMemoryMemoryGraphRepository } = await loadMemoryGraphModule();
 const repo = new InMemoryMemoryGraphRepository();
 
-repo.mergeClaimSync({
+const publicClaim = repo.mergeClaimSync({
   scope: "room:graph-room",
   kind: "clue",
   subject: { kind: "item", canonicalKey: "key", displayName: "钥匙" },
@@ -99,7 +99,7 @@ repo.mergeClaimSync({
   conflictPolicy: "merge",
 });
 
-repo.mergeClaimSync({
+const oneOnOneClaim = repo.mergeClaimSync({
   scope: "character:demo",
   kind: "preference",
   subject: { kind: "character_pack", canonicalKey: "demo", displayName: "demo" },
@@ -114,7 +114,7 @@ repo.mergeClaimSync({
   conflictPolicy: "merge",
 });
 
-repo.mergeClaimSync({
+const privateClaim = repo.mergeClaimSync({
   scope: "room:graph-room",
   kind: "secret",
   subject: { kind: "clue", canonicalKey: "hidden-door", displayName: "暗门" },
@@ -159,12 +159,13 @@ const wrongPublicView = repo.queryGraphViewSync({
   maxNodes: 120,
 });
 
-expect(publicView.nodes.some((node) => node.kind === "claim" && node.label.includes("钥匙")), "public graph should include public claim node", failures);
+expect(viewHasClaim(publicView, publicClaim.id), "public graph should include public claim relationship", failures);
+expect(publicView.nodes.some((node) => node.kind === "entity" && node.label.includes("钥匙")), "public graph should include public subject entity", failures);
 expect(publicView.nodes.every((node) => !node.label.includes("暗门")), "public graph must not expose private claim text", failures);
-expect(directorView.nodes.some((node) => node.label.includes("暗门")), "Director graph should include director-visible private claim", failures);
-expect(roleView.nodes.some((node) => node.label.includes("暗门")), "authorized role graph should include observer claim", failures);
+expect(viewHasClaim(directorView, privateClaim.id), "Director graph should include director-visible private claim", failures);
+expect(viewHasClaim(roleView, privateClaim.id), "authorized role graph should include observer claim", failures);
 expect(publicView.edges.length > 0, "graph view should include claim/entity edges", failures);
-expect(oneOnOneView.nodes.some((node) => node.kind === "claim" && node.label.includes("67")), "one-on-one graph should include private_character claim for selected pack", failures);
+expect(viewHasClaim(oneOnOneView, oneOnOneClaim.id), "one-on-one graph should include private_character claim for selected pack", failures);
 expect(wrongPublicView.nodes.every((node) => !node.label.includes("67")), "room public viewer must not read one-on-one private_character claims", failures);
 expect(typeof oneOnOneView.visibleClaimCount === "number", "graph view should expose visibleClaimCount", failures);
 expect(typeof oneOnOneView.modeClaimCount === "number", "graph view should expose modeClaimCount", failures);
@@ -175,3 +176,7 @@ if (failures.length > 0) {
 }
 
 console.log("Memory graph view validation passed.");
+
+function viewHasClaim(view, claimId) {
+  return view.nodes.some((node) => node.sourceClaimId === claimId) || view.edges.some((edge) => edge.sourceClaimId === claimId);
+}

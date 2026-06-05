@@ -13,12 +13,14 @@ mustInclude("src/core/types.ts", [
 
 mustInclude("src/core/roomScheduler.ts", [
   "buildPrivateRoleDirective",
+  "shouldTargetUserForDirectorDirective",
   "createDirectorPrivateDirectives",
   "directorPublicTextReason",
   "shouldCommitDirectorPublicText",
   "privateDirective",
   "shouldCommitDirectorPublicText(plan)",
   "publicTextReason: \"none\"",
+  "isExplicitPublicDirectorTextRequest",
 ]);
 
 mustInclude("src/main.ts", [
@@ -26,7 +28,10 @@ mustInclude("src/main.ts", [
   "roomPrivateDirectiveInline",
   "privateDirectives are private scheduling instructions",
   "shouldCommitDirectorPublicText(localPlan)",
+  "shouldPreserveScheduledAllRoomTarget",
+  "stripLeadingUserMentionFromRoomText",
   "sanitizeDirectorPrivateDirectives",
+  "fallbackReason === \"none\"",
   "isPlannerLikeRoleOutput",
   "Room.role.plannerLikeBlocked",
 ]);

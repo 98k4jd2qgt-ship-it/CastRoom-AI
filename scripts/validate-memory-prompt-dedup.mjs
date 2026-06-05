@@ -55,6 +55,11 @@ for (const text of ["记住我喜欢67", "记住我喜欢67", "remember that I l
   });
 }
 
+const review67 = store.listCompressedMemories(scope).filter((entry) => entry.text.includes("67"));
+expect(review67.length === 1, `review list should dedupe repeated 67 variants before confirmation, got ${review67.length}: ${review67.map((entry) => entry.text).join(" | ")}`);
+expect(review67[0]?.status === "needs_review", `deduped 67 memory should wait for confirmation, got ${review67[0]?.status ?? "<none>"}`);
+store.confirmCandidate(review67[0].id);
+
 const promptMemory = store.getPromptMemory(scope);
 const linesWith67 = promptMemory.filter((line) => line.includes("67"));
 expect(linesWith67.length === 1, `prompt should dedupe graph, legacy and short-term variants for 67, got ${linesWith67.length}: ${promptMemory.join(" | ")}`);
@@ -62,7 +67,7 @@ expect(linesWith67[0] === "用户偏好：67。", `prompt should keep the clean 
 
 const graphInputs = store.listGraphClaimInputs(scope).filter((claim) => claim.text.includes("67"));
 expect(graphInputs.length === 1, `graph claim export should dedupe repeated 67 variants, got ${graphInputs.length}`);
-expect(graphInputs[0]?.authority === "user", "deduped graph claim should prefer user extraction over legacy system compressed memory");
+expect(graphInputs[0]?.status === "active", `deduped graph claim should become active after confirmation, got ${graphInputs[0]?.status}`);
 
 const longTerm = store.listCompressedMemories(scope).filter((entry) => entry.text.includes("67"));
 expect(longTerm.length === 1, `long-term list should show one graph-first compressed entry, got ${longTerm.length}: ${longTerm.map((entry) => entry.text).join(" | ")}`);
@@ -79,6 +84,10 @@ for (const text of ["记住我偏好是8这个数字", "记住我偏好是8", "�
     now: new Date("2026-05-30T04:14:00.000Z"),
   });
 }
+
+const numericReview = numericStore.listCompressedMemories(numericScope).filter((entry) => entry.text.includes("8"));
+expect(numericReview.length === 1, `review list should dedupe equivalent numeric preference variants, got ${numericReview.length}: ${numericReview.map((entry) => entry.text).join(" | ")}`);
+numericStore.confirmCandidate(numericReview[0].id);
 
 const numericPromptMemory = numericStore.getPromptMemory(numericScope);
 const numericLines = numericPromptMemory.filter((line) => line.includes("8"));

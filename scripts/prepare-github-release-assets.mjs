@@ -7,23 +7,24 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.0-test";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-05";
 const outDir = path.join(root, "artifacts", "github-release", version);
 const portableStageDir = path.join(outDir, "portable-stage");
 const portableAppDir = path.join(portableStageDir, "CastRoom AI");
-const portableZipName = "CastRoom-AI_0.1.0_windows-portable.zip";
+const portableZipName = `CastRoom-AI_${assetStamp}_windows-portable.zip`;
 const portableZipPath = path.join(outDir, portableZipName);
 
 const assets = [
   {
     label: "Windows NSIS installer",
     source: path.join(root, "src-tauri", "target", "release", "bundle", "nsis", "CastRoom AI_0.1.0_x64-setup.exe"),
-    fileName: "CastRoom-AI_0.1.0_x64-setup.exe",
+    fileName: `CastRoom-AI_${assetStamp}_x64-setup.exe`,
     recommended: false,
   },
   {
     label: "Windows MSI installer",
     source: path.join(root, "src-tauri", "target", "release", "bundle", "msi", "CastRoom AI_0.1.0_x64_en-US.msi"),
-    fileName: "CastRoom-AI_0.1.0_x64_en-US.msi",
+    fileName: `CastRoom-AI_${assetStamp}_x64_en-US.msi`,
     recommended: false,
   },
 ];
@@ -111,7 +112,8 @@ fs.rmSync(portableStageDir, { recursive: true, force: true });
 const copied = [];
 for (const asset of assets) {
   if (!fs.existsSync(asset.source)) {
-    throw new Error(`Missing release asset source: ${asset.source}`);
+    console.warn(`Skipping missing release asset source: ${asset.source}`);
+    continue;
   }
   const target = path.join(outDir, asset.fileName);
   fs.copyFileSync(asset.source, target);
@@ -136,6 +138,11 @@ copied.unshift({
 const checksumLines = copied.map((asset) => `${asset.sha256}  ${asset.fileName}`);
 fs.writeFileSync(path.join(outDir, "SHA256SUMS.txt"), `${checksumLines.join("\n")}\n`, "utf8");
 
+const alternativeAssets = copied.filter((asset) => !asset.recommended);
+const alternativeSection = alternativeAssets.length
+  ? `\nAlternative:\n\n- ${alternativeAssets.map((asset) => asset.fileName).join("\n- ")}\n`
+  : "";
+
 const releaseNotes = `# CastRoom AI ${version}
 
 This is an early Windows test build.
@@ -145,10 +152,7 @@ This is an early Windows test build.
 Recommended:
 
 - ${copied.find((asset) => asset.recommended)?.fileName}
-
-Alternative:
-
-- ${copied.filter((asset) => !asset.recommended).map((asset) => asset.fileName).join("\n- ")}
+${alternativeSection}
 
 ## Important notes
 

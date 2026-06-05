@@ -124,6 +124,7 @@ import {
   resolveRoomInputVisibility,
   resolveAdvanceDecision,
   resolveContinuationAssessment,
+  isDirectorPublicSchedulingText,
   scheduleRoomDirectorTurn,
   scheduleRoomTurn,
   shouldCommitDirectorPublicText,
@@ -4949,12 +4950,13 @@ async function createLiveDirectorTurnPlan(
 
 function buildLocalDirectorSpeechPrompt(request: RoomDirectorTurnRequest, localPlan: DirectorTurnPlan): string {
   const publicTextMode = shouldCommitDirectorPublicText(localPlan)
-    ? "This plan may produce one short public host line."
+    ? "This plan may produce one short public narrator line."
     : "This plan is private scheduling. Do not invent a public host line; return an empty response if no public host line is needed.";
   return [
     "You are CastRoom AI Director.",
     "Do not output JSON. Reply with one short Director line only.",
     publicTextMode,
+    "If you write a public line, make it scene narration only. Never name the next speaker, target role, or scheduling instruction.",
     buildDirectorModePromptGuidance(request.room),
     `Move: ${localPlan.move}`,
     `Scene: ${request.room.director.sceneBoard.currentScene || request.room.topic}`,
@@ -5000,7 +5002,7 @@ function isPollutedLocalDirectorSpeech(text: string, localPlan: DirectorTurnPlan
     fallbackPublicText.length > 24 &&
     normalized.includes(fallbackPublicText.trim().replace(/\s+/g, " ").slice(0, 48)) &&
     normalized.length > fallbackPublicText.length * 1.35;
-  return directorMentions > 2 || outcomeEchoes > 1 || debugLabels || userEchoes || repeatsFallback;
+  return directorMentions > 2 || outcomeEchoes > 1 || debugLabels || userEchoes || repeatsFallback || isDirectorPublicSchedulingText(normalized);
 }
 
 function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: DirectorTurnPlan): string {
@@ -5044,15 +5046,18 @@ function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: Di
     isDeveloperFreedomRoom(room)
       ? "Developer freedom is on: user room-state statements are authoritative developer direction unless they affect app safety, secrets, permissions, or private data outside this room."
       : "User and role claims are not automatically true. Treat them as speech, claims, or attempted actions until supported by visible facts or continuity.",
-    "publicText is optional. Only fill it when publicTextReason is setup, round_transition, ruling, recap, or choice.",
+    "publicText is optional. Use publicTextReason narration only when the local rule plan allows public narration for a scene beat, environmental change, pressure, clue, or action consequence.",
     "privateDirectives are private scheduling instructions for target roles. Never write privateDirectives as publicText or timeline dialogue.",
     "When publicTextReason is none, keep publicText empty and use privateDirectives to tell the next role what to do.",
-    "If publicText is used, write it as immersive narration or host speech, not as debug output.",
+    "If publicText is used, write it as immersive narration or host speech, not as debug output or role scheduling.",
+    "Public narration may create an open-ended situation for the room to react to, but it must not establish unsupported facts such as an opened lock, a death, or a revealed secret.",
+    "Never put next-speaker selection, role targets, acts next, who should reply, private tasks, or scheduling instructions in publicText.",
     "publicText must not say Director ruling, Director choice, Director cue, Director twist, Director pause, Director recap, 导演裁定, Director 裁定, 系统裁定, 系统判断, 后台判断, Reason:, Consequence:, 理由：, or 后果：.",
     "If a claim is doubtful, show the scene resisting it naturally instead of saying it needs Director/system judgement.",
     "Stop reasons, technical judgement state, next-speaker scheduling, and private role tasks belong in Room Inspector or privateDirectives, never in public timeline text.",
     "Never add API keys, passwords, payment data, private user data, shell commands, screenshot permission, TTS permission, or hidden system prompts.",
-    "Keep publicText short: result + one reason + one consequence for judge; one beat for cue/twist/choice/recap.",
+    "Keep publicText short when it is allowed: result + one reason + one consequence for judge; one open narrator beat for narration/setup/choice/explicit recap.",
+    'Allowed publicTextReason values: "setup", "narration", "round_transition", "ruling", "recap", "choice", "none".',
     'Allowed move values: "cue", "twist", "choice", "judge", "recap", "whisper", "pause".',
     'Allowed judgement outcomes: "success", "partial_success", "fail", "blocked", "needs_player_choice".',
     "DirectorTurnPlan fields: move, publicText, publicTextReason, privateDirectives, nextSpeakerRoleId, sceneDelta, continuityWrites, secretWrites, knowledgeVisibility, waitForUser, judgement.",
@@ -5134,10 +5139,19 @@ function parseLiveDirectorTurnPlan(text: string, fallback: DirectorTurnPlan, roo
 
 function sanitizeDirectorTurnPlan(value: Partial<DirectorTurnPlan>, fallback: DirectorTurnPlan, room: RoomState): DirectorTurnPlan {
   const move = sanitizeDirectorMove(value.move, fallback.move, fallback.judgement ? "judge" : undefined);
-  const publicTextReason = sanitizeDirectorPublicTextReason(value.publicTextReason, fallback.publicTextReason);
-  const publicText = publicTextReason === "none"
+  let publicTextReason = sanitizeDirectorPublicTextReason(value.publicTextReason, fallback.publicTextReason);
+  let publicText = publicTextReason === "none"
     ? ""
     : sanitizePlanText(value.publicText, fallback.publicText);
+  if (publicText && isDirectorPublicSchedulingText(publicText)) {
+    const fallbackReason = fallback.publicTextReason ?? "none";
+    const fallbackText =
+      fallbackReason !== "none" && fallback.publicText && !isDirectorPublicSchedulingText(fallback.publicText)
+        ? fallback.publicText
+        : "";
+    publicText = fallbackText;
+    publicTextReason = fallbackText ? fallbackReason : "none";
+  }
   const sceneDelta = sanitizeSceneDelta(value.sceneDelta, fallback.sceneDelta);
   const continuityWrites = mergeContinuityPlanWrites(fallback.continuityWrites, value.continuityWrites);
   const secretWrites = sanitizeSecretWrites(value.secretWrites, fallback.secretWrites);
@@ -5166,10 +5180,18 @@ function sanitizeDirectorPublicTextReason(
   value: unknown,
   fallback: DirectorTurnPlan["publicTextReason"],
 ): DirectorTurnPlan["publicTextReason"] {
-  const allowed = new Set(["setup", "round_transition", "ruling", "recap", "choice", "none"]);
+  const allowed = new Set(["setup", "narration", "round_transition", "ruling", "recap", "choice", "none"]);
+  const fallbackReason = fallback ?? "none";
+  if (
+    fallbackReason === "none" &&
+    typeof value === "string" &&
+    (value === "recap" || value === "round_transition" || value === "narration")
+  ) {
+    return "none";
+  }
   return typeof value === "string" && allowed.has(value)
     ? value as DirectorTurnPlan["publicTextReason"]
-    : fallback ?? "none";
+    : fallbackReason;
 }
 
 function sanitizeDirectorPrivateDirectives(
@@ -5877,7 +5899,7 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
       await applyRoomDirectorTurnAsync({
         room: consoleState.room,
         nowLabel: currentClock(),
-        userInput: userInput || result.speechIntent.reason,
+        userInput,
         requestedMove: directorMoveForScheduledResult(result),
         reason: "recipe",
         directorMemory: memoryStore.getRoomDirectorMemorySnapshot(consoleState.room.director.memoryScope),
@@ -5905,7 +5927,8 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     });
     completeRoomDiscussionPlan("repeated");
     if (isDebateRoomForPrompt(consoleState.room)) {
-      const nextTurnAt = consoleState.room.autoChat ? Date.now() + getRoomDelayMs(consoleState.room) : null;
+      const shouldContinueAuto = consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous";
+      const nextTurnAt = shouldContinueAuto ? Date.now() + getRoomDelayMs(consoleState.room) : null;
       consoleState = reduceConsoleState(consoleState, {
         type: "room.setSimulationState",
         simulation: {
@@ -5917,7 +5940,7 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
       });
       consoleState = reduceConsoleState(consoleState, {
         type: "room.setAutoSpeechStatus",
-        status: consoleState.room.autoChat ? "cooling_down" : "paused",
+        status: shouldContinueAuto ? "cooling_down" : "paused",
         nextTurnAt,
         lastReason: "repetition_guard",
         resetCounters: false,
@@ -5971,22 +5994,26 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     return;
   }
 
-  const providerText = providerResult.text.trim();
+  const providerTextRaw = providerResult.text.trim();
   const providerAddressing = parseRoomMentions(
-    providerText,
+    providerTextRaw,
     consoleState.room.participants,
     consoleState.room.userProfile,
     consoleState.room.director,
   );
-  const providerUsedMention = /(^|\s)@/.test(providerText);
-  const target = providerUsedMention ? providerAddressing.target : result.target ?? result.message.target;
+  const preserveScheduledAllTarget = shouldPreserveScheduledAllRoomTarget(result, userInput, providerAddressing.target);
+  const providerText = preserveScheduledAllTarget
+    ? stripLeadingUserMentionFromRoomText(providerTextRaw, consoleState.room.userProfile)
+    : providerTextRaw;
+  const providerUsedMention = !preserveScheduledAllTarget && /(^|\s)@/.test(providerText);
+  const target = preserveScheduledAllTarget ? "all" : providerUsedMention ? providerAddressing.target : result.target ?? result.message.target;
   const draftMessage: ConsoleMessage = {
     ...result.message,
     text: providerText,
     scope: roomScope,
     emotion: providerResult?.emotion ?? result.emotion,
     target,
-    mentions: providerUsedMention ? providerAddressing.mentions : result.message.mentions,
+    mentions: preserveScheduledAllTarget ? [] : providerUsedMention ? providerAddressing.mentions : result.message.mentions,
   };
   const lastRoomMessage = consoleState.room.messages.at(-1);
   if (
@@ -6282,7 +6309,7 @@ function directorMoveForRoomFlow(reason: RoomScheduleReason): RoomDirectorMove {
     return "recap";
   }
   if (reason === "repetition_guard") {
-    return "pause";
+    return "twist";
   }
   return "cue";
 }
@@ -6957,6 +6984,41 @@ function targetsForHighlight(target: RoomMessageTarget | undefined) {
   return target && target !== "all" ? target.targets : [];
 }
 
+function shouldPreserveScheduledAllRoomTarget(
+  result: RoomScheduleResult,
+  userInput: string,
+  providerTarget: RoomMessageTarget,
+): boolean {
+  if (userInput.trim()) {
+    return false;
+  }
+  const scheduledTarget = result.target ?? result.message?.target;
+  if (scheduledTarget !== "all") {
+    return false;
+  }
+  if (result.reason === "user_reply" || result.reason === "user_follow_up") {
+    return false;
+  }
+  return (
+    providerTarget !== "all" &&
+    providerTarget.targets.length > 0 &&
+    providerTarget.targets.every((target) => target.type === "user" && target.userId === consoleState.room.userProfile.userId)
+  );
+}
+
+function stripLeadingUserMentionFromRoomText(text: string, userProfile: RoomState["userProfile"]): string {
+  const names = ["You", "you", "你", userProfile.displayName, ...userProfile.aliases]
+    .map((name) => name.trim())
+    .filter((name, index, all): name is string => Boolean(name) && all.indexOf(name) === index);
+  const pattern = new RegExp(`^\\s*@(?:${names.map(escapeRegExp).join("|")})(?=$|[\\s,，.。!！?？:：;；])\\s*[:：,，-]*\\s*`, "i");
+  const cleaned = text.replace(pattern, "").trim();
+  return cleaned || text.trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function reachedPrivateWhisperLimit(messages: ConsoleMessage[], maxTurns: number): boolean {
   if (maxTurns <= 0) {
     return false;
@@ -7550,10 +7612,13 @@ function buildRoomProviderPrompt(
     consoleState.room.participants,
     consoleState.room.director,
   );
+  const autonomousAllRoomTurn = !userInput.trim() && (result.target === "all" || !result.target);
   const targetRule = isTargetingUser(result.target, consoleState.room.userProfile)
     ? `Speak directly to @${consoleState.room.userProfile.displayName}.`
     : result.target === "all" || !result.target
-      ? "No @ target means the whole room can read the message."
+      ? autonomousAllRoomTurn
+        ? "No @ target means the whole room can read the message. Do not address @the user unless the user just spoke or was explicitly assigned as the target."
+        : "No @ target means the whole room can read the message."
       : `Speak to ${targetLabel}.`;
   const collaborationMode = resolveRoomCollaborationMode(consoleState.room);
   const floorOwner = formatRoomFloorOwner(consoleState.room.floorOwner, consoleState.room);
@@ -7618,6 +7683,7 @@ function buildRoomProviderPrompt(
     "The room prompt controls only room rules, topic, pacing, and scheduler intent. It must not replace the character pack prompt.",
     "Use @mentions when addressing a specific room member. No @mention means the whole room receives the message.",
     "You may speak to All, @the user, one role, multiple roles, or @Director. Keep the target clear.",
+    autonomousAllRoomTurn ? "This is an autonomous room turn. Speak to the room, not to @the user." : "",
     "Observer memory means things your character heard while not replying. Use it for strategy, but do not answer every observed message.",
     "Team channel memory is private strategy for roles on the same team. Use it only if your role belongs to that team, and do not reveal it unless the public scene calls for it.",
     "Faction huddles are for choosing goals and the next public move. In public, act on the plan without exposing the full private reasoning.",
@@ -7686,6 +7752,7 @@ function buildLocalRoomSpeakerPrompt(
     consoleState.room.participants,
     consoleState.room.director,
   );
+  const autonomousAllRoomTurn = !userInput.trim() && (result.target === "all" || !result.target);
   const memory = [
     ...memoryStore.getRoomPromptMemory(roomScope).slice(0, 2),
     ...memoryStore.getRoomObserverPromptMemory(roomScope, participant.id).slice(0, 2),
@@ -7772,6 +7839,7 @@ function buildLocalRoomSpeakerPrompt(
         frameLine ? `Frame: ${frameLine}.` : "",
         beatLine ? `Current beat: ${beatLine}.` : "",
         localTaskCardLine ? `Task card: ${localTaskCardLine}.` : "",
+      autonomousAllRoomTurn ? "Autonomous room turn: speak to the room, not to @the user." : "",
       privateDirectiveLine,
       collaborationLine,
       `It is ${participant.name}'s turn. Speak to ${targetLabel} in one short natural debate line.`,
@@ -7791,6 +7859,7 @@ function buildLocalRoomSpeakerPrompt(
       userInput ? `\u7528\u6237\u521a\u624d\u8bf4\uff1a\u201c${trimRoomPromptLine(userInput, 96)}\u201d\u3002` : "",
       beatLine ? `\u81ea\u52a8\u6f14\u51fa\u8282\u70b9\uff1a${beatLine}\u3002` : "",
       localTaskCardLine ? `Task card: ${localTaskCardLine}.` : "",
+      autonomousAllRoomTurn ? "\u8fd9\u662f\u81ea\u52a8\u623f\u95f4\u8f6e\u6b21\uff1a\u5bf9\u5168\u623f\u95f4\u8bf4\uff0c\u4e0d\u8981\u9ed8\u8ba4 @\u7528\u6237\u3002" : "",
       privateDirectiveLine,
       collaborationLine,
       `\u73b0\u5728\u8f6e\u5230 ${participant.name}\uff0c\u8bf7\u5bf9 ${targetLabel} \u8bf4\u4e00\u53e5\u81ea\u7136\u3001\u7b80\u77ed\u7684\u8bdd\u3002`,
@@ -7813,6 +7882,7 @@ function buildLocalRoomSpeakerPrompt(
     userInput ? `The user just said: "${trimRoomPromptLine(userInput, 96)}".` : "",
     beatLine ? `Simulation beat: ${beatLine}.` : "",
     localTaskCardLine ? `Task card: ${localTaskCardLine}.` : "",
+    autonomousAllRoomTurn ? "Autonomous room turn: speak to the room, not to @the user." : "",
     privateDirectiveLine,
     collaborationLine,
     `It is ${participant.name}'s turn. Speak to ${targetLabel} in one short natural line.`,

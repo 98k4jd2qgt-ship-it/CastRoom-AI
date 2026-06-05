@@ -13,6 +13,15 @@ const directorTurn = sliceFunction("applyRoomDirectorTurnAsync");
 mustIncludeIn(directorTurn, "effect: (submitResult) =>", "Director runtime effect is derived from Director body result");
 mustIncludeIn(directorTurn, "pendingFollowup: submitResult.ok ? submitResult.result.pendingFollowup : undefined", "Director body can return executable follow-up");
 
+const scheduler = fs.readFileSync("src/core/roomScheduler.ts", "utf8");
+mustInclude(scheduler, 'isDirectorPublicSchedulingText(plan.publicText)', "Director public text blocks scheduling language");
+mustInclude(scheduler, 'return "narration";', "Director cue/twist can publish narration beats");
+mustInclude(scheduler, "isExplicitPublicDirectorTextRequest(userInput, move)", "Director explicit public request helper is retained for recap compatibility");
+mustInclude(scheduler, 'reason !== "mentioned"', "Director private directives only consider @You for explicit Director mentions");
+mustInclude(scheduler, "shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)", "Director private directives decide whether the user is a valid target");
+mustInclude(scheduler, 'target: shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)', "Director follow-up directives do not default to @You");
+mustInclude(scheduler, 'directorHandoff("repetition_guard", room, nowMs + delayMs)', "Auto repetition guard hands off to backstage Director instead of stopping");
+
 const directorBody = sliceFunction("executeRoomDirectorTurnBody");
 mustIncludeIn(directorBody, "const directorEffect = applyRoomDirectorTurn(result)", "Director body captures apply effect");
 mustIncludeIn(directorBody, "pendingFollowup: directorEffect.pendingFollowup", "Director body returns pending follow-up");
@@ -32,6 +41,10 @@ const createFollowup = sliceFunction("createDirectorPendingFollowup");
 mustIncludeIn(createFollowup, 'mode: "one_shot"', "Director follow-up is finite by default");
 mustIncludeIn(createFollowup, "targetRoleId", "Director follow-up can target a role");
 mustIncludeIn(createFollowup, "privateDirective", "Director private directives can drive hidden follow-up tasks");
+
+const sanitizePublicTextReason = sliceFunction("sanitizeDirectorPublicTextReason");
+mustIncludeIn(sanitizePublicTextReason, 'fallbackReason === "none"', "Live Director plans cannot escalate hidden recaps into public text");
+mustIncludeIn(sanitizePublicTextReason, 'value === "recap" || value === "round_transition" || value === "narration"', "Live Director public recap/cue/narration escalation is blocked");
 
 const applyEffect = sliceFunction("applyRoomRuntimeEffect");
 mustIncludeIn(applyEffect, 'effect.nextTimerAction === "schedule_once"', "RoomRuntime effect handles one-shot schedule action");

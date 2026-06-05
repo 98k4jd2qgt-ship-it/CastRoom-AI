@@ -51,15 +51,33 @@ store.recordMemoryEvent({
   input: {
     scope: "room:demo",
     speaker: "You",
-    text: "记住目标是找到钥匙",
+    text: "钥匙交给 Mio",
     source: "user",
     now,
   },
 });
 
+const initialPublicRoomClaims = store.listGraphClaimInputs("room:demo").filter((claim) => claim.text.includes("钥匙"));
+expect(initialPublicRoomClaims.length === 0, `single public room message should not export active/candidate graph claims, got ${initialPublicRoomClaims.length}`);
+
+for (let index = 1; index < 3; index += 1) {
+  store.recordMemoryEvent({
+    kind: "room_message",
+    memorySavingEnabled: true,
+    input: {
+      scope: "room:demo",
+      speaker: "You",
+      text: "钥匙交给 Mio",
+      source: "user",
+      now: new Date(now.getTime() + index * 24 * 60 * 60 * 1000),
+    },
+  });
+}
+
 const publicRoomClaims = store.listGraphClaimInputs("room:demo").filter((claim) => claim.text.includes("钥匙"));
-expect(publicRoomClaims.length === 1, `public room memory should export one room claim, got ${publicRoomClaims.length}`);
+expect(publicRoomClaims.length === 1, `stable public room memory should export one review room claim, got ${publicRoomClaims.length}`);
 expect(publicRoomClaims[0]?.visibility === "public", "public room memory should stay public");
+expect(publicRoomClaims[0]?.status === "needs_review", "stable public room memory should stay needs_review until confirmed");
 expect(store.listGraphClaimInputs("character:demo").length === 0, "room memory should not leak into one-on-one character memory");
 
 store.recordMemoryEvent({

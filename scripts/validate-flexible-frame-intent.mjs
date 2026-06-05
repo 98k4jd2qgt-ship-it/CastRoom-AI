@@ -100,7 +100,9 @@ assert(
 );
 
 assert(
-  scheduler.includes("resolveRoomFrameInterpretation") && scheduler.includes("resolveDirectorModeIntent(input.room, input.userInput, frameInterpretation)"),
+  scheduler.includes("resolveRoomFrameInterpretation") &&
+    (scheduler.includes("resolveDirectorModeIntent(input.room, input.userInput, frameInterpretation)") ||
+      scheduler.includes("resolveDirectorModeIntent(input.room, publicUserInput, frameInterpretation)")),
   "roomScheduler must build interpretation before resolving Director mode intent",
 );
 

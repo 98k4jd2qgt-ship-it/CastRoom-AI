@@ -115,21 +115,11 @@ Windows builds are distributed through **GitHub Releases**, not committed to the
 
 Windows 构建通过 **GitHub Releases** 分发，不直接提交到源码仓库。portable zip 是最简单的免安装选择。
 
-Download the latest build:
-
-- [Latest GitHub Release](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest)
-- Recommended for testers: `CastRoom-AI_0.1.0_windows-portable.zip`
-- Installer: `CastRoom-AI_0.1.0_x64-setup.exe`
-- Alternative MSI: `CastRoom-AI_0.1.0_x64_en-US.msi`
+Download the latest build from [GitHub Releases](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest). Use the newest portable zip for no-install testing, or the newest installer if you prefer an installed build.
 
 Portable run path: portable zip -> extract -> open the `CastRoom AI` folder -> run `CastRoom AI.exe`.
 
-下载最新测试版：
-
-- [GitHub 最新 Release](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest)
-- 测试者推荐：`CastRoom-AI_0.1.0_windows-portable.zip`
-- 安装包：`CastRoom-AI_0.1.0_x64-setup.exe`
-- 备用 MSI：`CastRoom-AI_0.1.0_x64_en-US.msi`
+从 [GitHub 最新 Release](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest) 下载最新测试版。免安装测试优先选择最新 portable zip；如果想安装到系统里，再选择最新 installer。
 
 Portable 运行路径：portable zip -> 解压 -> 打开 `CastRoom AI` 文件夹 -> 运行 `CastRoom AI.exe`。
 

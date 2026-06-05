@@ -147,13 +147,13 @@ expect(browseView.issues?.some((issue) => issue.kind === "visibility_leak"), "go
 expect(browseView.issues?.some((issue) => issue.kind === "low_quality"), "governance issues should include low quality", failures);
 
 const duplicateView = repo.queryGraphViewSync({ ...baseContext, mode: "duplicates" });
-expect(duplicateView.nodes.some((node) => node.sourceClaimId === duplicateA.id), "duplicates mode should keep duplicate winner candidate", failures);
-expect(duplicateView.nodes.some((node) => node.sourceClaimId === duplicateB.id), "duplicates mode should keep duplicate merge candidate", failures);
-expect(!duplicateView.nodes.some((node) => node.sourceClaimId === conflictLeft.id), "duplicates mode should filter unrelated conflicts", failures);
+expect(viewHasClaim(duplicateView, duplicateA.id), "duplicates mode should keep duplicate winner candidate", failures);
+expect(viewHasClaim(duplicateView, duplicateB.id), "duplicates mode should keep duplicate merge candidate", failures);
+expect(!viewHasClaim(duplicateView, conflictLeft.id), "duplicates mode should filter unrelated conflicts", failures);
 
 const conflictView = repo.queryGraphViewSync({ ...baseContext, mode: "conflicts" });
-expect(conflictView.nodes.some((node) => node.sourceClaimId === conflictLeft.id), "conflicts mode should include left conflict claim", failures);
-expect(conflictView.nodes.some((node) => node.sourceClaimId === conflictRight.id), "conflicts mode should include right conflict claim", failures);
+expect(viewHasClaim(conflictView, conflictLeft.id), "conflicts mode should include left conflict claim", failures);
+expect(viewHasClaim(conflictView, conflictRight.id), "conflicts mode should include right conflict claim", failures);
 
 const merged = await repo.mergeClaims({ winnerClaimId: duplicateA.id, duplicateClaimIds: [duplicateB.id], changedBy: "test" });
 expect(merged.evidenceCount >= duplicateA.evidenceCount + duplicateB.evidenceCount, "mergeClaims should combine evidence count", failures);
@@ -168,3 +168,7 @@ if (failures.length > 0) {
 }
 
 console.log("Memory graph governance validation passed.");
+
+function viewHasClaim(view, claimId) {
+  return view.nodes.some((node) => node.sourceClaimId === claimId) || view.edges.some((edge) => edge.sourceClaimId === claimId);
+}

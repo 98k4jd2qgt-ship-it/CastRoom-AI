@@ -53,7 +53,7 @@ export interface DirectorModePolicy {
 export const DIRECTOR_MODE_POLICIES: Record<DirectorModeKey, DirectorModePolicy> = {
   casual: {
     mode: "casual",
-    allowedMoves: ["recap", "choice", "pause", "cue"],
+    allowedMoves: ["recap", "choice", "pause", "cue", "whisper"],
     defaultMove: "recap",
     defaultIntent: "casual_pace",
     directorTask: "Keep the room readable, privately cue roles when useful, lightly recap only when needed, and pause on repetition.",
@@ -67,7 +67,7 @@ export const DIRECTOR_MODE_POLICIES: Record<DirectorModeKey, DirectorModePolicy>
   },
   story: {
     mode: "story",
-    allowedMoves: ["judge", "choice", "cue", "twist", "recap", "pause"],
+    allowedMoves: ["judge", "choice", "cue", "twist", "recap", "pause", "whisper"],
     defaultMove: "cue",
     defaultIntent: "story_action_attempt",
     directorTask: "Judge actions, protect continuity, privately assign role tasks, surface consequences, and offer choices in immersive story language.",
@@ -79,7 +79,7 @@ export const DIRECTOR_MODE_POLICIES: Record<DirectorModeKey, DirectorModePolicy>
   },
   mystery: {
     mode: "mystery",
-    allowedMoves: ["cue", "choice", "twist", "judge", "recap", "pause"],
+    allowedMoves: ["cue", "choice", "twist", "judge", "recap", "pause", "whisper"],
     defaultMove: "cue",
     defaultIntent: "mystery_clue_request",
     directorTask: "Manage clues, hidden truth, false leads, private knowledge, and visibility without spoiling secrets.",
@@ -91,7 +91,7 @@ export const DIRECTOR_MODE_POLICIES: Record<DirectorModeKey, DirectorModePolicy>
   },
   debate: {
     mode: "debate",
-    allowedMoves: ["choice", "recap", "judge", "pause"],
+    allowedMoves: ["choice", "recap", "judge", "pause", "whisper"],
     defaultMove: "choice",
     defaultIntent: "debate_round_control",
     directorTask: "Host the motion, sides, speaker positions, rounds, speaking order, private role directives, and advantage changes without debating as a contestant.",
@@ -102,7 +102,7 @@ export const DIRECTOR_MODE_POLICIES: Record<DirectorModeKey, DirectorModePolicy>
   },
   study: {
     mode: "study",
-    allowedMoves: ["cue", "choice", "recap", "judge", "pause"],
+    allowedMoves: ["cue", "choice", "recap", "judge", "pause", "whisper"],
     defaultMove: "cue",
     defaultIntent: "study_explain",
     directorTask: "Keep learning focused, privately assign small teaching tasks, ask checks, and pause for learner answers.",
@@ -116,7 +116,7 @@ export const DIRECTOR_MODE_POLICIES: Record<DirectorModeKey, DirectorModePolicy>
   },
   planning: {
     mode: "planning",
-    allowedMoves: ["recap", "choice", "judge", "pause", "cue"],
+    allowedMoves: ["recap", "choice", "judge", "pause", "cue", "whisper"],
     defaultMove: "choice",
     defaultIntent: "planning_decision_needed",
     directorTask: "Turn discussion into options, risks, decisions, owners, and private role tasks without inventing constraints.",

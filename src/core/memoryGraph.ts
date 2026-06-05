@@ -34,7 +34,7 @@ export type MemoryGraphClaimKind =
   | "identity"
   | "goal";
 
-export type MemoryGraphClaimStatus = "active" | "disputed" | "superseded" | "archived" | "rejected";
+export type MemoryGraphClaimStatus = "active" | "needs_review" | "disputed" | "superseded" | "archived" | "rejected";
 export type MemoryGraphAuthority = "user" | "developer" | "director" | "character" | "system" | "imported";
 export type MemoryGraphVisibility = "public" | "known_to_roles" | "faction" | "director_only" | "private_character" | "global";
 export type MemoryGraphGovernanceMode = "browse" | "conflicts" | "duplicates" | "visibility" | "quality";
@@ -158,6 +158,7 @@ export interface MemoryGraphQueryContext {
   kinds?: MemoryGraphClaimKind[];
   limit?: number;
   includeDisputed?: boolean;
+  includeNeedsReview?: boolean;
 }
 
 export interface MemoryGraphNeighborContext extends MemoryGraphQueryContext {
@@ -209,10 +210,11 @@ export interface MemoryGraphViewEdge {
   id: string;
   from: string;
   to: string;
-  type: "ABOUT" | "KNOWN_BY" | "ASSERTED_BY" | "CONFLICTS_WITH" | "SUPERSEDES" | "MEMBER_OF" | "HAS_GOAL";
+  type: "ABOUT" | "KNOWN_BY" | "ASSERTED_BY" | "CONFLICTS_WITH" | "SUPERSEDES" | "MEMBER_OF" | "HAS_GOAL" | "OWNS" | "LOCATED_IN" | "TARGETS" | "SUPPORTS" | "MENTIONS";
   label: string;
   visibility: MemoryGraphVisibility;
   dashed?: boolean;
+  sourceClaimId?: string;
 }
 
 export interface MemoryGraphViewModel {
@@ -226,6 +228,7 @@ export interface MemoryGraphViewModel {
   hiddenPrivateCount?: number;
   visibleClaimCount?: number;
   modeClaimCount?: number;
+  pendingReviewCount?: number;
 }
 
 export type MemoryGraphViewContext = MemoryGraphQueryContext & {
@@ -512,7 +515,11 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
     const limit = context.limit ?? (context.localModel ? 3 : 12);
     return [...this.claims.values()]
       .filter((claim) => claim.scope === context.scope)
-      .filter((claim) => claim.status === "active" || (context.includeDisputed && claim.status === "disputed"))
+      .filter((claim) =>
+        claim.status === "active" ||
+        (context.includeDisputed && claim.status === "disputed") ||
+        (context.includeNeedsReview && claim.status === "needs_review")
+      )
       .filter((claim) => !context.kinds || context.kinds.includes(claim.kind))
       .filter((claim) => this.canViewerReadClaim(claim, context))
       .sort((left, right) => memoryGraphPromptScore(right) - memoryGraphPromptScore(left))
@@ -534,6 +541,7 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
         isMemoryGraphClaimConnectedToExpandedNode(claim, expandedNodeIds)
       )
       .sort((left, right) => memoryGraphPromptScore(right) - memoryGraphPromptScore(left));
+    const pendingReviewCount = visibleClaims.filter((claim) => claim.status === "needs_review").length;
     const issues = buildMemoryGraphIssues(visibleClaims, (id) => this.nodes.get(id));
     const visibleIssueClaimIds = memoryGraphIssueClaimIdsForMode(issues, mode);
     const modeClaims =
@@ -555,6 +563,7 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       hiddenPrivateCount,
       visibleClaimCount: visibleClaims.length,
       modeClaimCount: modeClaims.length,
+      pendingReviewCount,
     });
   }
 
@@ -985,7 +994,7 @@ export function memoryGraphClaimFromCompressedEntry(entry: CompressedMemoryEntry
       createdAt: entry.lastSeenAt,
     },
     conflictPolicy: entry.status === "disputed" ? "dispute" : "merge",
-    status: entry.status === "needs_review" ? "active" : (entry.status as MemoryGraphClaimStatus),
+    status: entry.status as MemoryGraphClaimStatus,
     evidenceCount: entry.evidenceCount,
     properties: {
       legacyId: entry.id,
@@ -1027,6 +1036,7 @@ export function buildMemoryGraphViewModel(input: {
   hiddenPrivateCount?: number;
   visibleClaimCount?: number;
   modeClaimCount?: number;
+  pendingReviewCount?: number;
 }): MemoryGraphViewModel {
   const maxNodes = clamp(input.maxNodes ?? 120, 12, 500);
   const nodes = new Map<string, MemoryGraphViewNode>();
@@ -1050,7 +1060,13 @@ export function buildMemoryGraphViewModel(input: {
     edges.set(edge.id, edge);
   };
 
-  for (const claim of input.claims) {
+  const pendingReviewCount = input.pendingReviewCount ?? input.claims.filter((claim) => claim.status === "needs_review").length;
+  const statusFilterActive = Boolean(input.filters?.statuses?.length);
+  const displayClaims = input.mode === "browse" && !statusFilterActive
+    ? input.claims.filter((claim) => claim.status !== "needs_review" || claim.confidence >= 0.8 || claim.evidenceCount >= 3)
+    : input.claims;
+
+  for (const claim of displayClaims) {
     const scopeNodeId = memoryGraphScopeViewNodeId(claim.scope);
     addNode({
       id: scopeNodeId,
@@ -1060,49 +1076,58 @@ export function buildMemoryGraphViewModel(input: {
       scope: claim.scope,
     });
     const claimNodeId = memoryGraphClaimViewNodeId(claim.id);
-    if (!addNode(memoryGraphClaimViewNode(claim))) {
-      continue;
-    }
-    addEdge({
-      id: stableMemoryGraphId("view-edge", `${scopeNodeId}:ABOUT:${claimNodeId}`),
-      from: scopeNodeId,
-      to: claimNodeId,
-      type: "ABOUT",
-      label: "scope",
-      visibility: claim.visibility,
-      dashed: isPrivateMemoryGraphVisibility(claim.visibility),
-    });
     const subject = input.nodeById(claim.subjectNodeId);
+    let subjectNodeId = "";
     if (subject) {
-      const subjectNodeId = memoryGraphEntityViewNodeId(subject.id);
+      subjectNodeId = memoryGraphEntityViewNodeId(subject.id);
       if (addNode(memoryGraphEntityViewNode(subject, "subject"))) {
         addEdge({
-          id: stableMemoryGraphId("view-edge", `${subjectNodeId}:ASSERTED_BY:${claimNodeId}`),
-          from: subjectNodeId,
-          to: claimNodeId,
-          type: "ASSERTED_BY",
-          label: claim.predicate,
+          id: stableMemoryGraphId("view-edge", `${scopeNodeId}:ABOUT:${subjectNodeId}`),
+          from: scopeNodeId,
+          to: subjectNodeId,
+          type: "ABOUT",
+          label: "scope",
           visibility: claim.visibility,
           dashed: isPrivateMemoryGraphVisibility(claim.visibility),
+          sourceClaimId: claim.id,
         });
       }
     }
+    let connectedToObject = false;
     if (claim.objectNodeId) {
       const object = input.nodeById(claim.objectNodeId);
       if (object && !shouldHideMemoryGraphObjectNode(claim, object)) {
         const objectNodeId = memoryGraphEntityViewNodeId(object.id);
-        if (addNode(memoryGraphEntityViewNode(object, "object", claim))) {
+        if (addNode(memoryGraphEntityViewNode(object, "object", claim)) && subjectNodeId) {
+          connectedToObject = true;
           addEdge({
-            id: stableMemoryGraphId("view-edge", `${claimNodeId}:${claim.predicate}:${objectNodeId}`),
-            from: claimNodeId,
+            id: stableMemoryGraphId("view-edge", `${subjectNodeId}:${claim.predicate}:${objectNodeId}:${claim.id}`),
+            from: subjectNodeId,
             to: objectNodeId,
-            type: claim.predicate === "has_goal" ? "HAS_GOAL" : "ABOUT",
+            type: memoryGraphRelationshipViewEdgeType(claim),
             label: claim.predicate,
             visibility: claim.visibility,
             dashed: isPrivateMemoryGraphVisibility(claim.visibility),
+            sourceClaimId: claim.id,
           });
         }
       }
+    }
+    if (!connectedToObject) {
+      if (!addNode(memoryGraphClaimViewNode(claim))) {
+        continue;
+      }
+      const from = subjectNodeId || scopeNodeId;
+      addEdge({
+        id: stableMemoryGraphId("view-edge", `${from}:ASSERTED_BY:${claimNodeId}`),
+        from,
+        to: claimNodeId,
+        type: "ASSERTED_BY",
+        label: claim.predicate,
+        visibility: claim.visibility,
+        dashed: isPrivateMemoryGraphVisibility(claim.visibility),
+        sourceClaimId: claim.id,
+      });
     }
   }
 
@@ -1121,7 +1146,7 @@ export function buildMemoryGraphViewModel(input: {
   }
 
   const claimsByRelation = new Map<string, MemoryGraphClaim[]>();
-  for (const claim of input.claims) {
+  for (const claim of displayClaims) {
     const key = `${claim.scope}:${claim.subjectNodeId}:${claim.predicate}:${claim.visibility}`;
     const items = claimsByRelation.get(key) ?? [];
     items.push(claim);
@@ -1170,7 +1195,8 @@ export function buildMemoryGraphViewModel(input: {
     truncated,
     hiddenPrivateCount: input.hiddenPrivateCount ?? 0,
     visibleClaimCount: input.visibleClaimCount ?? input.claims.length,
-    modeClaimCount: input.modeClaimCount ?? input.claims.length,
+    modeClaimCount: input.modeClaimCount ?? displayClaims.length,
+    pendingReviewCount,
   };
 }
 
@@ -1398,7 +1424,7 @@ function memoryGraphClaimCategoryGroup(claim: MemoryGraphClaim): string {
   if (claim.status === "disputed" || claim.kind === "conflict") {
     return "conflict";
   }
-  if (claim.confidence < 0.45 || claim.status === "rejected" || claim.status === "archived") {
+  if (claim.status === "needs_review" || claim.confidence < 0.45 || claim.status === "rejected" || claim.status === "archived") {
     return "quality";
   }
   if (claim.kind === "judgement") {
@@ -1549,11 +1575,30 @@ function memoryGraphScopeLabel(scope: MemoryScope): string {
 }
 
 function memoryGraphViewEdgeType(type: MemoryGraphEdgeInput["type"]): MemoryGraphViewEdge["type"] {
-  if (type === "CONFLICTS_WITH" || type === "SUPERSEDES" || type === "MEMBER_OF" || type === "HAS_GOAL") {
+  if (type === "CONFLICTS_WITH" || type === "SUPERSEDES" || type === "MEMBER_OF" || type === "HAS_GOAL" || type === "OWNS" || type === "LOCATED_IN" || type === "TARGETS" || type === "SUPPORTS" || type === "MENTIONS") {
     return type;
   }
   if (type === "KNOWN_BY" || type === "ASSERTED_BY") {
     return type;
+  }
+  return "ABOUT";
+}
+
+function memoryGraphRelationshipViewEdgeType(claim: MemoryGraphClaim): MemoryGraphViewEdge["type"] {
+  if (claim.predicate === "has_goal" || claim.kind === "goal") {
+    return "HAS_GOAL";
+  }
+  if (claim.predicate === "located_in") {
+    return "LOCATED_IN";
+  }
+  if (claim.predicate === "has_item" || claim.kind === "item") {
+    return "OWNS";
+  }
+  if (claim.predicate === "asserts_stance" || claim.kind === "stance" || claim.kind === "argument") {
+    return "SUPPORTS";
+  }
+  if (claim.kind === "secret" || claim.kind === "clue") {
+    return "MENTIONS";
   }
   return "ABOUT";
 }

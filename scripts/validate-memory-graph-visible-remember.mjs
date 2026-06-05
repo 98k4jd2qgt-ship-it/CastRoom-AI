@@ -55,13 +55,17 @@ const preferenceClaim = graphInputs.find((claim) => claim.text.includes("67"));
 expect(Boolean(preferenceClaim), "listGraphClaimInputs should expose the visible 67 memory to graph sync", failures);
 expect(preferenceClaim?.kind === "preference", "remember preference should become a preference graph claim", failures);
 expect(preferenceClaim?.visibility === "private_character", "one-on-one remember preference should be private_character", failures);
-expect(preferenceClaim?.authority === "user", "one-on-one remember preference should keep user authority instead of legacy system authority", failures);
+expect(preferenceClaim?.status === "needs_review", "one-on-one remember preference should wait for confirmation", failures);
 expect(preferenceClaim?.text === "用户偏好：67。", `one-on-one remember preference should use clean extracted text, got ${preferenceClaim?.text ?? "<none>"}`, failures);
 expect((preferenceClaim?.confidence ?? 0) >= 0.9, "explicit remember preference should have high confidence", failures);
 expect(graphInputs.filter((claim) => claim.text.includes("67")).length === 1, "graph sync should export the 67 preference once", failures);
 
+store.confirmCandidate(longTerm.find((entry) => entry.text.includes("67"))?.id ?? "");
+const confirmedClaim = store.listGraphClaimInputs(scope).find((claim) => claim.text.includes("67"));
+expect(confirmedClaim?.status === "active", "confirmed remember preference should become active", failures);
+
 const repo = new InMemoryMemoryGraphRepository();
-for (const claim of graphInputs) {
+for (const claim of store.listGraphClaimInputs(scope)) {
   repo.mergeClaimSync(claim);
 }
 
@@ -71,7 +75,7 @@ const browseView = repo.queryGraphViewSync({
   mode: "browse",
   maxNodes: 120,
 });
-expect(browseView.nodes.some((node) => node.kind === "claim" && node.label.includes("67")), "browse graph should show the 67 preference claim", failures);
+expect(viewHasClaim(browseView, confirmedClaim?.id), "browse graph should show the 67 preference relationship", failures);
 expect((browseView.visibleClaimCount ?? 0) >= 1, "browse graph should report visible claim count", failures);
 expect((browseView.modeClaimCount ?? 0) >= 1, "browse graph should report mode claim count", failures);
 
@@ -82,7 +86,7 @@ const visibilityView = repo.queryGraphViewSync({
   maxNodes: 120,
 });
 expect(
-  !visibilityView.nodes.some((node) => node.kind === "claim" && node.label.includes("67")),
+  !viewHasClaim(visibilityView, confirmedClaim?.id),
   "visibility governance mode should not display normal private_character preference claims",
   failures,
 );
@@ -114,8 +118,8 @@ expect(
   failures,
 );
 expect(
-  /graphClaims:\s*memoryStore\.listGraphClaims\(/.test(petConsoleSource),
-  "Memory dashboard scope builders should read graph claims from MemoryStore",
+  /graphClaims:\s*memoryStore\.listGraphClaimsForViewer\(/.test(petConsoleSource),
+  "Memory dashboard scope builders should read viewer-aware graph claims from MemoryStore",
   failures,
 );
 expect(
@@ -153,3 +157,7 @@ if (failures.length > 0) {
 }
 
 console.log("Visible remember graph validation passed.");
+
+function viewHasClaim(view, claimId) {
+  return Boolean(claimId) && (view.nodes.some((node) => node.sourceClaimId === claimId) || view.edges.some((edge) => edge.sourceClaimId === claimId));
+}

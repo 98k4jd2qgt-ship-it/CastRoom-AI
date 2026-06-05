@@ -98,8 +98,21 @@ function validatePromotion() {
   const candidate = store.recordShortTermMention({ scope, text: facts[2], source: "user", now: addDays(base, 2) });
 
   expect(Boolean(candidate), "third equivalent semantic mention should create long-term memory");
-  expect(candidate?.confirmed === true, "promoted memory should be active immediately");
-  expect(candidate?.requiresConfirmation === false, "promoted memory should not wait for manual confirmation");
+  expect(candidate?.confirmed === false, "promoted memory should wait for manual confirmation");
+  expect(candidate?.requiresConfirmation === true, "promoted memory should require manual confirmation");
+  expect(
+    store.listCompressedMemories(scope).some((entry) => entry.status === "needs_review"),
+    "promoted memory should be stored as a review candidate",
+  );
+  expect(
+    store.listCompressedMemories(scope).every((entry) => entry.status !== "active"),
+    "unconfirmed promoted memory should not become active prompt memory",
+  );
+  store.confirmCandidate(candidate.id);
+  expect(
+    store.listCompressedMemories(scope).some((entry) => entry.status === "active"),
+    "confirmed promoted memory should become active long-term memory",
+  );
   expect(store.listCandidateMemories(scope).length === 1, "long-term memory should stay inside character scope");
   expect(store.listCandidateMemories("room:demo-room").length === 0, "character long-term memory must not leak into room scope");
 }
@@ -114,8 +127,12 @@ function validateExplicitRemember() {
   });
 
   expect(Boolean(candidate), "explicit remember phrase should create long-term memory before three mentions");
-  expect(candidate?.confirmed === true, "explicit remember should be active immediately");
-  expect(candidate?.requiresConfirmation === false, "explicit remember should not wait for manual confirmation");
+  expect(candidate?.confirmed === false, "explicit remember should wait for manual confirmation");
+  expect(candidate?.requiresConfirmation === true, "explicit remember should require manual confirmation");
+  expect(
+    store.listCompressedMemories("character:demo-rin").some((entry) => entry.status === "needs_review"),
+    "explicit remember should create a review candidate",
+  );
 
   const directPreference = store.recordShortTermMention({
     scope: "character:demo-rin",
@@ -213,12 +230,15 @@ function validateAutomaticPromotionAndSerialization() {
   });
 
   expect(Boolean(candidate), "long-term memory should exist after explicit remember");
-  expect(candidate?.confirmed === true, "long-term memory should be active without manual confirmation");
-  expect(candidate?.requiresConfirmation === false, "long-term memory should not require manual confirmation");
+  expect(candidate?.confirmed === false, "long-term memory should wait for manual confirmation");
+  expect(candidate?.requiresConfirmation === true, "long-term memory should require manual confirmation");
 
   const data = store.serialize();
-  expect(data.candidates.some((item) => item.confirmed && item.requiresConfirmation === false), "serialized data should preserve active long-term memory state");
-  expect(data.compressedMemories.some((item) => item.status === "active"), "serialized data should include compressed long-term memory");
+  expect(data.candidates.some((item) => item.confirmed === false && item.requiresConfirmation === true), "serialized data should preserve review candidate state");
+  expect(data.compressedMemories.some((item) => item.status === "needs_review"), "serialized data should include review long-term memory candidate");
+
+  store.confirmCandidate(candidate.id);
+  expect(store.listCompressedMemories("character:demo-kai").some((item) => item.status === "active"), "confirmed long-term memory should become active");
 
   store.deleteCandidate(candidate.id);
   expect(store.listCandidateMemories("character:demo-kai").length === 0, "deleteCandidate should remove long-term memory");
@@ -484,8 +504,8 @@ function validateSameRoomSamePackRoleInstanceIsolation() {
   const firstInstanceScope = "room:same-room:role:mio";
   const secondInstanceScope = "room:same-room:role:mio-2";
 
-  recordThreeTimes(store, firstInstanceScope, "记住这个房间里的第一个 Mio 喜欢蓝色", base);
-  recordThreeTimes(store, secondInstanceScope, "记住这个房间里的第二个 Mio 喜欢红色", addDays(base, 0.25));
+  confirmCandidateFrom(recordThreeTimes(store, firstInstanceScope, "记住这个房间里的第一个 Mio 喜欢蓝色", base), store);
+  confirmCandidateFrom(recordThreeTimes(store, secondInstanceScope, "记住这个房间里的第二个 Mio 喜欢红色", addDays(base, 0.25)), store);
 
   const firstPromptMemory = store.getPromptMemory(firstInstanceScope).join("\n");
   const secondPromptMemory = store.getPromptMemory(secondInstanceScope).join("\n");
@@ -508,8 +528,8 @@ function validateRecordMemoryEventAlwaysOn() {
   });
 
   expect(result.saved === true, "recordMemoryEvent should ignore legacy disabled flags because memory is always on");
-  expect(store.listCompressedMemories("character:demo-mio").length === 1, "graph-first explicit memory should appear in long-term list even with legacy disabled flag");
-  expect(store.listShortTerm("character:demo-mio").length === 0, "graph-first explicit memory should not create a duplicate short-term row");
+  expect(store.listCompressedMemories("character:demo-mio").some((entry) => entry.status === "needs_review"), "explicit memory should appear as a review long-term candidate even with legacy disabled flag");
+  expect(store.listShortTerm("character:demo-mio").length === 1, "explicit memory should also keep a seven-day short-term mention until confirmed or expired");
 }
 
 function validateCompressedLongTermMemory() {
@@ -525,6 +545,7 @@ function validateCompressedLongTermMemory() {
   expect(Boolean(entry), "compressed memory should be created with long-term memory");
   expect(entry.text.length <= 160, "compressed memory should stay within 160 English characters / short fact budget");
   expect(!/<think>|assistant:/i.test(entry.text), "compressed memory should remove think blocks and speaker labels");
+  store.confirmCandidate(entry.id);
   expect(store.getPromptMemory(scope).some((item) => item.includes(entry.text)), "prompt memory should inject compressed long-term facts");
 
   const direct = compressMemoryFact({
@@ -558,7 +579,7 @@ function validateConflictDisputed() {
   const store = new MemoryStore();
   const scope = "room:demo-room";
 
-  recordThreeTimes(store, scope, "钥匙交给 Mio", base);
+  confirmCandidateFrom(recordThreeTimes(store, scope, "钥匙交给 Mio", base), store);
   recordThreeTimes(store, scope, "钥匙交给 Rin", addDays(base, 3));
 
   const entries = store.listCompressedMemories(scope);
@@ -615,6 +636,12 @@ function recordThreeTimes(store, scope, text, startDate) {
   store.recordShortTermMention({ scope, text, source: "room", now: startDate });
   store.recordShortTermMention({ scope, text, source: "room", now: addDays(startDate, 1) });
   return store.recordShortTermMention({ scope, text, source: "room", now: addDays(startDate, 2) });
+}
+
+function confirmCandidateFrom(candidate, store) {
+  expect(Boolean(candidate), "candidate should exist before confirmation");
+  store.confirmCandidate(candidate.id);
+  return candidate;
 }
 
 function addDays(date, days) {

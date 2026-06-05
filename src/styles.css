@@ -3026,6 +3026,11 @@ textarea.prompt-field-input {
   stroke: rgba(255, 180, 166, 0.34);
 }
 
+.memory-graph-node[data-status="needs_review"] rect {
+  fill: rgba(255, 211, 128, 0.055);
+  stroke: rgba(255, 211, 128, 0.28);
+}
+
 .memory-graph-node[data-status="archived"] rect,
 .memory-graph-node[data-status="superseded"] rect {
   fill: rgba(237, 241, 245, 0.032);
@@ -3051,6 +3056,7 @@ textarea.prompt-field-input {
 }
 
 .memory-graph-node[data-kind="issue"] .memory-graph-node-marker,
+.memory-graph-node[data-status="needs_review"] .memory-graph-node-marker,
 .memory-graph-node[data-status="disputed"] .memory-graph-node-marker {
   fill: rgba(255, 190, 128, 0.86);
 }

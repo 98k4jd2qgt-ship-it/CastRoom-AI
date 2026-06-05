@@ -43,7 +43,7 @@ export interface MemoryRetentionPolicy {
   shortTermDays: 7;
   promotionMentionThreshold: 3;
   semanticDedupEnabled: true;
-  requireUserConfirmation: false;
+  requireUserConfirmation: true;
   autoWriteLongTermEnabled: true;
   sensitiveAutoPromoteEnabled: false;
 }
@@ -1790,7 +1790,14 @@ export interface DirectorPromptProfile {
   decisionRules: string[];
 }
 
-export type RoomDirectorPublicTextReason = "setup" | "round_transition" | "ruling" | "recap" | "choice" | "none";
+export type RoomDirectorPublicTextReason =
+  | "setup"
+  | "narration"
+  | "round_transition"
+  | "ruling"
+  | "recap"
+  | "choice"
+  | "none";
 
 export type RoomDirectorPrivateDirectiveReason =
   | "debate_turn"

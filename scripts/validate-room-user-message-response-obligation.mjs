@@ -12,7 +12,9 @@ mustInclude(types, "lastResponseObligation?: RoomResponseObligation | null", "ro
 
 mustInclude(scheduler, "function createResponseObligation", "obligation creator");
 mustInclude(scheduler, 'input.trigger !== "user"', "only user messages create obligation");
-mustInclude(scheduler, 'engagement?.kind !== "required"', "only required Room engagement creates obligation");
+mustInclude(scheduler, 'engagement?.kind === "required"', "required Room engagement creates obligation");
+mustInclude(scheduler, 'engagement?.kind === "optional" && engagement.reason === "ambient_room_input"', "ambient public Room input creates light obligation");
+mustInclude(scheduler, 'channel.type === "public"', "ambient obligation is limited to public channel");
 mustInclude(scheduler, "ensureScheduleResultHasOutcome", "schedule result outcome guard");
 mustInclude(scheduler, "responseObligation: obligation", "schedule result records obligation");
 mustInclude(scheduler, "resolveFallbackResponseAction", "fallback action resolver");
