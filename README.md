@@ -7,9 +7,9 @@
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0--only-7bdba9)](LICENSE)
 [![Early access](https://img.shields.io/badge/status-early%20access-f0c674)](#status--当前状态)
 
-A Windows desktop app for running rooms of AI characters, with Director-paced scenes, scoped memory, and configurable AI.
+A Windows desktop app for running rooms of AI characters, with Director-paced scenes, scoped memory confidence, and configurable AI.
 
-一个用于运行 AI 角色房间的 Windows 桌面应用，带 Director 场景推进、分作用域记忆和可配置 AI。
+一个用于运行 AI 角色房间的 Windows 桌面应用，带 Director 场景推进、分作用域记忆置信度和可配置 AI。
 
 **Download:** [Latest test build](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest) · **Feedback:** [Report an issue](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/issues) · **AI services:** [Support notes](https://98k4jd2qgt-ship-it.github.io/castroom-ai-support/#ai-services)
 
@@ -23,7 +23,7 @@ CastRoom AI 是一个早期 Windows 桌面应用，用于运行多角色 AI 房�
 | --- | --- |
 | Single-character chat | Room with multiple roles, shared context, and one-on-one chat when needed. |
 | Simple group conversation | Director-paced scene flow with speaker choice, goals, and room pressure. |
-| Static background notes | Reviewable memory candidates, active facts, and relationship graph inspection. |
+| Static background notes | Reviewable memory candidates, confidence signals, active facts, and relationship graph inspection. |
 | Hosted character service | Local-first desktop app with optional local AI and configurable external AI endpoints. |
 | Developer workflow tool | A playable desktop room experience, not only automation logic. |
 
@@ -31,7 +31,7 @@ CastRoom AI 是一个早期 Windows 桌面应用，用于运行多角色 AI 房�
 | --- | --- |
 | 单角色聊天 | 多角色 Room，同时保留需要时的一对一聊天。 |
 | 简单群聊 | Director 控制场景节奏，选择发言者、目标和房间压力。 |
-| 静态背景资料 | 待确认记忆候选、active 事实和关系图谱查看。 |
+| 静态背景资料 | 待确认记忆候选、置信度信号、active 事实和关系图谱查看。 |
 | 托管角色服务 | 本地优先桌面应用，可选本地 AI，并支持配置外部 AI endpoint。 |
 | 开发者流程工具 | 可以直接体验的桌面房间体验，不只是自动化逻辑。 |
 
@@ -41,14 +41,14 @@ CastRoom AI 是一个早期 Windows 桌面应用，用于运行多角色 AI 房�
 - Director pacing can choose the next speaker and move the scene forward when the room should continue.
 - Public, private, and faction channels separate shared conversation from hidden knowledge or strategy.
 - Prompt Center keeps Room, Director, and character rules editable from the app.
-- Memory review surfaces long-term candidates and relationship graph facts before they become trusted context.
+- Memory review surfaces long-term candidates, confidence signals, and relationship graph facts before they become trusted context.
 - AI setup supports basic local chat when local assets are available, plus configurable external AI endpoints.
 
 - 多角色 Room 支持角色在共享场景中聊天、反应、争论或协作。
 - Director 节奏控制可以选择下一位发言者，并在房间需要继续时推进场景。
 - 公开、私密和阵营频道用于区分公共对话、隐藏信息和策略讨论。
 - Prompt Center 让 Room、Director 和角色规则可以直接在应用内编辑。
-- 记忆审核会展示长期候选和关系图谱事实，再进入可信上下文。
+- 记忆审核会展示长期候选、置信度信号和关系图谱事实，再进入可信上下文。
 - AI 设置支持本地资源可用时的基础本地聊天，也支持配置外部 AI endpoint。
 
 ## Screenshots / 界面预览
@@ -87,7 +87,7 @@ CastRoom AI 仍处于早期版本。不同 Windows 版本、硬件、驱动、AI
 | Director | Automatic pacing for speaker selection, goals, scene pressure, and scene advancement. |
 | Channels | Public chat, private threads, and faction channels for hidden knowledge or strategy. |
 | Prompt Center | Editable Room, Director, and character rules with presets and preview flow. |
-| Memory Graph | Reviewable memory candidates, active facts, scoped memory, and relationship graph inspection. |
+| Memory Graph | Reviewable memory candidates, confidence signals, active facts, scoped memory, and relationship graph inspection. |
 | AI Setup | Basic local AI chat when local assets are available; external AI requires user configuration. |
 
 | 模块 | 能力 |
@@ -96,7 +96,7 @@ CastRoom AI 仍处于早期版本。不同 Windows 版本、硬件、驱动、AI
 | Director | 自动节奏控制，覆盖发言者选择、目标、场景压力和场景推进。 |
 | Channels | 公开聊天、私密线程和阵营频道，用于隐藏信息或策略讨论。 |
 | Prompt Center | 可编辑 Room、Director 和角色规则，并支持 preset 与预览流程。 |
-| Memory Graph | 待确认记忆候选、active 事实、分作用域记忆和关系图谱查看。 |
+| Memory Graph | 待确认记忆候选、置信度信号、active 事实、分作用域记忆和关系图谱查看。 |
 | AI Setup | 本地资源可用时提供基础本地 AI 聊天；支持配置外部 AI endpoint。 |
 
 ## Repository Scope / 仓库范围
