@@ -8,16 +8,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.1";
 const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-06";
+const assetVersion = version.startsWith("v") ? version : `v${version}`;
+const assetPrefix = `CastRoom-AI_${assetVersion}_${assetStamp}`;
 const outDir = path.join(root, "artifacts", "github-release", version);
 
 const requiredFiles = [
-  `CastRoom-AI_${assetStamp}_windows-portable.zip`,
+  `${assetPrefix}_windows-portable.zip`,
   "SHA256SUMS.txt",
   "RELEASE_NOTES.md",
 ];
 const optionalAssetFiles = [
-  `CastRoom-AI_${assetStamp}_x64-setup.exe`,
-  `CastRoom-AI_${assetStamp}_x64_en-US.msi`,
+  `${assetPrefix}_x64-setup.exe`,
+  `${assetPrefix}_x64_en-US.msi`,
 ];
 
 function fail(message) {
@@ -52,6 +54,9 @@ for (const file of fs.readdirSync(outDir)) {
   if (/CastRoom-AI_0\.1\.0_.*\.(zip|exe|msi)$/i.test(file)) {
     fail(`old 0.1.0 release asset must not be present: ${file}`);
   }
+  if (/^CastRoom-AI_\d{4}-\d{2}-\d{2}_.*\.(zip|exe|msi)$/i.test(file)) {
+    fail(`release asset file name must include version before date: ${file}`);
+  }
 }
 
 const sums = fs.readFileSync(path.join(outDir, "SHA256SUMS.txt"), "utf8").trim().split(/\r?\n/);
@@ -80,7 +85,7 @@ for (const file of assetFiles) {
   }
 }
 
-const portableZip = path.join(outDir, `CastRoom-AI_${assetStamp}_windows-portable.zip`);
+const portableZip = path.join(outDir, `${assetPrefix}_windows-portable.zip`);
 const portableEntries = new Set(
   execFileSync(
     "powershell.exe",
@@ -119,14 +124,25 @@ for (const entry of portableEntries) {
     /(^|\/)runtime-data(\/|$)/.test(entry) ||
     /(^|\/)node_modules(\/|$)/.test(entry) ||
     /(^|\/)src-tauri\/target(\/|$)/.test(entry) ||
-    /\.(log|key|pem|p12|pfx)$/i.test(entry)
+    /(^|\/)character-packs\/[^/]+\/.+/.test(entry) ||
+    /(^|\/)(memory|chat-history|logs?)(\/|$)/i.test(entry) ||
+    /\.(log|key|pem|p12|pfx|sqlite|db)$/i.test(entry) ||
+    /(^|\/)(credentials?|secrets?|tokens?)(\.|\/|$)/i.test(entry) ||
+    /(^|\/)auth[^/]*\.json$/i.test(entry) ||
+    /(^|\/)service-account[^/]*\.json$/i.test(entry)
   ) {
     fail(`portable zip contains forbidden entry: ${entry}`);
   }
 }
 
+const tauriConfig = JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
+const bundledResources = tauriConfig?.bundle?.resources ?? [];
+if (bundledResources.includes("../character-packs/**/*")) {
+  fail("tauri.conf.json bundle.resources must not include character pack instance folders");
+}
+
 const notes = fs.readFileSync(path.join(outDir, "RELEASE_NOTES.md"), "utf8");
-for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "What changed", "Checksums"]) {
+for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Character pack instance folders are not included", "What changed", "Checksums"]) {
   if (!notes.includes(required)) {
     fail(`release notes missing required text: ${required}`);
   }

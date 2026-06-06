@@ -12,7 +12,9 @@ const appVersion = version.replace(/^v/i, "");
 const outDir = path.join(root, "artifacts", "github-release", version);
 const portableStageDir = path.join(outDir, "portable-stage");
 const portableAppDir = path.join(portableStageDir, "CastRoom AI");
-const portableZipName = `CastRoom-AI_${assetStamp}_windows-portable.zip`;
+const assetVersion = version.startsWith("v") ? version : `v${version}`;
+const assetPrefix = `CastRoom-AI_${assetVersion}_${assetStamp}`;
+const portableZipName = `${assetPrefix}_windows-portable.zip`;
 const portableZipPath = path.join(outDir, portableZipName);
 
 function firstExistingPath(paths) {
@@ -26,7 +28,7 @@ const assets = [
       path.join(root, "src-tauri", "target", "release", "bundle", "nsis", `CastRoom AI_${appVersion}_x64-setup.exe`),
       path.join(root, "src-tauri", "target", "release", `CastRoom AI_${appVersion}_x64-setup.exe`),
     ]),
-    fileName: `CastRoom-AI_${assetStamp}_x64-setup.exe`,
+    fileName: `${assetPrefix}_x64-setup.exe`,
     recommended: false,
   },
   {
@@ -35,7 +37,7 @@ const assets = [
       path.join(root, "src-tauri", "target", "release", "bundle", "msi", `CastRoom AI_${appVersion}_x64_en-US.msi`),
       path.join(root, "src-tauri", "target", "release", `CastRoom AI_${appVersion}_x64_en-US.msi`),
     ]),
-    fileName: `CastRoom-AI_${assetStamp}_x64_en-US.msi`,
+    fileName: `${assetPrefix}_x64_en-US.msi`,
     recommended: false,
   },
 ];
@@ -52,9 +54,14 @@ const portableSources = [
     target: path.join(portableAppDir, "resources"),
   },
   {
-    label: "default character packs",
-    source: path.join(root, "character-packs"),
-    target: path.join(portableAppDir, "character-packs"),
+    label: "character pack README",
+    source: path.join(root, "character-packs", "README.md"),
+    target: path.join(portableAppDir, "character-packs", "README.md"),
+  },
+  {
+    label: "character pack placeholder",
+    source: path.join(root, "character-packs", ".gitkeep"),
+    target: path.join(portableAppDir, "character-packs", ".gitkeep"),
   },
   {
     label: "license",
@@ -82,6 +89,7 @@ for (const entry of portableSources) {
   if (!fs.existsSync(entry.source)) {
     throw new Error(`Missing portable ${entry.label}: ${entry.source}`);
   }
+  fs.mkdirSync(path.dirname(entry.target), { recursive: true });
   fs.cpSync(entry.source, entry.target, { recursive: true });
 }
 
@@ -98,7 +106,8 @@ Notes:
 
 - This build is for testing and feedback.
 - Local model and runner assets are included for basic local AI chat.
-- API keys, user data, runtime data, logs, node_modules, and source build caches are not included.
+- API keys, user data, runtime data, character memory data, logs, node_modules, and source build caches are not included.
+- Character pack instance folders are not included. The app starts from its built-in default state.
 - Please report crashes, launch problems, confusing UI, provider compatibility issues, local AI behavior issues, and voice issues.
 `;
 
@@ -170,7 +179,8 @@ ${alternativeSection}
 - The portable zip is the easiest option for testers: extract it, open the CastRoom AI folder, then run CastRoom AI.exe.
 - This build does not include a hosted AI service. Users must configure their own AI provider or local AI assets.
 - Local model and runner assets are included in the portable zip and desktop installers for basic local AI chat.
-- Runtime data, logs, API keys, .env files, and user memory data are not part of the source repository.
+- Runtime data, character memory data, logs, API keys, .env files, and user data are not included in the release assets or source repository.
+- Character pack instance folders are not included. The app starts from its built-in default state.
 - This is a test/demo-oriented build, not a final public product release.
 
 ## What changed

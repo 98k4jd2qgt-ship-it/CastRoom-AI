@@ -47,7 +47,8 @@
       "../assets/app/icon.ico"
     ],
     "resources": [
-      "../character-packs/**/*",
+      "../character-packs/README.md",
+      "../character-packs/.gitkeep",
       "../resources/models/chat/**/*",
       "../resources/runners/llama.cpp/**/*",
       "../resources/runners/whisper.cpp/**/*"
