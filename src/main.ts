@@ -105,6 +105,7 @@ import {
   isTargetingUser,
   parseDirectorOverrideRequest,
   parseRoomMentions,
+  planDirectorTick,
   planDirectorObservation,
   recordVisibleObservations,
   applyReplyChannelDecisionToMessage,
@@ -148,6 +149,7 @@ import type {
   ConsoleView,
   ContinuityWrite,
   DirectorMemoryEntry,
+  DirectorTickResult,
   DesktopContextState,
   DirectorTurnPlan,
   ImportedCharacterPack,
@@ -790,6 +792,7 @@ async function queryDirectorMemoryContext(room: RoomState): Promise<DirectorMemo
           scope,
           viewer: { type: "director", roomId: room.id },
           includeDisputed: true,
+          includeNeedsReview: true,
           limit: scope === room.director.memoryScope ? 24 : 12,
         });
         claimsByScope.set(scope, claims);
@@ -4196,13 +4199,17 @@ async function handleRoomInput(input: string) {
 
 async function executeRoomInput(input: string) {
   const roomScope = `room:${consoleState.room.id}` as const;
+  const inputVisibility = resolveRoomInputVisibility(input, consoleState.room, consoleState.room.activeChannelId);
+  const isDirectorChannelInput = inputVisibility.visibility === "director_channel";
   const addressing = parseRoomMentions(
     input,
     consoleState.room.participants,
     consoleState.room.userProfile,
     consoleState.room.director,
   );
-  const inputVisibility = resolveRoomInputVisibility(input, consoleState.room, consoleState.room.activeChannelId);
+  const effectiveTarget: RoomMessageTarget = isDirectorChannelInput
+    ? { targets: [{ type: "room_director", directorId: consoleState.room.director.directorId }] }
+    : addressing.target;
   const userMessage: ConsoleMessage = {
     id: crypto.randomUUID(),
     at: currentClock(),
@@ -4211,15 +4218,15 @@ async function executeRoomInput(input: string) {
     kind: "user",
     speakerType: "user",
     speakerId: consoleState.room.userProfile.userId,
-    target: addressing.target,
-    mentions: addressing.mentions,
+    target: effectiveTarget,
+    mentions: isDirectorChannelInput ? [] : addressing.mentions,
     ...inputVisibility,
     scope: roomScope,
   };
   const frameIntent = resolveRoomFrameIntent({
     room: consoleState.room,
     userInput: input,
-    targetingDirector: isTargetingDirector(addressing.target),
+    targetingDirector: isDirectorChannelInput || isTargetingDirector(effectiveTarget),
     now: userMessage.at,
   });
 
@@ -4241,11 +4248,50 @@ async function executeRoomInput(input: string) {
   });
   consoleState = reduceConsoleState(consoleState, {
     type: "room.setHighlightedTargets",
-    targets: targetsForHighlight(addressing.target),
+    targets: isDirectorChannelInput ? [] : targetsForHighlight(effectiveTarget),
   });
+  if (isDirectorChannelInput) {
+    if (shouldApplyDirectorOverride(input)) {
+      const nowIso = new Date().toISOString();
+      const override = applyDirectorOverride({
+        room: consoleState.room,
+        request: parseDirectorOverrideRequest({
+          room: consoleState.room,
+          userId: consoleState.room.userProfile.userId,
+          text: input,
+          nowIso,
+        }),
+        nowIso,
+        nowLabel: currentClock(),
+      });
+      consoleState = reduceConsoleState(consoleState, {
+        type: "room.addDirectorOverride",
+        entry: override.entry,
+        constraints: override.constraints,
+        sceneBoard: override.sceneBoard,
+      });
+      roomMemoryAdapter.recordPassiveDirectorObservation({
+        room: consoleState.room,
+        input: override.entry.summary,
+        speaker: consoleState.room.userProfile.displayName,
+        move: "judge",
+        continuityWrites: override.plan.continuityWrites,
+        secretWrites: [],
+      });
+    }
+    void applyRoomDirectorTurnAsync({
+      room: consoleState.room,
+      nowLabel: currentClock(),
+      userInput: `Developer Director Channel:\n${input}`,
+      requestedMove: inferDeveloperDirectorChannelMove(input),
+      reason: "mentioned",
+      directorMemory: memoryStore.getRoomDirectorMemorySnapshot(consoleState.room.director.memoryScope),
+    });
+    return;
+  }
   recordRoomMessageMemory(userMessage, "user", [], { recordObservations: false });
 
-  if (isTargetingDirector(addressing.target)) {
+  if (isTargetingDirector(effectiveTarget)) {
     if (shouldApplyDirectorOverride(input)) {
       const nowIso = new Date().toISOString();
       const override = applyDirectorOverride({
@@ -4302,6 +4348,8 @@ async function executeRoomInput(input: string) {
     });
     return;
   }
+
+  applyDirectorTickAfterMessage(userMessage, "user");
 
   consoleState = reduceConsoleState(consoleState, {
     type: "room.setCollaborationState",
@@ -5463,8 +5511,12 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
   const followupTimerAction = directorFollowupTimerAction(result);
   const pendingFollowup = createDirectorPendingFollowup(result);
   const shouldWaitForUser = shouldWaitForUserAfterDirector(result);
+  const directorChannelMessage = createDirectorChannelMessage(result);
 
   if (result.type === "stop" || !result.message) {
+    if (directorChannelMessage) {
+      commitRoomTimelineMessage(directorChannelMessage, "room_director_channel_note");
+    }
     consoleState = reduceConsoleState(consoleState, {
       type: "room.setCollaborationState",
       phase: shouldWaitForUser || result.type === "stop" ? "wait" : "commit",
@@ -5486,7 +5538,7 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
     return { nextTimerAction: followupTimerAction, pendingFollowup };
   }
 
-  const triggerMessage = consoleState.room.messages.at(-1);
+  const triggerMessage = latestRoomMessageForReplyChannel(consoleState.room.messages);
   const replyChannelDecision = resolveReplyChannelDecision({
     room: consoleState.room,
     triggerMessage,
@@ -5528,6 +5580,9 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
     return { nextTimerAction: "none", pendingFollowup: null };
   }
   if (isRepeatedDirectorMessage(message, consoleState.room.messages)) {
+    if (directorChannelMessage) {
+      commitRoomTimelineMessage(directorChannelMessage, "room_director_channel_note");
+    }
     const canContinueWithoutPublicText = followupTimerAction === "schedule_once" || followupTimerAction === "schedule_continuous";
     consoleState = reduceConsoleState(consoleState, {
       type: "room.setAutoSpeechStatus",
@@ -5581,7 +5636,73 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
     secretWrites: result.plan?.secretWrites,
   });
   applyRoomObservationUiEffects(memoryResult.observerRoleIds);
+  if (directorChannelMessage) {
+    commitRoomTimelineMessage(directorChannelMessage, "room_director_channel_note");
+  }
   return { nextTimerAction: followupTimerAction, pendingFollowup };
+}
+
+function createDirectorChannelMessage(result: RoomDirectorScheduleResult): ConsoleMessage | null {
+  if (result.type !== "turn" || !result.plan) {
+    return null;
+  }
+  const plan = result.plan;
+  const directives = plan.privateDirectives ?? [];
+  const publicText = `${plan.publicText ?? ""}`.trim();
+  const publicTextIsBackstage = publicText.length > 0 && (!result.message || isDirectorPublicSchedulingText(publicText));
+  const shouldLog =
+    directives.length > 0 ||
+    publicTextIsBackstage ||
+    !result.message ||
+    plan.nextSpeakerRoleId !== null ||
+    result.reason !== "command";
+  if (!shouldLog) {
+    return null;
+  }
+
+  const lines = [
+    `Reason: ${result.reason}`,
+    `Move: ${result.move}`,
+    `Public narration: ${result.message ? plan.publicTextReason ?? "narration" : "none"}`,
+  ];
+  if (plan.nextSpeakerRoleId) {
+    const participant = consoleState.room.participants.find((candidate) => candidate.id === plan.nextSpeakerRoleId);
+    lines.push(`Next beat: ${participant?.name ?? plan.nextSpeakerRoleId}`);
+  }
+  for (const directive of directives.slice(0, 4)) {
+    const participant = consoleState.room.participants.find((candidate) => candidate.id === directive.roleId);
+    lines.push(`Private directive: ${participant?.name ?? directive.roleId} - ${trimRoomPromptLine(directive.task, 180)}`);
+  }
+  if (publicTextIsBackstage) {
+    lines.push(`Backstage text blocked from public: ${trimRoomPromptLine(publicText, 220)}`);
+  }
+  const focus = result.inspectorPatch?.currentFocus ?? result.simulation?.currentFocus;
+  if (focus) {
+    lines.push(`Focus: ${trimRoomPromptLine(focus, 180)}`);
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    at: currentClock(),
+    speaker: consoleState.room.director.displayName,
+    text: lines.join("\n"),
+    kind: "system",
+    speakerType: "room_system",
+    speakerId: consoleState.room.director.directorId,
+    target: { targets: [{ type: "room_director", directorId: consoleState.room.director.directorId }] },
+    mentions: [],
+    visibility: "director_channel",
+    visibleTo: [{ type: "room_director", directorId: consoleState.room.director.directorId }],
+    privateReason: "director_channel",
+    channelId: "director",
+    scope: consoleState.room.director.memoryScope,
+    directorMove: result.move,
+    knowledgeVisibility: "hidden_from_user",
+  };
+}
+
+function latestRoomMessageForReplyChannel(messages: ConsoleMessage[]): ConsoleMessage | undefined {
+  return [...messages].reverse().find((message) => message.visibility !== "director_channel");
 }
 
 function directorFollowupTimerAction(result: RoomDirectorScheduleResult): RoomRuntimeEffect["nextTimerAction"] {
@@ -5704,6 +5825,111 @@ function normalizeRoomMessageForRepeat(text: string): string {
     .trim();
 }
 
+function applyDirectorTickAfterMessage(sourceMessage: ConsoleMessage, source: "user" | "role") {
+  if (!consoleState.room.director.enabled || sourceMessage.visibility === "director_channel") {
+    return;
+  }
+  const tick = planDirectorTick({
+    room: consoleState.room,
+    sourceMessage,
+    source,
+    nowLabel: currentClock(),
+  });
+  applyDirectorTickResult(tick);
+}
+
+function applyDirectorTickResult(tick: DirectorTickResult) {
+  if (tick.scriptPatch) {
+    consoleState = reduceConsoleState(consoleState, {
+      type: "room.updateDirectorScript",
+      patch: tick.scriptPatch,
+    });
+  }
+  const simulationPatch = {
+    ...(tick.sceneStatePatch ?? {}),
+    ...(tick.inspectorPatch?.currentFocus !== undefined ? { currentFocus: tick.inspectorPatch.currentFocus } : {}),
+    ...(tick.inspectorPatch?.stopReason !== undefined ? { stopReason: tick.inspectorPatch.stopReason } : {}),
+    ...(tick.inspectorPatch?.nextPressure !== undefined ? { nextPressure: tick.inspectorPatch.nextPressure } : {}),
+    ...(tick.inspectorPatch?.lastTurnOutcome !== undefined ? { lastRuling: tick.inspectorPatch.lastTurnOutcome ?? undefined } : {}),
+    ...(tick.inspectorPatch?.directorMemorySource !== undefined ? { directorMemorySource: tick.inspectorPatch.directorMemorySource } : {}),
+    ...(tick.inspectorPatch?.directorMemoryLoadedClaims !== undefined ? { directorMemoryLoadedClaims: tick.inspectorPatch.directorMemoryLoadedClaims } : {}),
+    ...(tick.inspectorPatch?.directorMemoryHiddenClaims !== undefined ? { directorMemoryHiddenClaims: tick.inspectorPatch.directorMemoryHiddenClaims } : {}),
+    ...(tick.inspectorPatch?.directorMemoryDisputedClaims !== undefined ? { directorMemoryDisputedClaims: tick.inspectorPatch.directorMemoryDisputedClaims } : {}),
+    ...(tick.inspectorPatch?.situationAssessment !== undefined ? { situationAssessment: tick.inspectorPatch.situationAssessment } : {}),
+  };
+  if (Object.keys(simulationPatch).length > 0) {
+    consoleState = reduceConsoleState(consoleState, {
+      type: "room.setSimulationState",
+      simulation: simulationPatch,
+    });
+  }
+  if (tick.directorChannelNote) {
+    const note = createDirectorTickChannelMessage(tick);
+    commitRoomTimelineMessage(note, "room_director_tick_note");
+  }
+  const publicNarration = tick.publicNarration?.trim();
+  if (!publicNarration || isDirectorPublicSchedulingText(publicNarration)) {
+    return;
+  }
+  const message: ConsoleMessage = {
+    id: crypto.randomUUID(),
+    at: currentClock(),
+    speaker: consoleState.room.director.displayName,
+    text: publicNarration,
+    kind: "system",
+    speakerType: "room_system",
+    speakerId: consoleState.room.director.directorId,
+    target: "all",
+    mentions: [],
+    visibility: "public",
+    visibleTo: [],
+    channelId: "public",
+    scope: consoleState.room.director.memoryScope,
+    directorMove: tick.requiredIntervention === "action_ruling" ? "judge" : "cue",
+    knowledgeVisibility: "public",
+  };
+  if (isRepeatedDirectorMessage(message, consoleState.room.messages)) {
+    return;
+  }
+  commitRoomTimelineMessage(message, "room_director_tick_public_narration");
+  const memoryResult = roomMemoryAdapter.recordDirectorPublicResult({
+    room: consoleState.room,
+    message,
+    move: message.directorMove ?? "cue",
+    sceneBoard: consoleState.room.director.sceneBoard,
+    continuityWrites: [],
+    secretWrites: [],
+  });
+  applyRoomObservationUiEffects(memoryResult.observerRoleIds);
+}
+
+function createDirectorTickChannelMessage(tick: DirectorTickResult): ConsoleMessage {
+  const lines = [
+    tick.directorChannelNote ?? "Director tick",
+    tick.narrationTrigger ? `Narration trigger: ${tick.narrationTrigger}` : "",
+    tick.requiredIntervention ? `Required intervention: ${tick.requiredIntervention}` : "",
+    tick.scriptPatch ? "Script board updated." : "",
+  ].filter(Boolean);
+  return {
+    id: crypto.randomUUID(),
+    at: currentClock(),
+    speaker: consoleState.room.director.displayName,
+    text: lines.join("\n"),
+    kind: "system",
+    speakerType: "room_system",
+    speakerId: consoleState.room.director.directorId,
+    target: { targets: [{ type: "room_director", directorId: consoleState.room.director.directorId }] },
+    mentions: [],
+    visibility: "director_channel",
+    visibleTo: [{ type: "room_director", directorId: consoleState.room.director.directorId }],
+    privateReason: "director_channel",
+    channelId: "director",
+    scope: consoleState.room.director.memoryScope,
+    directorMove: tick.requiredIntervention === "action_ruling" ? "judge" : "cue",
+    knowledgeVisibility: "hidden_from_user",
+  };
+}
+
 function recordPassiveDirectorObservation(input: string) {
   if (!consoleState.room.director.enabled) {
     return;
@@ -5731,6 +5957,22 @@ function shouldApplyDirectorOverride(input: string): boolean {
   return /(\boverride\b|\bretcon\b|\bchange\b|\bset\b|\bmake it\b|\bignore the condition\b|\ballow\b|\bunlock\b|\breveal\b|\bactually\b|\u6539\u6210|\u8bbe\u5b9a|\u4fee\u6539|\u8986\u76d6|\u65e0\u89c6\u6761\u4ef6|\u5141\u8bb8|\u89e3\u9664\u9650\u5236|\u6253\u5f00|\u89e3\u9501|\u63ed\u793a|\u516c\u5f00|\u5176\u5b9e)/i.test(
     input,
   );
+}
+
+function inferDeveloperDirectorChannelMove(input: string): RoomDirectorMove {
+  if (/(旁白|叙述|环境|气氛|压力|线索|转折|narrat|scene|atmosphere|pressure|twist|clue)/i.test(input)) {
+    return "twist";
+  }
+  if (shouldApplyDirectorOverride(input) || /(裁定|判定|事实|确认|隐藏真相|secret|fact|confirm|rule|judge)/i.test(input)) {
+    return "judge";
+  }
+  if (/(总结|复盘|recap|summary)/i.test(input)) {
+    return "recap";
+  }
+  if (/(暂停|等用户|选择|pause|choice|wait)/i.test(input)) {
+    return "choice";
+  }
+  return "cue";
 }
 
 function recordRoomObservations(message: ConsoleMessage, room: RoomState, excludeRoleIds: string[] = []) {
@@ -6015,7 +6257,7 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     target,
     mentions: preserveScheduledAllTarget ? [] : providerUsedMention ? providerAddressing.mentions : result.message.mentions,
   };
-  const lastRoomMessage = consoleState.room.messages.at(-1);
+  const lastRoomMessage = latestRoomMessageForReplyChannel(consoleState.room.messages);
   if (
     result.message.visibility === "faction_huddle" &&
     lastRoomMessage?.visibility === "faction_huddle" &&
@@ -6120,6 +6362,7 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     excludeRoleIds: [result.participant.id],
   });
   applyRoomObservationUiEffects(memoryResult.observerRoleIds);
+  applyDirectorTickAfterMessage(message, "role");
   if (isTargetingDirector(message.target)) {
     void applyRoomDirectorTurnAsync({
       room: consoleState.room,
@@ -8110,7 +8353,7 @@ async function runRoomAutoTurn() {
     room: consoleState.room,
     trigger: "auto",
     addressing,
-    triggerMessageId: consoleState.room.messages.at(-1)?.id ?? null,
+    triggerMessageId: latestRoomMessageForReplyChannel(consoleState.room.messages)?.id ?? null,
     nowMs: Date.now(),
     memorySnippets,
   });
@@ -8961,6 +9204,15 @@ function commitRoomTimelineMessage(message: ConsoleMessage, reason: string) {
 }
 
 function validateRoomTimelineChannelVisibility(message: ConsoleMessage): string | null {
+  if (message.channelId === "director" && message.visibility !== "director_channel") {
+    return "director_channel_visibility_mismatch";
+  }
+  if (message.visibility === "director_channel" && message.channelId !== "director") {
+    return "director_message_channel_missing";
+  }
+  if (message.visibility === "director_channel" && message.speakerType === "role") {
+    return "director_channel_role_speaker_blocked";
+  }
   if (message.channelId?.startsWith("private:") && message.visibility !== "private_thread") {
     return "private_channel_visibility_mismatch";
   }

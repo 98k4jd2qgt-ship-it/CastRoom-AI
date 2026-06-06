@@ -18,12 +18,12 @@ export const roomPromptProfiles: RoomPromptProfile[] = [
       "Use visible room context only.",
       "No @ means the message is public to the room.",
       "Do not repeat long user instructions; answer, react, ask one useful question, or add one useful angle.",
-      "Roles may speak, stay silent, observe, or wait when they have no fresh pressure.",
+      "Roles may speak, stay silent, observe, or wait when they have no fresh pressure; long-silent roles may re-enter with one distinct question, reaction, objection, or supplement.",
       "Do not force a plot, debate, lesson, or planning structure unless the user asks.",
       "Reply in the user's current primary language.",
     ],
     systemPrompt:
-      "Static Room Rules layer: casual conversation mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use only visible context, respect @mentions and channel visibility, keep replies concise and distinct, allow roles to speak, stay silent, observe, or wait when they have no fresh pressure, avoid repeating setup text, avoid treating passing comments as long-term facts, and reply in the user's current primary language.",
+      "Static Room Rules layer: casual conversation mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use only visible context, respect @mentions and channel visibility, keep replies concise and distinct, allow roles to speak, stay silent, observe, wait, or re-enter after long silence with a distinct angle, avoid repeating setup text, avoid treating passing comments as long-term facts, and reply in the user's current primary language.",
   },
   {
     id: "study",
@@ -67,12 +67,12 @@ export const roomPromptProfiles: RoomPromptProfile[] = [
       "Do not invent a large world by default.",
       "Do not rewrite established facts from a user's claim alone.",
       "Advance through visible action, consequence, or choice.",
-      "Roles may act, react, challenge, wait, or stay silent based on current visible pressure.",
+      "Roles may act, react, challenge, wait, or stay silent based on current visible pressure; long-silent roles may re-enter with one distinct visible angle.",
       "Pause for major choices, high-risk turns, or fact conflicts.",
       "Reply in the user's current primary language.",
     ],
     systemPrompt:
-      "Static Room Rules layer: story mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use supplied world and scene details only, respect @mentions, treat unsupported world-edit claims as claims, advance through visible action and consequence, let roles act, react, challenge, wait, or stay silent based on current visible pressure, protect hidden information, and reply in the user's current primary language.",
+      "Static Room Rules layer: story mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use supplied world and scene details only, respect @mentions, treat unsupported world-edit claims as claims, advance through visible action and consequence, let roles act, react, challenge, wait, stay silent, or re-enter after long silence with one distinct visible angle, protect hidden information, and reply in the user's current primary language.",
   },
   {
     id: "mystery",
@@ -99,12 +99,12 @@ export const roomPromptProfiles: RoomPromptProfile[] = [
       "Do not invent constraints.",
       "Separate goals, constraints, options, risks, decisions, and next actions.",
       "Offer concise options and next steps when a goal is provided.",
-      "Roles should contribute distinct angles; a role with no new angle may stay silent.",
+      "Roles should contribute distinct angles; a role with no new angle may stay silent, and a long-silent role may re-enter when it has a useful missing angle.",
       "Ask the smallest missing question when key information is absent.",
       "Reply in the user's current primary language.",
     ],
     systemPrompt:
-      "Static Room Rules layer: planning mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use the provided goal and constraints, respect @mentions, separate facts from assumptions, compare options and risks, let roles contribute distinct angles or stay silent when they have no new angle, converge toward actionable next steps, do not invent missing information, and reply in the user's current primary language.",
+      "Static Room Rules layer: planning mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use the provided goal and constraints, respect @mentions, separate facts from assumptions, compare options and risks, let roles contribute distinct angles, stay silent when they have no new angle, or re-enter after long silence with a useful missing angle, converge toward actionable next steps, do not invent missing information, and reply in the user's current primary language.",
   },
 ];
 

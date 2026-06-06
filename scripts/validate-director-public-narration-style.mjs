@@ -24,7 +24,7 @@ const casual = scheduler.scheduleRoomDirectorTurn({
 });
 
 expect(casual.type === "turn", "Casual cue should produce a Director turn plan.");
-expect(casual.type === "turn" && casual.message, "Casual cue should still publish safe narration when needed.");
+expect(casual.type === "turn" && !casual.message, "Casual cue should stay backstage; normal chat should continue through role replies.");
 expect(
   casual.type === "turn" && !/(线索|clue|浮了出来|comes into focus)/i.test(casual.message?.text ?? ""),
   "Casual narration should not use mystery clue wording.",
@@ -45,7 +45,7 @@ const storyRoom = createRoomFixture({
 const story = scheduler.scheduleRoomDirectorTurn({
   room: storyRoom,
   nowLabel: "01:01",
-  userInput: "",
+  userInput: "A faint scrape comes from behind the door.",
   requestedMove: "cue",
   reason: "recipe",
 });

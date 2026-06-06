@@ -75,6 +75,25 @@ expect(casualChoice.type === "turn" && (casualChoice.plan?.privateDirectives?.le
 expect(scheduler.isDirectorPublicSchedulingText("先把话题收一下：Daily chat。接下来只补一个有用方向。"), "Chinese generic recap scheduling text should be blocked.");
 expect(scheduler.isDirectorPublicSchedulingText("Light recap: Daily chat. Add only one useful next direction."), "English generic recap scheduling text should be blocked.");
 
+const casualCueRoom = createRoomFixture({
+  promptProfileId: "casual-chat",
+  directorProfileId: "host",
+  recipeId: "casual",
+});
+casualCueRoom.topic = "Daily chat";
+const casualCue = scheduler.scheduleRoomDirectorTurn({
+  room: casualCueRoom,
+  nowLabel: "01:03",
+  userInput: "",
+  requestedMove: "cue",
+  reason: "recipe",
+});
+
+expect(casualCue.type === "turn", "Casual Director cue should still produce a Director turn.");
+expect(casualCue.type === "turn" && !casualCue.message, "Casual Director cue should stay backstage and not publish to the main channel.");
+expect(casualCue.type === "turn" && casualCue.plan?.publicTextReason === "none", "Casual Director cue should keep publicTextReason none by default.");
+expect(casualCue.type === "turn" && (casualCue.plan?.privateDirectives?.length ?? 0) > 0, "Casual Director cue should still schedule a role privately.");
+
 if (failures.length > 0) {
   console.error(`validate-director-narration-vs-scheduling failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);
   process.exit(1);

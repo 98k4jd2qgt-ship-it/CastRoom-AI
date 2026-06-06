@@ -31,13 +31,13 @@ const result = scheduler.scheduleRoomDirectorTurn({
 });
 
 expect(result.type === "turn", "Internal handoff should still produce a Director turn plan.");
-expect(result.type === "turn" && result.message, "Safe Director narration should still be allowed to publish.");
+expect(result.type === "turn" && !result.message, "Internal casual handoff should stay backstage and not publish to the main channel.");
 expect(
-  result.type === "turn" && !containsInternalPrompt(result.message?.text ?? ""),
+  result.type === "turn" && !containsInternalPrompt(result.plan?.publicText ?? ""),
   "Director public narration must not expose internal handoff wording.",
 );
 expect(
-  result.type === "turn" && !scheduler.isDirectorPublicSchedulingText(result.message?.text ?? ""),
+  result.type === "turn" && result.plan?.publicTextReason === "none",
   "Safe replacement narration should not be classified as scheduling text.",
 );
 expect(

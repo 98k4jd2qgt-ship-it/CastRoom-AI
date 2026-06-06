@@ -54,7 +54,11 @@ function validatePublicMessageRouting() {
   const roomBlock = sliceMethod(adapter, "recordRoomMessage");
   mustInclude(roomBlock, "kind: \"room_message\"", "public room messages write public room memory");
   mustInclude(roomBlock, "recordDirectorRoomObservationMemory", "public room messages can feed Director observation memory");
-  mustInclude(roomBlock, "recordObservations", "public room messages can feed visible observer memory");
+
+  const observationBlock = sliceMethod(adapter, "recordObservations");
+  mustInclude(observationBlock, "resolvedVisibility === \"public\"", "public observations are detected before observer routing");
+  mustInclude(observationBlock, "return emptyRoomMemoryAdapterResult()", "public observations do not write observer-scoped darkline memory");
+  mustNotInclude(observationBlock, "? \"public\"", "observer visibility should not be public after public route is skipped");
 
   const speakerBlock = sliceMethod(adapter, "recordSpeakerMessage");
   mustInclude(speakerBlock, "recordRoomMessage", "speaker public path reuses room message writer");

@@ -4,6 +4,8 @@ import type {
   MemoryEntityRef,
   MemoryGraphAuthority,
   MemoryGraphClaimKind,
+  MemoryGraphClaimStatus,
+  MemoryGraphEpistemicStatus,
   MemoryGraphVisibility,
   MemorySourceInput,
 } from "./memoryGraph";
@@ -48,6 +50,8 @@ export interface SemanticMemoryClaim extends MemoryClaimInput {
   properties?: MemoryClaimInput["properties"] & {
     compressionReason?: string;
     originalExcerpt?: string;
+    epistemicStatus?: MemoryGraphEpistemicStatus;
+    sourceSpeaker?: string;
   };
 }
 
@@ -128,6 +132,7 @@ export function extractMemoryClaimsFromEvent(event: MemoryExtractionEvent): Memo
   const visibility = resolveVisibility(event);
   const source = createMemorySource(event, text);
   const atoms = extractAtoms(text, event, authority).slice(0, MAX_CLAIMS_PER_EVENT);
+  const epistemicStatus = resolveEpistemicStatus(event, authority);
 
   return atoms.map((atom) => ({
     scope: event.scope,
@@ -145,11 +150,15 @@ export function extractMemoryClaimsFromEvent(event: MemoryExtractionEvent): Memo
     sensitivity: atom.sensitivity,
     source,
     conflictPolicy: authority === "developer" ? "supersede" : atom.conflictPolicy,
+    status: resolveClaimStatus(event, authority),
+    epistemicStatus,
     evidenceCount: 1,
     properties: {
       extractionSourceType: event.sourceType,
       compressionReason: atom.compressionReason,
       originalExcerpt: source.excerpt,
+      epistemicStatus,
+      sourceSpeaker: event.source?.speakerId ?? event.source?.speakerType,
     },
   }));
 }
@@ -201,6 +210,9 @@ function extractAtoms(text: string, event: MemoryExtractionEvent, authority: Mem
 
   const goal = extractGoal(text, defaultSubject, event);
   if (goal) atoms.push(goal);
+
+  const actionAttempt = extractActionAttempt(text, defaultSubject, event);
+  if (actionAttempt) atoms.push(actionAttempt);
 
   const developerJudgement = authority === "developer" ? extractDeveloperJudgement(text, defaultSubject) : null;
   if (developerJudgement) atoms.push(developerJudgement);
@@ -333,8 +345,40 @@ function extractGoal(text: string, subject: MemoryEntityRef, event: MemoryExtrac
   };
 }
 
+function extractActionAttempt(text: string, subject: MemoryEntityRef, event: MemoryExtractionEvent): ExtractedMemoryAtom | null {
+  if (
+    event.sourceType !== "user_explicit_remember" &&
+    event.sourceType !== "character_public_message" &&
+    event.sourceType !== "room_public_result" &&
+    event.sourceType !== "director_ruling"
+  ) {
+    return null;
+  }
+  const match = text.match(/(?:我|用户|玩家|角色|he|she|they|I|user|player)?\s*(?:尝试|试图|想要|正在|已经|成功)?\s*(打开|开启|撬开|解锁|拿到|获得|夺取|发现|公开|暴露|open(?:ed)?|unlock(?:ed)?|take|took|grab(?:bed)?|reveal(?:ed)?|discover(?:ed)?)\s*([^\n。！？；;.!?]{1,80})/i);
+  if (!match?.[0]) {
+    return null;
+  }
+  const value = normalizeExplicitValue(match[0]);
+  if (!value || !isSemanticValue(value)) {
+    return null;
+  }
+  return {
+    kind: "task",
+    subject,
+    predicate: "attempted_action",
+    object: conceptEntity(value),
+    text: `Action attempt: ${value}.`,
+    confidence: event.sourceType === "director_ruling" ? 0.9 : 0.72,
+    sensitivity: "normal",
+    conflictPolicy: "merge",
+    compressionReason: "action_attempt",
+  };
+}
+
 function extractDeveloperJudgement(text: string, subject: MemoryEntityRef): ExtractedMemoryAtom | null {
   const winner = firstMatchValue(text, [
+    /(我|用户|玩家|.{1,24}?)\s*(?:赢了|获胜|胜出)/i,
+    /(I|user|player|.{1,24}?)\s+(?:won|wins|is the winner)/i,
     /(?:我|用户|玩家|(.{1,24}?))\s*(?:赢了|获胜|胜出|won)/i,
     /(?:winner|winning side)\s*(?:is|=|:)\s*([^\n.!?;。！？；]{1,40})/i,
   ]);
@@ -452,6 +496,39 @@ function resolveAuthority(event: MemoryExtractionEvent): MemoryGraphAuthority {
     return "character";
   }
   return "user";
+}
+
+function resolveEpistemicStatus(event: MemoryExtractionEvent, authority: MemoryGraphAuthority): MemoryGraphEpistemicStatus {
+  if (authority === "developer" || event.sourceType === "manual_edit" || event.sourceType === "identity_card") {
+    return "confirmed";
+  }
+  if (event.sourceType === "director_ruling" || event.sourceType === "director_plot_state") {
+    return "confirmed";
+  }
+  if (event.sourceType === "room_public_result") {
+    return "observed";
+  }
+  if (event.sourceType === "faction_huddle") {
+    return "believed";
+  }
+  if (event.sourceType === "private_ai" || event.sourceType === "character_public_message" || event.sourceType === "user_explicit_remember") {
+    return "claimed";
+  }
+  return authority === "director" ? "confirmed" : "claimed";
+}
+
+function resolveClaimStatus(event: MemoryExtractionEvent, authority: MemoryGraphAuthority): MemoryGraphClaimStatus {
+  const epistemicStatus = resolveEpistemicStatus(event, authority);
+  if (authority === "developer" || epistemicStatus === "confirmed" || epistemicStatus === "observed") {
+    return "active";
+  }
+  if (epistemicStatus === "disputed") {
+    return "disputed";
+  }
+  if (epistemicStatus === "refuted") {
+    return "rejected";
+  }
+  return "needs_review";
 }
 
 function resolveVisibility(event: MemoryExtractionEvent): MemoryGraphVisibility {

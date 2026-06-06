@@ -7,7 +7,10 @@ const failures = [];
 const scheduleRoomTurn = sliceFunction(scheduler, "scheduleRoomTurn");
 mustInclude(scheduleRoomTurn, "policyBlockedAutoResult(room, \"question_loop\", \"user_answer_expected\"", "question-loop wait signal is policy-gated");
 mustInclude(scheduleRoomTurn, "policyBlockedAutoResult(room, \"waiting_user\", \"user_answer_expected\"", "user-answer wait signal is policy-gated");
-mustInclude(scheduleRoomTurn, "directorHandoff(\"waiting_user\", room, nowMs + delayMs)", "wait signal can hand off to Director");
+mustInclude(scheduleRoomTurn, "createAutonomousFallbackSpeechIntent(room, input, addressing, \"no_speaker_intent\")", "auto no-speaker path uses role fast path before waiting");
+mustInclude(scheduleRoomTurn, "selectedSpeechIntent?.decision === \"ask_director\" && trigger === \"auto\"", "auto Director speech intents are downgraded before handoff");
+mustInclude(scheduleRoomTurn, "stop(\"waiting_user\", \"paused\", room, null)", "auto wait fallback pauses locally instead of forcing Director handoff");
+mustNotInclude(scheduleRoomTurn, "directorHandoff(\"waiting_user\", room, nowMs + delayMs)", "wait signal forcing Director handoff");
 mustNotInclude(scheduleRoomTurn, "lastMessageTargetsUserQuestion(room)) {\n      return stop(\"waiting_user\"", "direct user-question stop");
 mustNotInclude(scheduleRoomTurn, "recentDirectorWaitingForUser(room)) {\n        return stop(\"waiting_user\"", "direct Director waiting stop");
 

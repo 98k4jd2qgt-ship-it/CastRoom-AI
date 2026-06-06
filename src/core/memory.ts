@@ -37,6 +37,7 @@ import type {
 import {
   InMemoryMemoryGraphRepository,
   memoryGraphClaimFromCompressedEntry,
+  shouldInjectMemoryGraphClaimIntoPrompt,
   memoryGraphClaimTextForPrompt,
   type MemoryGraphClaim,
   type MemoryGraphQueryContext,
@@ -482,6 +483,7 @@ export class MemoryStore {
         localModel: options.localModel,
         limit: longTermLimit,
       })
+      .filter(shouldInjectMemoryGraphClaimIntoPrompt)
       .map(memoryGraphClaimTextForPrompt);
     const legacyLongTerm = graphLongTerm.length > 0 ? [] : this.listCompressedMemories(scope)
         .filter((entry) => entry.status === "active")
@@ -524,7 +526,9 @@ export class MemoryStore {
       scope,
       viewer: { type: "room_public", roomId: scope.slice("room:".length).split(":")[0] },
       limit: 6,
-    }).map(memoryGraphClaimTextForPrompt);
+    })
+      .filter(shouldInjectMemoryGraphClaimIntoPrompt)
+      .map(memoryGraphClaimTextForPrompt);
     const legacyMemory = graphMemory.length > 0 ? [] : this.listCompressedMemories(scope)
       .filter((entry) => entry.status === "active")
       .slice(-6)
@@ -1304,10 +1308,7 @@ export class MemoryStore {
   private syncExtractionEventToGraph(event: MemoryEvent): number {
     const claims = extractGraphClaimsFromMemoryEvent(event);
     for (const claim of claims) {
-      this.graph.mergeClaimSync({
-        ...claim,
-        status: claim.authority === "developer" ? "active" : "needs_review",
-      });
+      this.graph.mergeClaimSync(claim);
     }
     return claims.length;
   }

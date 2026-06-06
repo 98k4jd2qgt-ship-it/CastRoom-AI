@@ -6,24 +6,35 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.0-test";
-const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-05";
+const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.1";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-06";
+const appVersion = version.replace(/^v/i, "");
 const outDir = path.join(root, "artifacts", "github-release", version);
 const portableStageDir = path.join(outDir, "portable-stage");
 const portableAppDir = path.join(portableStageDir, "CastRoom AI");
 const portableZipName = `CastRoom-AI_${assetStamp}_windows-portable.zip`;
 const portableZipPath = path.join(outDir, portableZipName);
 
+function firstExistingPath(paths) {
+  return paths.find((candidate) => fs.existsSync(candidate)) ?? paths[0];
+}
+
 const assets = [
   {
     label: "Windows NSIS installer",
-    source: path.join(root, "src-tauri", "target", "release", "bundle", "nsis", "CastRoom AI_0.1.0_x64-setup.exe"),
+    source: firstExistingPath([
+      path.join(root, "src-tauri", "target", "release", "bundle", "nsis", `CastRoom AI_${appVersion}_x64-setup.exe`),
+      path.join(root, "src-tauri", "target", "release", `CastRoom AI_${appVersion}_x64-setup.exe`),
+    ]),
     fileName: `CastRoom-AI_${assetStamp}_x64-setup.exe`,
     recommended: false,
   },
   {
     label: "Windows MSI installer",
-    source: path.join(root, "src-tauri", "target", "release", "bundle", "msi", "CastRoom AI_0.1.0_x64_en-US.msi"),
+    source: firstExistingPath([
+      path.join(root, "src-tauri", "target", "release", "bundle", "msi", `CastRoom AI_${appVersion}_x64_en-US.msi`),
+      path.join(root, "src-tauri", "target", "release", `CastRoom AI_${appVersion}_x64_en-US.msi`),
+    ]),
     fileName: `CastRoom-AI_${assetStamp}_x64_en-US.msi`,
     recommended: false,
   },
@@ -143,7 +154,7 @@ const alternativeSection = alternativeAssets.length
   ? `\nAlternative:\n\n- ${alternativeAssets.map((asset) => asset.fileName).join("\n- ")}\n`
   : "";
 
-const releaseNotes = `# CastRoom AI ${version}
+const releaseNotes = `# CastRoom AI ${version} - ${assetStamp}
 
 This is an early Windows test build.
 
@@ -159,8 +170,20 @@ ${alternativeSection}
 - The portable zip is the easiest option for testers: extract it, open the CastRoom AI folder, then run CastRoom AI.exe.
 - This build does not include a hosted AI service. Users must configure their own AI provider or local AI assets.
 - Local model and runner assets are included in the portable zip and desktop installers for basic local AI chat.
-- Runtime data, logs, API keys, and user memory data are not part of the source repository.
+- Runtime data, logs, API keys, .env files, and user memory data are not part of the source repository.
 - This is a test/demo-oriented build, not a final public product release.
+
+## What changed
+
+- Added Director Channel and backstage Director scheduling so scheduling notes stay out of the main room.
+- Cleaned public Director narration so the main channel keeps scene, environment, action result, and phase summary text.
+- Improved one-shot casual replies and room auto-flow semantics for fill_gap and continuous modes.
+- Added speaker distribution behavior to reduce two-character loops and long-term lurkers.
+- Fixed public/private memory routing: public chat now appears in Room public memory, while private, faction, and Director-only memory stays scoped.
+- Added multi-view memory confidence and governance concepts for claims, beliefs, confirmed facts, conflicts, and review candidates.
+- Updated Memory Graph and memory dashboard behavior for candidates, confidence, authorized hidden views, and recent public activity.
+- Improved default Prompt Center templates for general multi-character rooms and reasoner-style models.
+- Updated the GitHub README, screenshots, positioning, and memory confidence messaging.
 
 ## Checksums
 

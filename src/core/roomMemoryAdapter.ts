@@ -304,15 +304,16 @@ export class RoomMemoryAdapter {
 
   recordObservations(input: RoomMemoryObservationInput): RoomMemoryAdapterResult {
     const { room, message } = input;
+    const resolvedVisibility = message.visibility ?? resolveRoomMessageVisibility(message, room).visibility;
+    if (resolvedVisibility === "public") {
+      return emptyRoomMemoryAdapterResult();
+    }
     const observerRoleIds = recordVisibleObservations(message, room, input.excludeRoleIds ?? []);
     if (observerRoleIds.length === 0) {
       return emptyRoomMemoryAdapterResult();
     }
 
-    const visibility =
-      (message.visibility ?? resolveRoomMessageVisibility(message, room).visibility) === "public"
-        ? "public"
-        : "private_participant";
+    const visibility = "private_participant";
     const tags = classifyObservationTags(message.text, room);
     const importance = observationImportance(message, room);
     const now = this.deps.now();

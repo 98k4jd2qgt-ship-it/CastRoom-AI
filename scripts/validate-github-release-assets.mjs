@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.0-test";
-const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-05";
+const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.1";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-06";
 const outDir = path.join(root, "artifacts", "github-release", version);
 
 const requiredFiles = [
@@ -126,7 +126,7 @@ for (const entry of portableEntries) {
 }
 
 const notes = fs.readFileSync(path.join(outDir, "RELEASE_NOTES.md"), "utf8");
-for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Checksums"]) {
+for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "What changed", "Checksums"]) {
   if (!notes.includes(required)) {
     fail(`release notes missing required text: ${required}`);
   }

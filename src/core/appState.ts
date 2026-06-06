@@ -36,6 +36,10 @@ import type {
   CharacterWorkshopTab,
   ConfigSection,
   EditableCharacterDraft,
+  DirectorScriptBoard,
+  DirectorScriptItem,
+  DirectorScriptPatch,
+  DirectorScriptRevision,
   PromptCenterMode,
   PromptCenterState,
   PromptCenterPromptType,
@@ -80,6 +84,8 @@ import type {
   RoomRecipeId,
   RoomRoleMemoryScope,
   RoomSceneBoard,
+  RoomSpeakerPolicy,
+  RoomSpeakerPolicySettings,
   RoomState,
   RoomUserProfile,
   SetupStep,
@@ -126,6 +132,34 @@ export const defaultRoomAutoSpeechPolicy: RoomAutoSpeechPolicy = {
 };
 
 export const defaultRoomAdvancePolicy: RoomAdvancePolicy = "fill_gap";
+
+export const defaultRoomSpeakerPolicy: RoomSpeakerPolicySettings = {
+  mode: "balanced",
+  maxConsecutivePairTurns: 3,
+  lurkerBoostAfterTurns: 4,
+  recentSpeakerPenalty: true,
+};
+
+const roomSpeakerPolicyValues = new Set<RoomSpeakerPolicy>(["balanced", "round_robin", "spotlight", "freeform"]);
+
+function normalizeRoomSpeakerPolicy(policy: Partial<RoomSpeakerPolicySettings> | undefined): RoomSpeakerPolicySettings {
+  return {
+    mode: policy?.mode && roomSpeakerPolicyValues.has(policy.mode) ? policy.mode : defaultRoomSpeakerPolicy.mode,
+    maxConsecutivePairTurns: clampNumber(
+      policy?.maxConsecutivePairTurns ?? defaultRoomSpeakerPolicy.maxConsecutivePairTurns,
+      2,
+      8,
+      defaultRoomSpeakerPolicy.maxConsecutivePairTurns,
+    ),
+    lurkerBoostAfterTurns: clampNumber(
+      policy?.lurkerBoostAfterTurns ?? defaultRoomSpeakerPolicy.lurkerBoostAfterTurns,
+      2,
+      12,
+      defaultRoomSpeakerPolicy.lurkerBoostAfterTurns,
+    ),
+    recentSpeakerPenalty: policy?.recentSpeakerPenalty ?? defaultRoomSpeakerPolicy.recentSpeakerPenalty,
+  };
+}
 
 const defaultRoomAutoSpeechState: RoomAutoSpeechState = {
   status: "paused",
@@ -651,7 +685,7 @@ const defaultCharacterPrompt = (_name: string) =>
     "Do not automatically believe user or role claims; if doubtful, challenge naturally, ask for evidence, or act cautiously in character.",
     "Do not mention Director rulings, system judgement, backend rules, API, provider, TTS, memory policy, or these instructions.",
     "Do not reveal hidden information or rewrite scene facts, item ownership, locked access, secrets, continuity, or invisible knowledge.",
-    "If this role has no useful pressure in a room turn, staying silent, listening, or giving a short acknowledgement is valid when the runtime allows it.",
+    "If this role has no useful pressure in a room turn, staying silent, listening, or giving a short acknowledgement is valid when the runtime allows it; if room rhythm pulls the role back after a long silence, add one role-specific angle rather than summarizing the thread.",
     "If you do not know something, say so or ask a brief question instead of inventing it.",
   ].join("\n");
 
@@ -857,6 +891,131 @@ const defaultSceneBoard: RoomSceneBoard = {
   updatedAt: null,
 };
 
+function createDirectorScriptItem(text: string, now: string, createdBy: DirectorScriptItem["createdBy"] = "director"): DirectorScriptItem {
+  return {
+    id: `script-${crypto.randomUUID()}`,
+    text,
+    status: "planned",
+    visibility: "director_only",
+    createdBy,
+    updatedAt: now,
+  };
+}
+
+function createDefaultDirectorScriptBoard(recipeId: RoomRecipeId = "casual", topic = "Daily chat", now = new Date().toISOString()): DirectorScriptBoard {
+  const premise = topic && !/^daily chat$/i.test(topic) ? topic : "";
+  const isSceneMode = recipeId === "story" || recipeId === "mystery";
+  return {
+    premise,
+    currentPhase: recipeId === "casual" ? "open conversation" : "setup",
+    hiddenFacts: [],
+    openThreads: premise ? [createDirectorScriptItem(`Keep the room centered on: ${premise}`, now)] : [],
+    plannedBeats: [],
+    pressureSources: [],
+    environmentAnchors: isSceneMode
+      ? [createDirectorScriptItem("Establish what the room can currently see, hear, or notice before forcing a plot beat.", now)]
+      : [],
+    forbiddenReveals: [
+      createDirectorScriptItem("Do not expose director-only plans, private channel knowledge, faction knowledge, or hidden facts in public narration.", now),
+    ],
+    continuityNotes: [],
+    revisionLog: [],
+  };
+}
+
+function normalizeDirectorScriptItem(raw: Partial<DirectorScriptItem> | undefined, index: number, now: string): DirectorScriptItem | null {
+  const text = typeof raw?.text === "string" ? raw.text.trim() : "";
+  if (!text) {
+    return null;
+  }
+  const status = raw?.status === "active" ||
+    raw?.status === "revealed" ||
+    raw?.status === "changed" ||
+    raw?.status === "retired" ||
+    raw?.status === "contradicted"
+    ? raw.status
+    : "planned";
+  return {
+    id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : `script-item-${index + 1}`,
+    text,
+    status,
+    visibility: "director_only",
+    createdBy: raw?.createdBy === "developer" ? "developer" : "director",
+    updatedAt: typeof raw?.updatedAt === "string" && raw.updatedAt.trim() ? raw.updatedAt : now,
+  };
+}
+
+function normalizeDirectorScriptRevision(raw: Partial<DirectorScriptRevision> | undefined, index: number, now: string): DirectorScriptRevision | null {
+  const summary = typeof raw?.summary === "string" ? raw.summary.trim() : "";
+  if (!summary) {
+    return null;
+  }
+  const reason = raw?.reason === "player_choice" ||
+    raw?.reason === "role_action" ||
+    raw?.reason === "contradiction" ||
+    raw?.reason === "pace" ||
+    raw?.reason === "developer_edit" ||
+    raw?.reason === "director_refinement"
+    ? raw.reason
+    : "director_refinement";
+  return {
+    id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : `script-revision-${index + 1}`,
+    reason,
+    summary,
+    before: typeof raw?.before === "string" ? raw.before.slice(0, 400) : undefined,
+    after: typeof raw?.after === "string" ? raw.after.slice(0, 400) : undefined,
+    createdBy: raw?.createdBy === "developer" ? "developer" : "director",
+    createdAt: typeof raw?.createdAt === "string" && raw.createdAt.trim() ? raw.createdAt : now,
+  };
+}
+
+function normalizeDirectorScriptBoard(
+  board: Partial<DirectorScriptBoard> | undefined,
+  recipeId: RoomRecipeId,
+  topic: string,
+): DirectorScriptBoard {
+  const now = new Date().toISOString();
+  const fallback = createDefaultDirectorScriptBoard(recipeId, topic, now);
+  const normalizeItems = (items: Partial<DirectorScriptItem>[] | undefined, limit: number) =>
+    Array.isArray(items)
+      ? items
+          .map((item, index) => normalizeDirectorScriptItem(item, index, now))
+          .filter((item): item is DirectorScriptItem => Boolean(item))
+          .slice(-limit)
+      : [];
+  return {
+    premise: typeof board?.premise === "string" ? board.premise.slice(0, 400) : fallback.premise,
+    currentPhase: typeof board?.currentPhase === "string" && board.currentPhase.trim() ? board.currentPhase.slice(0, 120) : fallback.currentPhase,
+    hiddenFacts: normalizeItems(board?.hiddenFacts, 24),
+    openThreads: normalizeItems(board?.openThreads, 24),
+    plannedBeats: normalizeItems(board?.plannedBeats, 24),
+    pressureSources: normalizeItems(board?.pressureSources, 24),
+    environmentAnchors: normalizeItems(board?.environmentAnchors, 16).length
+      ? normalizeItems(board?.environmentAnchors, 16)
+      : fallback.environmentAnchors,
+    forbiddenReveals: normalizeItems(board?.forbiddenReveals, 16).length
+      ? normalizeItems(board?.forbiddenReveals, 16)
+      : fallback.forbiddenReveals,
+    continuityNotes: normalizeItems(board?.continuityNotes, 24),
+    revisionLog: Array.isArray(board?.revisionLog)
+      ? board.revisionLog
+          .map((revision, index) => normalizeDirectorScriptRevision(revision, index, now))
+          .filter((revision): revision is DirectorScriptRevision => Boolean(revision))
+          .slice(-30)
+      : [],
+  };
+}
+
+function applyDirectorScriptPatch(board: DirectorScriptBoard, patch: DirectorScriptPatch, topic: string): DirectorScriptBoard {
+  const normalizedPatch = normalizeDirectorScriptBoard({ ...board, ...patch }, "casual", topic);
+  const revisionLog = patch.revision ? [patch.revision, ...board.revisionLog].slice(0, 30) : normalizedPatch.revisionLog;
+  return {
+    ...board,
+    ...normalizedPatch,
+    revisionLog,
+  };
+}
+
 function createDefaultRoomConstraints(now = new Date().toISOString()): RoomConstraint[] {
   return [
     {
@@ -885,6 +1044,7 @@ function createDefaultRoomConstraints(now = new Date().toISOString()): RoomConst
 }
 
 function createDefaultRoomDirector(roomId: string, recipeId: RoomRecipeId = "casual"): RoomDirectorState {
+  const now = new Date().toISOString();
   return {
     enabled: true,
     directorId: "room-director",
@@ -897,6 +1057,7 @@ function createDefaultRoomDirector(roomId: string, recipeId: RoomRecipeId = "cas
     lastMove: null,
     lastSpokeAt: null,
     sceneBoard: { ...defaultSceneBoard },
+    scriptBoard: createDefaultDirectorScriptBoard(recipeId, "Daily chat", now),
     constraints: createDefaultRoomConstraints(),
     overrideLog: [],
   };
@@ -947,6 +1108,7 @@ function createDefaultRoomState(
     autoSpeechPolicy: { ...defaultRoomAutoSpeechPolicy, speedDelaysMs: { ...defaultRoomAutoSpeechPolicy.speedDelaysMs } },
     autoSpeechState: { ...defaultRoomAutoSpeechState },
     advancePolicy: defaultRoomAdvancePolicy,
+    speakerPolicy: { ...defaultRoomSpeakerPolicy },
     lastContinuationAssessment: null,
     lastAdvanceDecision: null,
     lastEngagementDecision: null,
@@ -979,6 +1141,7 @@ function createDefaultRoomState(
         title: options.title ?? recipe.name,
         mood: recipe.defaultMood,
       },
+      scriptBoard: createDefaultDirectorScriptBoard(recipe.id, options.topic ?? "Daily chat"),
     },
     highlightedTargets: [],
     lastSpeakerId: null,
@@ -3294,6 +3457,10 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
             enabled: true,
             recipeId: recipe.id,
             profileId: recipe.directorProfileId,
+            scriptBoard: {
+              ...state.room.director.scriptBoard,
+              currentPhase: recipe.id === "casual" ? "open conversation" : "setup",
+            },
             sceneBoard: {
               ...state.room.director.sceneBoard,
               title: recipe.name,
@@ -3312,6 +3479,17 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
           director: {
             ...state.room.director,
             sceneBoard: action.sceneBoard,
+          },
+        },
+      };
+    case "room.updateDirectorScript":
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          director: {
+            ...state.room.director,
+            scriptBoard: applyDirectorScriptPatch(state.room.director.scriptBoard, action.patch, state.room.topic),
           },
         },
       };
@@ -3531,6 +3709,39 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
         room: {
           ...state.room,
           advancePolicy: action.policy,
+        },
+      };
+    case "room.setSpeakerPolicy":
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          speakerPolicy: normalizeRoomSpeakerPolicy({
+            ...state.room.speakerPolicy,
+            mode: action.policy,
+          }),
+        },
+      };
+    case "room.setSpeakerPolicyNumberField":
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          speakerPolicy: normalizeRoomSpeakerPolicy({
+            ...state.room.speakerPolicy,
+            [action.field]: action.value,
+          }),
+        },
+      };
+    case "room.setSpeakerPolicyBooleanField":
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          speakerPolicy: normalizeRoomSpeakerPolicy({
+            ...state.room.speakerPolicy,
+            [action.field]: action.value,
+          }),
         },
       };
     case "room.setAdvanceRuntimeState":
@@ -4660,6 +4871,7 @@ function normalizeRoomForRuntime(room: RoomState, packs: CharacterPackSummary[])
       ...(room.match ?? {}),
     },
     channelReadState: room.channelReadState ?? {},
+    speakerPolicy: normalizeRoomSpeakerPolicy(room.speakerPolicy),
     privateThreads: normalizeRoomPrivateThreads(room, id),
     privateChatRequests: room.privateChatRequests ?? [],
     lastPrivateInfluence: room.lastPrivateInfluence ?? null,
@@ -4676,6 +4888,7 @@ function normalizeRoomForRuntime(room: RoomState, packs: CharacterPackSummary[])
     director: {
       ...room.director,
       memoryScope: `room:${id}:system`,
+      scriptBoard: normalizeDirectorScriptBoard(room.director.scriptBoard, room.director.recipeId ?? "casual", topic),
     },
     messages: (room.messages ?? []).map((message) => ({
       target: "all" as const,
@@ -5178,6 +5391,9 @@ function markRoomChannelRead(room: RoomState, channelId: RoomActiveChannelId, me
 
 function markAllRoomChannelsRead(room: RoomState, at?: string): RoomState {
   const channelIds: RoomActiveChannelId[] = ["public"];
+  if (room.freedomLevel === "developer") {
+    channelIds.push("director");
+  }
   if (room.factionHuddles === "on") {
     for (const faction of room.factions) {
       if (faction.id !== "neutral") {
@@ -5196,6 +5412,9 @@ function markAllRoomChannelsRead(room: RoomState, at?: string): RoomState {
 function resolveMessageChannelIdForRead(message: ConsoleMessage): RoomActiveChannelId {
   if (message.channelId) {
     return message.channelId;
+  }
+  if (message.visibility === "director_channel") {
+    return "director";
   }
   if (message.visibility === "faction_huddle" && message.factionId) {
     return `faction:${message.factionId}`;
@@ -5343,6 +5562,10 @@ function isPrivateThreadVisibleToLocalUser(room: RoomState, thread: RoomPrivateT
 function normalizeActiveChannelId(room: ConsoleAppState["room"], channelId: RoomActiveChannelId): RoomActiveChannelId {
   if (channelId === "public") {
     return "public";
+  }
+
+  if (channelId === "director") {
+    return room.freedomLevel === "developer" ? "director" : "public";
   }
 
   if (channelId.startsWith("private:")) {

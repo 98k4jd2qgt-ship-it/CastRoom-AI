@@ -20,7 +20,10 @@ mustInclude(scheduler, "isExplicitPublicDirectorTextRequest(userInput, move)", "
 mustInclude(scheduler, 'reason !== "mentioned"', "Director private directives only consider @You for explicit Director mentions");
 mustInclude(scheduler, "shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)", "Director private directives decide whether the user is a valid target");
 mustInclude(scheduler, 'target: shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)', "Director follow-up directives do not default to @You");
-mustInclude(scheduler, 'directorHandoff("repetition_guard", room, nowMs + delayMs)', "Auto repetition guard hands off to backstage Director instead of stopping");
+mustInclude(scheduler, "policyBlockedAutoResult(room, \"repetition_guard\", \"soft_user_preference\"", "Auto repetition guard is policy-gated instead of forced public stopping");
+mustInclude(scheduler, "createAutonomousFallbackSpeechIntent", "Auto scheduler has a role fast path before asking Director");
+mustInclude(scheduler, "shouldUseRoleFastPathForAutoDirectorPlan", "Auto Director planned turns can be downgraded to role fast path");
+mustNotInclude(scheduler, 'directorHandoff("repetition_guard", room, nowMs + delayMs)', "Auto repetition guard no longer forces Director handoff");
 
 const directorBody = sliceFunction("executeRoomDirectorTurnBody");
 mustIncludeIn(directorBody, "const directorEffect = applyRoomDirectorTurn(result)", "Director body captures apply effect");
@@ -81,5 +84,11 @@ function mustInclude(text, marker, label) {
 function mustIncludeIn(text, marker, label) {
   if (!text.includes(marker)) {
     failures.push(`missing ${label}: ${marker}`);
+  }
+}
+
+function mustNotInclude(text, marker, label) {
+  if (text.includes(marker)) {
+    failures.push(`unexpected ${label}: ${marker}`);
   }
 }

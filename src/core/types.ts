@@ -290,7 +290,7 @@ export interface ConsoleMessage {
   mentions?: RoomMention[];
   visibility?: RoomMessageVisibility;
   visibleTo?: RoomMentionTarget[];
-  privateReason?: "ai_to_ai_mention" | "system_directed" | "faction_huddle" | "private_thread";
+  privateReason?: "ai_to_ai_mention" | "system_directed" | "faction_huddle" | "private_thread" | "director_channel";
   channelId?: RoomActiveChannelId;
   factionId?: string;
   directorMove?: RoomDirectorMove;
@@ -784,15 +784,15 @@ export interface RoomMention {
 
 export type RoomMessageTarget = "all" | { targets: RoomMentionTarget[] };
 
-export type RoomMessageVisibility = "public" | "private_ai" | "faction_huddle" | "private_thread";
+export type RoomMessageVisibility = "public" | "private_ai" | "faction_huddle" | "private_thread" | "director_channel";
 
 export type RoomPrivateWhisperMode = "off" | "on";
 
 export type RoomFactionHuddleMode = "off" | "on";
 
-export type RoomChannelType = "public" | "faction" | "private";
+export type RoomChannelType = "public" | "faction" | "private" | "director";
 
-export type RoomActiveChannelId = "public" | "direct" | `faction:${string}` | `private:${string}`;
+export type RoomActiveChannelId = "public" | "direct" | "director" | `faction:${string}` | `private:${string}`;
 
 export interface RoomChannel {
   id: RoomActiveChannelId;
@@ -1344,6 +1344,15 @@ export type RoomScheduleReason =
 
 export type RoomAdvancePolicy = "wait_for_instruction" | "fill_gap" | "continuous";
 
+export type RoomSpeakerPolicy = "balanced" | "round_robin" | "spotlight" | "freeform";
+
+export interface RoomSpeakerPolicySettings {
+  mode: RoomSpeakerPolicy;
+  maxConsecutivePairTurns: number;
+  lurkerBoostAfterTurns: number;
+  recentSpeakerPenalty: boolean;
+}
+
 export type RoomBlockingNeed =
   | "none"
   | "soft_user_preference"
@@ -1688,6 +1697,53 @@ export interface RoomSceneBoard {
   updatedAt: string | null;
 }
 
+export type DirectorScriptItemStatus = "planned" | "active" | "revealed" | "changed" | "retired" | "contradicted";
+
+export type DirectorScriptRevisionReason =
+  | "player_choice"
+  | "role_action"
+  | "contradiction"
+  | "pace"
+  | "developer_edit"
+  | "director_refinement";
+
+export interface DirectorScriptItem {
+  id: string;
+  text: string;
+  status: DirectorScriptItemStatus;
+  visibility: "director_only";
+  createdBy: "director" | "developer";
+  updatedAt: string;
+}
+
+export interface DirectorScriptRevision {
+  id: string;
+  reason: DirectorScriptRevisionReason;
+  summary: string;
+  before?: string;
+  after?: string;
+  createdBy: "director" | "developer";
+  createdAt: string;
+}
+
+export interface DirectorScriptBoard {
+  premise?: string;
+  currentPhase?: string;
+  hiddenFacts: DirectorScriptItem[];
+  openThreads: DirectorScriptItem[];
+  plannedBeats: DirectorScriptItem[];
+  pressureSources: DirectorScriptItem[];
+  environmentAnchors: DirectorScriptItem[];
+  forbiddenReveals: DirectorScriptItem[];
+  continuityNotes: DirectorScriptItem[];
+  revisionLog: DirectorScriptRevision[];
+}
+
+export type DirectorScriptPatch = Partial<Omit<DirectorScriptBoard, "revisionLog">> & {
+  revision?: DirectorScriptRevision;
+  revisionLog?: DirectorScriptRevision[];
+};
+
 export type RoomConstraintScope = "scene" | "role" | "user" | "item" | "knowledge" | "channel" | "director";
 export type RoomConstraintStatus = "active" | "resolved" | "suspended" | "needs_review";
 export type RoomActionCheckResult =
@@ -1951,8 +2007,42 @@ export interface RoomDirectorState {
   lastMove: RoomDirectorMove | null;
   lastSpokeAt: string | null;
   sceneBoard: RoomSceneBoard;
+  scriptBoard: DirectorScriptBoard;
   constraints: RoomConstraint[];
   overrideLog: DirectorOverrideLogEntry[];
+}
+
+export type DirectorNarrationTrigger =
+  | "scene_opening"
+  | "scene_transition"
+  | "environment_change"
+  | "time_passage"
+  | "action_consequence"
+  | "atmosphere_shift"
+  | "ambient_pressure"
+  | "phase_summary";
+
+export type DirectorRequiredIntervention =
+  | "action_ruling"
+  | "visibility_guard"
+  | "stuck_recovery"
+  | "memory_conflict"
+  | "debate_ruling"
+  | "study_judgement"
+  | "planning_summary"
+  | "script_revision";
+
+export interface DirectorTickResult {
+  publicNarration?: string | null;
+  narrationTrigger?: DirectorNarrationTrigger | null;
+  directorChannelNote?: string | null;
+  privateDirectives?: RoomDirectorPrivateDirective[];
+  inspectorPatch?: DirectorStatePatch["inspectorPatch"];
+  sceneStatePatch?: Partial<RoomSimulationState>;
+  memoryCandidates?: unknown[];
+  scriptPatch?: DirectorScriptPatch | null;
+  requiredIntervention?: DirectorRequiredIntervention | null;
+  hardPause?: RoomStopReason | null;
 }
 
 export interface RoomDirectorScheduleResult {
@@ -2175,6 +2265,7 @@ export interface RoomState {
   autoSpeechPolicy: RoomAutoSpeechPolicy;
   autoSpeechState: RoomAutoSpeechState;
   advancePolicy?: RoomAdvancePolicy;
+  speakerPolicy?: RoomSpeakerPolicySettings;
   lastContinuationAssessment?: ContinuationAssessment | null;
   lastAdvanceDecision?: RoomAdvanceDecision | null;
   lastEngagementDecision?: RoomEngagementDecision | null;
@@ -2415,6 +2506,7 @@ export type ConsoleAction =
   | { type: "room.setDirectorEnabled"; enabled: boolean }
   | { type: "room.setDirectorRecipe"; recipeId: RoomRecipeId }
   | { type: "room.updateDirectorScene"; sceneBoard: RoomSceneBoard }
+  | { type: "room.updateDirectorScript"; patch: DirectorScriptPatch }
   | { type: "room.setDirectorConstraints"; constraints: RoomConstraint[] }
   | { type: "room.addDirectorOverride"; entry: DirectorOverrideLogEntry; constraints: RoomConstraint[]; sceneBoard?: RoomSceneBoard }
   | { type: "room.setDirectorLastMove"; move: RoomDirectorMove; at: string }
@@ -2433,6 +2525,9 @@ export type ConsoleAction =
   | { type: "room.setSpeed"; speed: RoomState["speed"] }
   | { type: "room.setFreedomLevel"; freedomLevel: RoomFreedomLevel }
   | { type: "room.setAdvancePolicy"; policy: RoomAdvancePolicy }
+  | { type: "room.setSpeakerPolicy"; policy: RoomSpeakerPolicy }
+  | { type: "room.setSpeakerPolicyNumberField"; field: "maxConsecutivePairTurns" | "lurkerBoostAfterTurns"; value: number }
+  | { type: "room.setSpeakerPolicyBooleanField"; field: "recentSpeakerPenalty"; value: boolean }
   | {
       type: "room.setAdvanceRuntimeState";
       continuationAssessment?: ContinuationAssessment | null;
@@ -2677,7 +2772,7 @@ export interface RoomMemoryMessage {
   at: string;
   visibility?: RoomMessageVisibility;
   visibleTo?: RoomMentionTarget[];
-  privateReason?: "ai_to_ai_mention" | "system_directed" | "faction_huddle" | "private_thread";
+  privateReason?: "ai_to_ai_mention" | "system_directed" | "faction_huddle" | "private_thread" | "director_channel";
   channelId?: RoomActiveChannelId;
   factionId?: string;
 }

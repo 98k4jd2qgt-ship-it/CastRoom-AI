@@ -40,6 +40,25 @@ export type MemoryGraphVisibility = "public" | "known_to_roles" | "faction" | "d
 export type MemoryGraphGovernanceMode = "browse" | "conflicts" | "duplicates" | "visibility" | "quality";
 export type MemoryGraphIssueKind = "conflict" | "duplicate" | "visibility_leak" | "low_quality" | "orphan";
 export type MemoryGraphIssueSeverity = "info" | "warn" | "error";
+export type MemoryGraphEpistemicStatus =
+  | "observed"
+  | "claimed"
+  | "believed"
+  | "doubted"
+  | "confirmed"
+  | "disputed"
+  | "refuted";
+export type MemoryGraphPromptUse = "fact" | "belief" | "none";
+
+export const MEMORY_GRAPH_EPISTEMIC_STATUSES: MemoryGraphEpistemicStatus[] = [
+  "observed",
+  "claimed",
+  "believed",
+  "doubted",
+  "confirmed",
+  "disputed",
+  "refuted",
+];
 
 export interface MemoryGraphNode {
   id: string;
@@ -92,6 +111,7 @@ export interface MemoryClaimInput {
   source: MemorySourceInput;
   conflictPolicy: "merge" | "dispute" | "supersede";
   status?: MemoryGraphClaimStatus;
+  epistemicStatus?: MemoryGraphEpistemicStatus;
   evidenceCount?: number;
   properties?: Record<string, unknown>;
 }
@@ -106,6 +126,7 @@ export interface MemoryGraphClaim {
   text: string;
   canonicalKey: string;
   status: MemoryGraphClaimStatus;
+  epistemicStatus: MemoryGraphEpistemicStatus;
   confidence: number;
   authority: MemoryGraphAuthority;
   sensitivity: MemorySensitivity;
@@ -126,7 +147,13 @@ export interface MemoryGraphEdgeInput {
     | "ASSERTED_BY"
     | "SUPPORTS"
     | "CONFLICTS_WITH"
+    | "CONTRADICTS"
     | "SUPERSEDES"
+    | "CLAIMS"
+    | "BELIEVES"
+    | "DOUBTS"
+    | "KNOWS"
+    | "REFUTES"
     | "MEMBER_OF"
     | "HAS_GOAL"
     | "OWNS"
@@ -176,6 +203,7 @@ export interface MemoryGraphFilters {
   kinds?: MemoryGraphClaimKind[];
   statuses?: MemoryGraphClaimStatus[];
   visibilities?: MemoryGraphVisibility[];
+  epistemicStatuses?: MemoryGraphEpistemicStatus[];
 }
 
 export interface MemoryGraphViewNode {
@@ -188,6 +216,8 @@ export interface MemoryGraphViewNode {
   nodeKind?: MemoryGraphNodeKind;
   claimKind?: MemoryGraphClaimKind;
   status?: MemoryGraphClaimStatus;
+  epistemicStatus?: MemoryGraphEpistemicStatus;
+  promptUse?: MemoryGraphPromptUse;
   visibility?: MemoryGraphVisibility;
   authority?: MemoryGraphAuthority;
   confidence?: number;
@@ -206,11 +236,32 @@ export interface MemoryGraphViewNode {
   graphSyncState?: "ready" | "fallback" | "unsynced";
 }
 
+type MemoryGraphEpistemicInput = Pick<MemoryClaimInput, "authority" | "status" | "epistemicStatus" | "properties">;
+type MemoryGraphEpistemicClaim = Pick<MemoryGraphClaim, "authority" | "status" | "epistemicStatus" | "properties">;
+
 export interface MemoryGraphViewEdge {
   id: string;
   from: string;
   to: string;
-  type: "ABOUT" | "KNOWN_BY" | "ASSERTED_BY" | "CONFLICTS_WITH" | "SUPERSEDES" | "MEMBER_OF" | "HAS_GOAL" | "OWNS" | "LOCATED_IN" | "TARGETS" | "SUPPORTS" | "MENTIONS";
+  type:
+    | "ABOUT"
+    | "KNOWN_BY"
+    | "ASSERTED_BY"
+    | "CONFLICTS_WITH"
+    | "CONTRADICTS"
+    | "SUPERSEDES"
+    | "CLAIMS"
+    | "BELIEVES"
+    | "DOUBTS"
+    | "KNOWS"
+    | "REFUTES"
+    | "MEMBER_OF"
+    | "HAS_GOAL"
+    | "OWNS"
+    | "LOCATED_IN"
+    | "TARGETS"
+    | "SUPPORTS"
+    | "MENTIONS";
   label: string;
   visibility: MemoryGraphVisibility;
   dashed?: boolean;
@@ -280,6 +331,7 @@ export interface MemoryGraphClaimPatch {
   kind?: MemoryGraphClaimKind;
   predicate?: string;
   status?: MemoryGraphClaimStatus;
+  epistemicStatus?: MemoryGraphEpistemicStatus;
   confidence?: number;
   visibility?: MemoryGraphVisibility;
   authority?: MemoryGraphAuthority;
@@ -387,6 +439,12 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
     const developerOverride = input.authority === "developer";
     const confidence = developerOverride ? 1 : clamp(input.confidence, 0, 1);
     const id = existing?.id ?? input.id ?? stableMemoryGraphId("claim", uniqueKey);
+    const epistemicStatus = resolveMemoryGraphEpistemicStatus(input, existing);
+    const properties = {
+      ...(existing?.properties ?? {}),
+      ...(input.properties ?? {}),
+      epistemicStatus,
+    };
     const claim: MemoryGraphClaim = {
       id,
       scope: input.scope,
@@ -397,6 +455,7 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       text: input.text.trim(),
       canonicalKey,
       status: developerOverride ? "active" : (input.status ?? existing?.status ?? "active"),
+      epistemicStatus,
       confidence: Math.max(existing?.confidence ?? 0, confidence),
       authority: developerOverride ? "developer" : (existing?.authority ?? input.authority),
       sensitivity: input.sensitivity,
@@ -405,7 +464,7 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       firstSeenAt: existing?.firstSeenAt ?? input.source.createdAt ?? now,
       lastSeenAt: input.source.createdAt ?? now,
       version: (existing?.version ?? 0) + 1,
-      properties: input.properties ?? existing?.properties ?? {},
+      properties,
     };
     this.claims.set(id, claim);
     this.claimKeys.set(uniqueKey, id);
@@ -449,11 +508,16 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       kind: patch.kind ?? existing.kind,
       predicate: patch.predicate?.trim() || existing.predicate,
       status: patch.status ?? existing.status,
+      epistemicStatus: patch.epistemicStatus ?? existing.epistemicStatus,
       confidence: patch.confidence === undefined ? existing.confidence : clamp(patch.confidence, 0, 1),
       visibility: patch.visibility ?? existing.visibility,
       authority: patch.authority ?? existing.authority,
       sensitivity: patch.sensitivity ?? existing.sensitivity,
-      properties: patch.properties ?? existing.properties,
+      properties: {
+        ...existing.properties,
+        ...(patch.properties ?? {}),
+        epistemicStatus: patch.epistemicStatus ?? existing.epistemicStatus,
+      },
       lastSeenAt: new Date().toISOString(),
       version: existing.version + 1,
     };
@@ -611,6 +675,7 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       },
       conflictPolicy: claim.authority === "developer" ? "supersede" : claim.status === "disputed" ? "dispute" : "merge",
       status: claim.status,
+      epistemicStatus: claim.epistemicStatus,
       evidenceCount: claim.evidenceCount,
       properties: claim.properties,
     };
@@ -972,6 +1037,8 @@ export class TauriSQLiteMemoryGraphRepository implements MemoryGraphRepository {
 
 export function memoryGraphClaimFromCompressedEntry(entry: CompressedMemoryEntry): MemoryClaimInput {
   const subject = defaultMemorySubjectForScope(entry.scope);
+  const epistemicStatus: MemoryGraphEpistemicStatus =
+    entry.status === "active" ? "confirmed" : entry.status === "disputed" ? "disputed" : entry.status === "archived" ? "refuted" : "claimed";
   return {
     scope: entry.scope,
     kind: memoryAtomKindToGraphKind(entry.kind),
@@ -995,17 +1062,112 @@ export function memoryGraphClaimFromCompressedEntry(entry: CompressedMemoryEntry
     },
     conflictPolicy: entry.status === "disputed" ? "dispute" : "merge",
     status: entry.status as MemoryGraphClaimStatus,
+    epistemicStatus,
     evidenceCount: entry.evidenceCount,
     properties: {
       legacyId: entry.id,
       sourceIds: entry.sourceIds,
       sourceMessageIds: entry.sourceMessageIds,
+      epistemicStatus,
     },
   };
 }
 
 export function memoryGraphClaimTextForPrompt(claim: MemoryGraphClaim): string {
-  return claim.authority === "developer" ? `[开发者确认] ${claim.text}` : claim.text;
+  const epistemicStatus = memoryGraphClaimEpistemicStatus(claim);
+  const sourceLabel = memoryGraphClaimSourceLabel(claim);
+  if (claim.authority === "developer" || epistemicStatus === "confirmed") {
+    return claim.authority === "developer" ? `[developer confirmed] ${claim.text}` : claim.text;
+  }
+  if (epistemicStatus === "observed") {
+    return `[observed] ${claim.text}`;
+  }
+  if (epistemicStatus === "believed") {
+    return `[belief] ${sourceLabel} currently believes: ${claim.text}`;
+  }
+  if (epistemicStatus === "doubted") {
+    return `[doubt] ${sourceLabel} doubts: ${claim.text}`;
+  }
+  if (epistemicStatus === "refuted") {
+    return `[refuted] ${claim.text}`;
+  }
+  if (claim.status === "disputed" || epistemicStatus === "disputed") {
+    return `[disputed] ${claim.text}`;
+  }
+  return `[claim] ${sourceLabel} claims: ${claim.text}`;
+}
+
+export function memoryGraphClaimEpistemicStatus(claim: Partial<MemoryGraphEpistemicClaim>): MemoryGraphEpistemicStatus {
+  const value = normalizeMemoryGraphEpistemicStatus(claim.epistemicStatus ?? claim.properties?.epistemicStatus);
+  if (value) {
+    return value;
+  }
+  if (claim.status === "disputed") {
+    return "disputed";
+  }
+  if (claim.status === "rejected" || claim.status === "archived") {
+    return "refuted";
+  }
+  if (claim.authority === "developer" || claim.authority === "director" || claim.status === "active") {
+    return "confirmed";
+  }
+  return "claimed";
+}
+
+export function memoryGraphClaimPromptUse(claim: MemoryGraphClaim): MemoryGraphPromptUse {
+  if (claim.status !== "active") {
+    return "none";
+  }
+  const epistemicStatus = memoryGraphClaimEpistemicStatus(claim);
+  if (epistemicStatus === "confirmed" || epistemicStatus === "observed") {
+    return "fact";
+  }
+  if (epistemicStatus === "believed") {
+    return "belief";
+  }
+  return "none";
+}
+
+export function shouldInjectMemoryGraphClaimIntoPrompt(claim: MemoryGraphClaim): boolean {
+  return memoryGraphClaimPromptUse(claim) !== "none";
+}
+
+function resolveMemoryGraphEpistemicStatus(input: MemoryGraphEpistemicInput, existing?: MemoryGraphEpistemicClaim): MemoryGraphEpistemicStatus {
+  const explicit = normalizeMemoryGraphEpistemicStatus(input.epistemicStatus ?? input.properties?.epistemicStatus);
+  if (explicit) {
+    return input.authority === "developer" ? "confirmed" : explicit;
+  }
+  const previous = normalizeMemoryGraphEpistemicStatus(existing?.epistemicStatus ?? existing?.properties?.epistemicStatus);
+  if (previous) {
+    if (input.authority === "developer") {
+      return "confirmed";
+    }
+    return previous;
+  }
+  return memoryGraphClaimEpistemicStatus(input);
+}
+
+function normalizeMemoryGraphEpistemicStatus(value: unknown): MemoryGraphEpistemicStatus | undefined {
+  return typeof value === "string" && (MEMORY_GRAPH_EPISTEMIC_STATUSES as string[]).includes(value)
+    ? value as MemoryGraphEpistemicStatus
+    : undefined;
+}
+
+function memoryGraphClaimSourceLabel(claim: MemoryGraphClaim): string {
+  const speaker = typeof claim.properties?.sourceSpeaker === "string" ? claim.properties.sourceSpeaker.trim() : "";
+  if (speaker) {
+    return speaker;
+  }
+  if (claim.authority === "character") {
+    return "the role";
+  }
+  if (claim.authority === "user") {
+    return "the user";
+  }
+  if (claim.authority === "director") {
+    return "Director";
+  }
+  return claim.authority;
 }
 
 function memoryGraphEntityRefFromNode(node: MemoryGraphNode): MemoryEntityRef {
@@ -1366,6 +1528,8 @@ function memoryGraphClaimViewNode(claim: MemoryGraphClaim): MemoryGraphViewNode 
     scope: claim.scope,
     claimKind: claim.kind,
     status: claim.status,
+    epistemicStatus: memoryGraphClaimEpistemicStatus(claim),
+    promptUse: memoryGraphClaimPromptUse(claim),
     visibility: claim.visibility,
     authority: claim.authority,
     confidence: claim.confidence,
@@ -1392,7 +1556,7 @@ function memoryGraphClaimSemanticConcept(claim: MemoryGraphClaim): {
   const caption = memoryGraphShortConcept(`${kindLabel} · ${body || "-"}`, 34);
   return {
     caption,
-    subtitle: `${claim.kind} · ${claim.status} · ${Math.round(claim.confidence * 100)}%`,
+    subtitle: `${claim.kind} · ${memoryGraphClaimEpistemicStatus(claim)} · ${claim.status} · ${Math.round(claim.confidence * 100)}%`,
     semanticKind: claim.kind,
     categoryGroup: memoryGraphClaimCategoryGroup(claim),
   };
@@ -1421,10 +1585,11 @@ function memoryGraphClaimKindConceptLabel(kind: MemoryGraphClaimKind): string {
 }
 
 function memoryGraphClaimCategoryGroup(claim: MemoryGraphClaim): string {
-  if (claim.status === "disputed" || claim.kind === "conflict") {
+  const epistemicStatus = memoryGraphClaimEpistemicStatus(claim);
+  if (claim.status === "disputed" || epistemicStatus === "disputed" || claim.kind === "conflict") {
     return "conflict";
   }
-  if (claim.status === "needs_review" || claim.confidence < 0.45 || claim.status === "rejected" || claim.status === "archived") {
+  if (claim.status === "needs_review" || claim.confidence < 0.45 || claim.status === "rejected" || claim.status === "archived" || epistemicStatus === "claimed" || epistemicStatus === "refuted") {
     return "quality";
   }
   if (claim.kind === "judgement") {
@@ -1575,7 +1740,7 @@ function memoryGraphScopeLabel(scope: MemoryScope): string {
 }
 
 function memoryGraphViewEdgeType(type: MemoryGraphEdgeInput["type"]): MemoryGraphViewEdge["type"] {
-  if (type === "CONFLICTS_WITH" || type === "SUPERSEDES" || type === "MEMBER_OF" || type === "HAS_GOAL" || type === "OWNS" || type === "LOCATED_IN" || type === "TARGETS" || type === "SUPPORTS" || type === "MENTIONS") {
+  if (type === "CONFLICTS_WITH" || type === "CONTRADICTS" || type === "SUPERSEDES" || type === "CLAIMS" || type === "BELIEVES" || type === "DOUBTS" || type === "KNOWS" || type === "REFUTES" || type === "MEMBER_OF" || type === "HAS_GOAL" || type === "OWNS" || type === "LOCATED_IN" || type === "TARGETS" || type === "SUPPORTS" || type === "MENTIONS") {
     return type;
   }
   if (type === "KNOWN_BY" || type === "ASSERTED_BY") {
@@ -1585,6 +1750,25 @@ function memoryGraphViewEdgeType(type: MemoryGraphEdgeInput["type"]): MemoryGrap
 }
 
 function memoryGraphRelationshipViewEdgeType(claim: MemoryGraphClaim): MemoryGraphViewEdge["type"] {
+  const epistemicStatus = memoryGraphClaimEpistemicStatus(claim);
+  if (epistemicStatus === "claimed") {
+    return "CLAIMS";
+  }
+  if (epistemicStatus === "believed") {
+    return "BELIEVES";
+  }
+  if (epistemicStatus === "doubted") {
+    return "DOUBTS";
+  }
+  if (epistemicStatus === "confirmed" || epistemicStatus === "observed") {
+    return "KNOWS";
+  }
+  if (epistemicStatus === "refuted") {
+    return "REFUTES";
+  }
+  if (epistemicStatus === "disputed") {
+    return "CONTRADICTS";
+  }
   if (claim.predicate === "has_goal" || claim.kind === "goal") {
     return "HAS_GOAL";
   }
@@ -1622,6 +1806,9 @@ function matchesMemoryGraphFilters(
   if (filters.statuses && filters.statuses.length > 0 && !filters.statuses.includes(claim.status)) {
     return false;
   }
+  if (filters.epistemicStatuses && filters.epistemicStatuses.length > 0 && !filters.epistemicStatuses.includes(memoryGraphClaimEpistemicStatus(claim))) {
+    return false;
+  }
   if (filters.visibilities && filters.visibilities.length > 0 && !filters.visibilities.includes(claim.visibility)) {
     return false;
   }
@@ -1629,7 +1816,7 @@ function matchesMemoryGraphFilters(
   if (!search) {
     return true;
   }
-  const haystack = [claim.text, claim.kind, claim.status, claim.visibility, claim.authority, subject?.displayName, object?.displayName]
+  const haystack = [claim.text, claim.kind, claim.status, memoryGraphClaimEpistemicStatus(claim), claim.visibility, claim.authority, subject?.displayName, object?.displayName]
     .filter((item): item is string => Boolean(item))
     .join("\n")
     .toLowerCase();
@@ -1661,6 +1848,7 @@ function serializeNodeInput(input: MemoryEntityRef & { scope: MemoryScope }) {
 }
 
 function serializeClaimInput(input: MemoryClaimInput) {
+  const epistemicStatus = resolveMemoryGraphEpistemicStatus(input);
   return {
     id: input.id,
     scope: input.scope,
@@ -1669,6 +1857,7 @@ function serializeClaimInput(input: MemoryClaimInput) {
     text: input.text,
     canonicalKey: canonicalMemoryGraphClaimKey(input),
     status: input.status ?? "active",
+    epistemicStatus,
     visibility: input.visibility,
     knownToRoleIds: input.knownToRoleIds ?? [],
     factionId: input.factionId,
@@ -1677,7 +1866,10 @@ function serializeClaimInput(input: MemoryClaimInput) {
     authority: input.authority,
     sensitivity: input.sensitivity,
     evidenceCount: input.evidenceCount ?? 1,
-    properties: input.properties ?? {},
+    properties: {
+      ...(input.properties ?? {}),
+      epistemicStatus,
+    },
     source: input.source,
   };
 }

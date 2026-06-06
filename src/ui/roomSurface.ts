@@ -15,6 +15,7 @@ import type {
   RoomIdentityCardField,
   RoomParticipant,
   RoomAdvancePolicy,
+  RoomSpeakerPolicy,
   RoomBlockingNeed,
   RoomAdvanceDecision,
   RoomEngagementDecisionKind,
@@ -761,12 +762,14 @@ function renderTimelineHeader(props: RoomSurfaceProps): HTMLElement {
   const header = document.createElement("div");
   header.className = "room-timeline-header";
   const label = displayChannelLabel(props, channel);
-  const glyph = channel.type === "private" ? "@" : "#";
+  const glyph = channel.type === "private" ? "@" : channel.type === "director" ? "D" : "#";
   header.innerHTML = `
     <div>
       <h2>${escapeHtml(glyph)} ${escapeHtml(label)}</h2>
       <p>${escapeHtml(
-        channel.type === "faction"
+        channel.type === "director"
+          ? roomUiText(language, "directorChannelNote", "Director backstage scheduling. Roles cannot see this channel.")
+          : channel.type === "faction"
           ? t(language, "roomChannelPrivate", { faction: label })
           : channel.type === "private"
             ? roomUiText(language, "privateThreadNote", `Private chat - ${label}`)
@@ -788,17 +791,26 @@ function renderRoomChannelRail(props: RoomSurfaceProps): HTMLElement {
 
   for (const channel of channels) {
     const label = displayChannelLabel(props, channel);
-    const glyph = channel.type === "private" ? "@" : "#";
-    const memberCount = channel.type === "private" ? channel.memberTargets?.length ?? channel.memberRoleIds.length : channel.memberRoleIds.length;
+    const glyph = channel.type === "private" ? "@" : channel.type === "director" ? "D" : "#";
+    const memberCount =
+      channel.type === "director"
+        ? 1
+        : channel.type === "private"
+          ? channel.memberTargets?.length ?? channel.memberRoleIds.length
+          : channel.memberRoleIds.length;
     const button = document.createElement("button");
     button.type = "button";
     button.className = "room-channel-button";
     button.dataset.active = String(channel.id === props.state.room.activeChannelId);
     button.dataset.type = channel.type;
-    const locked = !developerFreedom && channel.type === "faction" && channel.factionId !== userFactionId;
+    const locked =
+      (!developerFreedom && channel.type === "director") ||
+      (!developerFreedom && channel.type === "faction" && channel.factionId !== userFactionId);
     button.disabled = locked;
     button.title = locked
       ? t(language, "roomChannelLocked")
+      : channel.type === "director"
+        ? roomUiText(language, "directorChannelTitle", "Director backstage")
       : channel.type === "faction"
         ? t(language, "roomChannelPrivate", { faction: label })
         : channel.type === "private"
@@ -889,6 +901,7 @@ function renderRoomInspectorActions(props: RoomSurfaceProps): HTMLElement {
   const freedom = renderRoomFreedomSelect(props);
   const uncertainty = renderRoomUncertaintySelect(props);
   const advancePolicy = renderRoomAdvancePolicyControl(props);
+  const speakerPolicy = renderRoomSpeakerPolicyControl(props);
 
   const buttons = document.createElement("div");
   buttons.className = "room-inspector-action-grid";
@@ -906,11 +919,12 @@ function renderRoomInspectorActions(props: RoomSurfaceProps): HTMLElement {
     editPrompt,
   );
 
-  section.append(recipe, freedom, uncertainty, advancePolicy, buttons);
+  section.append(recipe, freedom, uncertainty, advancePolicy, speakerPolicy, buttons);
   return section;
 }
 
 const ROOM_ADVANCE_POLICIES: RoomAdvancePolicy[] = ["wait_for_instruction", "fill_gap", "continuous"];
+const ROOM_SPEAKER_POLICIES: RoomSpeakerPolicy[] = ["balanced", "round_robin", "spotlight", "freeform"];
 
 function renderRoomAdvancePolicyControl(props: RoomSurfaceProps): HTMLElement {
   const language = props.state.language;
@@ -940,6 +954,89 @@ function renderRoomAdvancePolicyControl(props: RoomSurfaceProps): HTMLElement {
     options.append(button);
   }
   wrapper.append(label, options);
+  return wrapper;
+}
+
+function renderRoomSpeakerPolicyControl(props: RoomSurfaceProps): HTMLElement {
+  const language = props.state.language;
+  const settings = props.state.room.speakerPolicy ?? {
+    mode: "balanced" as RoomSpeakerPolicy,
+    maxConsecutivePairTurns: 3,
+    lurkerBoostAfterTurns: 4,
+    recentSpeakerPenalty: true,
+  };
+  const wrapper = document.createElement("div");
+  wrapper.className = "room-advance-policy room-speaker-policy";
+  const label = document.createElement("span");
+  label.className = "room-advance-policy-label";
+  label.textContent = roomUiText(language, "speakerPolicy");
+  const options = document.createElement("div");
+  options.className = "room-advance-segmented";
+  options.setAttribute("role", "group");
+  options.setAttribute("aria-label", roomUiText(language, "speakerPolicy"));
+  for (const policy of ROOM_SPEAKER_POLICIES) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "room-advance-option";
+    button.dataset.active = String(policy === settings.mode);
+    button.textContent = roomSpeakerPolicyLabel(policy, language);
+    button.title = roomSpeakerPolicyHint(policy, language);
+    button.setAttribute("aria-pressed", String(policy === settings.mode));
+    button.addEventListener("click", () => {
+      if (policy !== settings.mode) {
+        props.onAction({ type: "room.setSpeakerPolicy", policy });
+      }
+    });
+    options.append(button);
+  }
+  wrapper.append(label, options);
+  if (props.state.room.freedomLevel === "developer") {
+    const advanced = document.createElement("div");
+    advanced.className = "room-advance-policy-advanced";
+    advanced.append(
+      renderNumberField(
+        roomUiText(language, "speakerPolicyMaxPair"),
+        settings.maxConsecutivePairTurns,
+        2,
+        8,
+        1,
+        (value) =>
+          props.onAction({
+            type: "room.setSpeakerPolicyNumberField",
+            field: "maxConsecutivePairTurns",
+            value,
+          }),
+      ),
+      renderNumberField(
+        roomUiText(language, "speakerPolicyLurkerBoost"),
+        settings.lurkerBoostAfterTurns,
+        2,
+        12,
+        1,
+        (value) =>
+          props.onAction({
+            type: "room.setSpeakerPolicyNumberField",
+            field: "lurkerBoostAfterTurns",
+            value,
+          }),
+      ),
+      renderSelectField(
+        roomUiText(language, "speakerPolicyRecentPenalty"),
+        settings.recentSpeakerPenalty ? "on" : "off",
+        [
+          ["on", roomUiText(language, "speakerPolicyRecentPenaltyOn")],
+          ["off", roomUiText(language, "speakerPolicyRecentPenaltyOff")],
+        ],
+        (value) =>
+          props.onAction({
+            type: "room.setSpeakerPolicyBooleanField",
+            field: "recentSpeakerPenalty",
+            value: value === "on",
+          }),
+      ),
+    );
+    wrapper.append(advanced);
+  }
   return wrapper;
 }
 
@@ -1344,6 +1441,7 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
     { label: label("style"), value: simulationStyleLabel(room.simulation.style, language) },
     { label: label("uncertainty"), value: simulationUncertaintyProfileLabel(room.simulation.uncertaintyProfile, language) },
     { label: roomUiText(language, "advancePolicy"), value: roomAdvancePolicyLabel(room.advancePolicy ?? "fill_gap", language) },
+    { label: roomUiText(language, "speakerPolicy"), value: roomSpeakerPolicyLabel(room.speakerPolicy?.mode ?? "balanced", language) },
     ...(room.lastEngagementDecision
       ? [
           {
@@ -1539,6 +1637,16 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
   const activeTasks = collaborationPlan?.tasks.filter((task) => task.status === "pending" || task.status === "active") ?? [];
   const latestHuddle = room.factionHuddleThreads.at(-1);
   const latestHuddleStrategy = collaborationPlan?.factionStrategies.find((strategy) => strategy.sourceThreadId === latestHuddle?.id);
+  const showDirectorScript = room.freedomLevel === "developer" || activeChannel.type === "director";
+  const directorScript = room.director.scriptBoard;
+  const directorScriptItems = [
+    { label: roomUiText(language, "directorScriptPhase", "Phase"), value: localizedRoomSystemText(directorScript.currentPhase ?? label("noneYet"), language) },
+    { label: roomUiText(language, "directorScriptThreads", "Open threads"), value: compactLocalizedList(directorScript.openThreads.map((item) => item.text), label("noneYet"), language) },
+    { label: roomUiText(language, "directorScriptBeats", "Planned beats"), value: compactLocalizedList(directorScript.plannedBeats.map((item) => item.text), label("noneYet"), language) },
+    { label: roomUiText(language, "directorScriptEnvironment", "Environment anchors"), value: compactLocalizedList(directorScript.environmentAnchors.map((item) => item.text), label("noneYet"), language) },
+    { label: roomUiText(language, "directorScriptHiddenFacts", "Hidden facts"), value: directorScript.hiddenFacts.filter((item) => item.status !== "retired").length ? String(directorScript.hiddenFacts.filter((item) => item.status !== "retired").length) : label("noneYet") },
+    { label: roomUiText(language, "directorScriptRevisions", "Revisions"), value: directorScript.revisionLog[0]?.summary ? localizedRoomSystemText(directorScript.revisionLog[0].summary, language) : label("noneYet") },
+  ];
   const collaborationItems = [
     {
       label: roomUiText(language, "factionCollaborationOpportunity"),
@@ -1690,6 +1798,15 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
         title: roomUiText(language, "collaboration"),
         items: collaborationItems,
       },
+      ...(showDirectorScript
+        ? [
+            {
+              id: "director-script",
+              title: roomUiText(language, "directorScriptBoard", "Director Script"),
+              items: directorScriptItems,
+            },
+          ]
+        : []),
       ...(room.simulation.style === "match"
         ? [
             {
@@ -3259,6 +3376,14 @@ function roomAdvancePolicyLabel(policy: RoomAdvancePolicy, language: ConsoleAppS
 
 function roomAdvancePolicyHint(policy: RoomAdvancePolicy, language: ConsoleAppState["language"]): string {
   return roomUiText(language, `advancePolicy_${policy}_hint`);
+}
+
+function roomSpeakerPolicyLabel(policy: RoomSpeakerPolicy, language: ConsoleAppState["language"]): string {
+  return roomUiText(language, `speakerPolicy_${policy}`);
+}
+
+function roomSpeakerPolicyHint(policy: RoomSpeakerPolicy, language: ConsoleAppState["language"]): string {
+  return roomUiText(language, `speakerPolicy_${policy}_hint`);
 }
 
 function roomBlockingNeedLabel(blockingNeed: RoomBlockingNeed, language: ConsoleAppState["language"]): string {

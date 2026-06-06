@@ -7,6 +7,7 @@ import type {
   MemoryGraphEdgeInput,
   MemoryGraphClaimKind,
   MemoryGraphClaimStatus,
+  MemoryGraphEpistemicStatus,
   MemoryGraphGovernanceMode,
   MemoryGraphIssue,
   MemoryGraphNodeKind,
@@ -16,6 +17,7 @@ import type {
   MemoryGraphViewNode,
   MemoryGraphVisibility,
 } from "../core/memoryGraph";
+import { MEMORY_GRAPH_EPISTEMIC_STATUSES } from "../core/memoryGraph";
 import { getRoomDirectorProfile, getRoomPromptProfile } from "../core/roomScheduler";
 import {
   buildDirectorRulesFields,
@@ -80,6 +82,7 @@ import type {
   MemoryEditPatch,
   MemoryEntryStatus,
   RoomObservationEntry,
+  RoomMemoryMessage,
   RoomState,
   ShortTermMention,
   SupportedChatImageFormat,
@@ -107,6 +110,7 @@ interface MemoryGraphUiState {
   viewerKey: string;
   search: string;
   status: "all" | MemoryGraphClaimStatus;
+  epistemic: "all" | MemoryGraphEpistemicStatus;
   visibility: "all" | MemoryGraphVisibility;
   kind: "all" | MemoryGraphClaimKind;
   mode: MemoryGraphGovernanceMode;
@@ -142,6 +146,7 @@ interface MemoryDashboardScope {
   graphClaims: MemoryGraphClaim[];
   candidates: CandidateMemory[];
   shortTerm: ShortTermMention[];
+  recentMessages: RoomMemoryMessage[];
   directorEntries: DirectorMemoryEntry[];
   observerEntries: RoomObservationEntry[];
   factionEntries: RoomFactionHuddleThread[];
@@ -169,11 +174,12 @@ interface MemoryDashboardFact {
   status: string;
   evidenceCount: number;
   confidence?: number;
+  epistemicStatus?: MemoryGraphEpistemicStatus;
   firstSeenAt?: string;
   lastSeenAt?: string;
   sourceCount: number;
   sensitivity?: string;
-  sourceType: "compressed" | "graph" | "candidate" | "short" | "director" | "observer" | "faction";
+  sourceType: "compressed" | "graph" | "candidate" | "short" | "director" | "observer" | "faction" | "room_activity";
   canConfirm?: boolean;
   canArchive?: boolean;
   canDelete?: boolean;
@@ -214,6 +220,7 @@ const memoryGraphClaimKindOptions: MemoryGraphClaimKind[] = [
   "goal",
 ];
 const memoryGraphClaimStatusOptions: MemoryGraphClaimStatus[] = ["active", "needs_review", "disputed", "superseded", "archived", "rejected"];
+const memoryGraphEpistemicOptions: MemoryGraphEpistemicStatus[] = MEMORY_GRAPH_EPISTEMIC_STATUSES;
 const memoryGraphVisibilityOptions: MemoryGraphVisibility[] = ["public", "known_to_roles", "faction", "director_only", "private_character", "global"];
 const memoryGraphNodeKindOptions: MemoryGraphNodeKind[] = [
   "user",
@@ -3080,6 +3087,7 @@ function captureMemoryGraphUiState(root: HTMLElement): MemoryGraphUiState | unde
     search,
     kind: selectValue("kind", shell.dataset.kind ?? "all") as MemoryGraphUiState["kind"],
     status: selectValue("status", shell.dataset.status ?? "all") as MemoryGraphUiState["status"],
+    epistemic: selectValue("epistemic", shell.dataset.epistemic ?? "all") as MemoryGraphUiState["epistemic"],
     visibility: selectValue("visibility", shell.dataset.visibility ?? "all") as MemoryGraphUiState["visibility"],
     mode: (shell.dataset.mode as MemoryGraphGovernanceMode) || "browse",
     selectedNodeId: shell.dataset.selectedNodeId || undefined,
@@ -3126,6 +3134,10 @@ function memoryGraphStatusText(language: ConsoleAppState["language"], value: str
   return memoryGraphText(language, value, value);
 }
 
+function memoryGraphEpistemicText(language: ConsoleAppState["language"], value: string): string {
+  return memoryGraphText(language, value, value);
+}
+
 function memoryGraphAuthorityText(language: ConsoleAppState["language"], value: string): string {
   return memoryGraphText(language, value, value);
 }
@@ -3169,6 +3181,7 @@ function renderMemoryGraphPanel(
     viewerKey: defaultViewerKey,
     search: initialGraphState?.search ?? "",
     status: initialGraphState?.status ?? "all",
+    epistemic: initialGraphState?.epistemic ?? "all",
     visibility: initialGraphState?.visibility ?? "all",
     kind: initialGraphState?.kind ?? "all",
     mode: initialGraphState?.mode ?? "browse",
@@ -3185,6 +3198,7 @@ function renderMemoryGraphPanel(
     root.dataset.search = graphState.search;
     root.dataset.kind = graphState.kind;
     root.dataset.status = graphState.status;
+    root.dataset.epistemic = graphState.epistemic;
     root.dataset.visibility = graphState.visibility;
     root.dataset.mode = graphState.mode;
     root.dataset.selectedNodeId = selectedNodeId ?? "";
@@ -3263,6 +3277,18 @@ function renderMemoryGraphPanel(
     "status",
     memoryGraphOptionLabels(language, ["all", "active", "needs_review", "disputed", "superseded", "archived", "rejected"], memoryGraphStatusText),
   );
+  const epistemicSelect = memoryGraphFilterSelect(
+    memoryGraphText(language, "truthStatus", "Truth"),
+    ["all", ...memoryGraphEpistemicOptions],
+    graphState.epistemic,
+    (value) => {
+      graphState.epistemic = value as typeof graphState.epistemic;
+      syncGraphDataset();
+      draw();
+    },
+    "epistemic",
+    memoryGraphOptionLabels(language, ["all", ...memoryGraphEpistemicOptions], memoryGraphEpistemicText),
+  );
   const visibilitySelect = memoryGraphFilterSelect(
     memoryGraphText(language, "visibilityMode", "Visibility"),
     ["all", "public", "known_to_roles", "faction", "director_only", "private_character", "global"],
@@ -3309,7 +3335,7 @@ function renderMemoryGraphPanel(
   });
   const filterStrip = document.createElement("div");
   filterStrip.className = "memory-graph-filter-strip memory-graph-toolbar-row memory-graph-toolbar-row--filters";
-  filterStrip.append(search, kindSelect, statusSelect, visibilitySelect);
+  filterStrip.append(search, kindSelect, statusSelect, epistemicSelect, visibilitySelect);
   const actionGroup = document.createElement("div");
   actionGroup.className = "memory-graph-actions-inline memory-graph-toolbar-row memory-graph-toolbar-row--actions";
   actionGroup.append(newClaimButton, newEdgeButton, relayoutButton, fitButton);
@@ -3412,6 +3438,7 @@ function renderMemoryGraphPanel(
         search: graphState.search,
         kinds: graphState.kind === "all" ? undefined : [graphState.kind],
         statuses: graphState.status === "all" ? undefined : [graphState.status],
+        epistemicStatuses: graphState.epistemic === "all" ? undefined : [graphState.epistemic],
         visibilities: graphState.visibility === "all" ? undefined : [graphState.visibility],
       },
       expandedNodeIds: graphState.expandedNodeIds,
@@ -3429,6 +3456,7 @@ function renderMemoryGraphPanel(
         search: graphState.search,
         kinds: graphState.kind === "all" ? undefined : [graphState.kind],
         statuses: graphState.status === "all" ? undefined : [graphState.status],
+        epistemicStatuses: graphState.epistemic === "all" ? undefined : [graphState.epistemic],
         visibilities: graphState.visibility === "all" ? undefined : [graphState.visibility],
       },
       expandedNodeIds: graphState.expandedNodeIds,
@@ -4164,6 +4192,7 @@ function renderMemoryGraphCreateClaimForm(options: {
   const objectKind = memoryGraphSelect(memoryGraphNodeKindOptions, "concept", options.language, memoryGraphNodeKindText);
   const kind = memoryGraphSelect(memoryGraphClaimKindOptions, "fact", options.language, memoryGraphKindText);
   const status = memoryGraphSelect(memoryGraphClaimStatusOptions, "active", options.language, memoryGraphStatusText);
+  const epistemic = memoryGraphSelect(memoryGraphEpistemicOptions, "confirmed", options.language, memoryGraphEpistemicText);
   const visibility = memoryGraphSelect(memoryGraphVisibilityOptions, defaultMemoryGraphVisibilityForViewer(options.graphState.viewerKey), options.language, memoryGraphVisibilityText);
   const authority = memoryGraphSelect(memoryGraphAuthorityOptions, "user", options.language, memoryGraphAuthorityText);
   const confidence = document.createElement("input");
@@ -4195,6 +4224,7 @@ function renderMemoryGraphCreateClaimForm(options: {
     labelledField(memoryGraphText(options.language, "objectKind", "Object kind"), objectKind),
     labelledField(memoryGraphText(options.language, "kind", "Kind"), kind),
     labelledField(memoryGraphText(options.language, "status", "Status"), status),
+    labelledField(memoryGraphText(options.language, "truthStatus", "Truth status"), epistemic),
     labelledField(memoryGraphText(options.language, "visibilityMode", "Visibility"), visibility),
     labelledField(memoryGraphText(options.language, "authority", "Authority"), authority),
     labelledField(memoryGraphText(options.language, "confidence", "Confidence"), confidence),
@@ -4224,6 +4254,7 @@ function renderMemoryGraphCreateClaimForm(options: {
       objectKind: objectKind.value as MemoryGraphNodeKind,
       kind: kind.value as MemoryGraphClaimKind,
       status: status.value as MemoryGraphClaimStatus,
+      epistemicStatus: epistemic.value as MemoryGraphEpistemicStatus,
       visibility: visibility.value as MemoryGraphVisibility,
       authority: authority.value as MemoryGraphAuthority,
       confidence: clampNumber(Number(confidence.value) / 100, 0, 1),
@@ -4355,6 +4386,7 @@ async function createMemoryGraphClaimFromForm(input: {
   objectKind: MemoryGraphNodeKind;
   kind: MemoryGraphClaimKind;
   status: MemoryGraphClaimStatus;
+  epistemicStatus: MemoryGraphEpistemicStatus;
   visibility: MemoryGraphVisibility;
   authority: MemoryGraphAuthority;
   confidence: number;
@@ -4390,6 +4422,7 @@ async function createMemoryGraphClaimFromForm(input: {
       text: input.text,
       canonicalKey: normalizeMemoryGraphEditorKey(`${input.kind}:${input.subjectName}:${input.predicate}:${input.objectName || input.text}`),
       status: input.status,
+      epistemicStatus: input.authority === "developer" ? "confirmed" : input.epistemicStatus,
       visibility: input.visibility,
       confidence: input.authority === "developer" ? 1 : input.confidence,
       authority: input.authority,
@@ -4398,7 +4431,7 @@ async function createMemoryGraphClaimFromForm(input: {
       knownToRoleIds: visibilityMeta.knownToRoleIds,
       factionId: visibilityMeta.factionId,
       directorVisible: visibilityMeta.directorVisible,
-      properties: { createdBy: "graph_editor" },
+      properties: { createdBy: "graph_editor", epistemicStatus: input.authority === "developer" ? "confirmed" : input.epistemicStatus },
       source: {
         sourceScope: input.scope,
         excerpt: input.text,
@@ -4829,6 +4862,8 @@ function renderMemoryGraphDetail(
     propertyGrid.className = "memory-graph-property-grid";
     propertyGrid.append(
       readonlyRow(memoryGraphText(language, "status", "Status"), selected.status ? memoryGraphStatusText(language, selected.status) : "-"),
+      readonlyRow(memoryGraphText(language, "truthStatus", "Truth status"), selected.epistemicStatus ? memoryGraphEpistemicText(language, selected.epistemicStatus) : "-"),
+      readonlyRow(memoryGraphText(language, "promptUse", "Prompt use"), selected.promptUse ?? "-"),
       readonlyRow(memoryGraphText(language, "authority", "Authority"), selected.authority ? memoryGraphAuthorityText(language, selected.authority) : "-"),
       readonlyRow(memoryGraphText(language, "confidence", "Confidence"), selected.confidence === undefined ? "-" : `${Math.round(selected.confidence * 100)}%`),
     );
@@ -4968,6 +5003,15 @@ function renderMemoryGraphClaimActions(
     item.selected = option === (node.status ?? "active");
     status.append(item);
   }
+  const epistemic = document.createElement("select");
+  epistemic.className = "console-select";
+  for (const option of memoryGraphEpistemicOptions) {
+    const item = document.createElement("option");
+    item.value = option;
+    item.textContent = memoryGraphEpistemicText(language, option);
+    item.selected = option === (node.epistemicStatus ?? "confirmed");
+    epistemic.append(item);
+  }
   const predicate = document.createElement("input");
   predicate.className = "console-input";
   predicate.value = node.subtitle.split(" · ")[0] || "mentions";
@@ -5000,6 +5044,7 @@ function renderMemoryGraphClaimActions(
     labelledField(memoryGraphText(language, "kind", "Kind"), kind),
     labelledField(memoryGraphText(language, "predicate", "Predicate"), predicate),
     labelledField(memoryGraphText(language, "status", "Status"), status),
+    labelledField(memoryGraphText(language, "truthStatus", "Truth status"), epistemic),
     labelledField(memoryGraphText(language, "visibilityMode", "Visibility"), visibility),
     labelledField(memoryGraphText(language, "confidence", "Confidence"), confidence),
     actionButton(memoryGraphText(language, "save", "Save"), () => {
@@ -5009,6 +5054,7 @@ function renderMemoryGraphClaimActions(
         kind: kind.value as MemoryGraphClaimKind,
         predicate: predicate.value,
         status: status.value as MemoryGraphClaimStatus,
+        epistemicStatus: epistemic.value as MemoryGraphEpistemicStatus,
         visibility: visibility.value as MemoryGraphVisibility,
         confidence: clampNumber(Number(confidence.value) / 100, 0, 1),
         changedBy: "user",
@@ -5751,6 +5797,7 @@ function createRoomPublicMemoryScope(memoryStore: MemoryStore, room: RoomState, 
     graphClaims: memoryStore.listGraphClaimsForViewer(scope, roomPublicGraphViewer(room)),
     candidates: memoryStore.listCandidateMemories(scope),
     shortTerm: snapshot.shortTerm,
+    recentMessages: snapshot.recentMessages,
     summary: snapshot.summary,
     visibilityHint: uiText(language, "Public room facts", "公开房间事实"),
   });
@@ -5769,6 +5816,7 @@ function createDirectorMemoryScope(memoryStore: MemoryStore, room: RoomState, la
     graphClaims: memoryStore.listGraphClaimsForViewer(scope, directorGraphViewer(room)),
     candidates: memoryStore.listCandidateMemories(scope),
     shortTerm: memoryStore.listShortTerm(scope),
+    recentMessages: [],
     directorEntries: snapshot.entries,
     summary: snapshot.summary,
     visibilityHint: uiText(language, "Director visible, may include hidden threads", "Director 可见，可包含隐藏暗线"),
@@ -5791,6 +5839,7 @@ function createRoomRoleMemoryScope(
     graphClaims: memoryStore.listGraphClaimsForViewer(participant.memoryScope, roomRoleGraphViewer(room, participant)),
     candidates: memoryStore.listCandidateMemories(participant.memoryScope),
     shortTerm: memoryStore.listShortTerm(participant.memoryScope),
+    recentMessages: [],
     summary: uiText(language, "Room-only memory for this role instance.", "这个角色在当前房间里的独立记忆。"),
     visibilityHint: uiText(language, "Only this room role uses it", "仅当前房间角色可用"),
   });
@@ -5814,7 +5863,8 @@ function createObserverMemoryScope(
     graphClaims: memoryStore.listGraphClaimsForViewer(snapshot.scope, observerGraphViewer(room, participant.id, participant.factionId)),
     candidates: memoryStore.listCandidateMemories(snapshot.scope),
     shortTerm: memoryStore.listShortTerm(snapshot.scope),
-    observerEntries: snapshot.entries,
+    recentMessages: [],
+    observerEntries: snapshot.entries.filter((entry) => entry.visibility !== "public"),
     summary: snapshot.summary,
     visibilityHint: uiText(language, "Visible to {name} and Director", "仅 {name} 和 Director 可见").replace("{name}", participant.displayName),
   });
@@ -5839,6 +5889,7 @@ function createFactionMemoryScope(
     graphClaims: memoryStore.listGraphClaimsForViewer(snapshot.scope, factionGraphViewer(room, factionId)),
     candidates: memoryStore.listCandidateMemories(snapshot.scope),
     shortTerm: memoryStore.listShortTerm(snapshot.scope),
+    recentMessages: [],
     factionEntries: snapshot.entries,
     summary: snapshot.summary,
     visibilityHint: uiText(language, "Same faction + Director visible", "同阵营 + Director 可见"),
@@ -5857,6 +5908,7 @@ function createCharacterMemoryScope(memoryStore: MemoryStore, pack: CharacterPac
     graphClaims: memoryStore.listGraphClaimsForViewer(scope, { type: "one_on_one", packId: pack.id }),
     candidates: memoryStore.listCandidateMemories(scope),
     shortTerm: memoryStore.listShortTerm(scope),
+    recentMessages: [],
     summary: uiText(language, "One-to-one memory for this character pack.", "这个角色包的一对一记忆。"),
     visibilityHint: uiText(language, "Used by one-to-one chat", "一对一聊天使用"),
   });
@@ -5965,6 +6017,7 @@ function buildMemoryDashboardScopes(
     graphClaims: memoryStore.listGraphClaimsForViewer(roomScope, room ? roomPublicGraphViewer(room) : undefined),
     candidates: memoryStore.listCandidateMemories(roomScope),
     shortTerm: roomSnapshot.shortTerm,
+    recentMessages: roomSnapshot.recentMessages,
     summary: roomSnapshot.summary,
   }));
 
@@ -6029,7 +6082,7 @@ function buildMemoryDashboardScopes(
         ),
         candidates: memoryStore.listCandidateMemories(snapshot.scope),
         shortTerm: memoryStore.listShortTerm(snapshot.scope),
-        observerEntries: snapshot.entries,
+        observerEntries: snapshot.entries.filter((entry) => entry.visibility !== "public"),
         summary: snapshot.summary,
       }));
     }
@@ -6060,6 +6113,7 @@ function buildMemoryDashboardScopes(
     graphClaims: memoryStore.listGraphClaimsForViewer("global", { type: "global" }),
     candidates: memoryStore.listCandidateMemories("global"),
     shortTerm: memoryStore.listShortTerm("global"),
+    recentMessages: [],
     summary: uiText(language, "Small cross-room preferences.", "极少量跨房间偏好。"),
   }));
 
@@ -6107,6 +6161,7 @@ function createMemoryDashboardScope(input: Partial<MemoryDashboardScope> & Pick<
     graphClaims: input.graphClaims ?? [],
     candidates: input.candidates ?? [],
     shortTerm: input.shortTerm ?? [],
+    recentMessages: input.recentMessages ?? [],
     directorEntries: input.directorEntries ?? [],
     observerEntries: input.observerEntries ?? [],
     factionEntries: input.factionEntries ?? [],
@@ -6783,12 +6838,37 @@ function buildMemoryDashboardFacts(scope: MemoryDashboardScope): MemoryDashboard
       status: claim.status,
       evidenceCount: claim.evidenceCount,
       confidence: claim.confidence,
+      epistemicStatus: claim.epistemicStatus,
       firstSeenAt: claim.firstSeenAt,
       lastSeenAt: claim.lastSeenAt,
       sourceCount: Math.max(1, claim.evidenceCount),
       sensitivity: claim.sensitivity,
       sourceType: "graph",
     });
+  }
+  if (scope.kind === "room_public") {
+    for (const message of scope.recentMessages) {
+      const text = `${message.speaker}: ${message.text}`;
+      const key = memoryDashboardFactDedupeKey(text);
+      if (key && persistentDedupeKeys.has(key)) {
+        continue;
+      }
+      if (key) {
+        persistentDedupeKeys.add(key);
+      }
+      facts.push({
+        id: message.id,
+        group: "short",
+        kind: "public_activity",
+        text,
+        status: "public activity",
+        evidenceCount: 1,
+        firstSeenAt: message.at,
+        lastSeenAt: message.at,
+        sourceCount: 1,
+        sourceType: "room_activity",
+      });
+    }
   }
   for (const mention of scope.shortTerm) {
     const key = memoryDashboardFactDedupeKey(mention.normalizedText);
@@ -6877,7 +6957,8 @@ function formatMemoryFactMeta(fact: MemoryDashboardFact, language: ConsoleAppSta
   };
   const statusLabel = statusLabels[fact.status];
   const status = statusLabel ?? fact.status;
-  return `${evidence} · ${status} · ${formatMemoryDate(fact.lastSeenAt)}`;
+  const truth = fact.epistemicStatus ? ` · ${memoryGraphEpistemicText(language, fact.epistemicStatus)}` : "";
+  return `${evidence} · ${status}${truth} · ${formatMemoryDate(fact.lastSeenAt)}`;
 }
 
 function formatMemoryDate(value?: string): string {

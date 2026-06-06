@@ -3612,7 +3612,7 @@ fn merge_memory_graph_claim(connection: &Connection, claim: &serde_json::Value) 
     let evidence_count = memory_graph_json_i64(claim, "evidenceCount", 1).max(1);
     let first_seen_at = memory_graph_json_string(claim, "firstSeenAt", &now);
     let last_seen_at = memory_graph_json_string(claim, "lastSeenAt", &now);
-    let properties_json = memory_graph_json_blob(claim, "properties")?;
+    let properties_json = memory_graph_properties_json_with_epistemic(claim, None)?;
     let id = memory_graph_json_optional_string(claim, "id")
         .unwrap_or_else(|| memory_graph_stable_id("claim", &format!("{scope}:{canonical_key}:{visibility}")));
 
@@ -3709,11 +3709,7 @@ fn update_memory_graph_claim(connection: &Connection, patch: &serde_json::Value)
     let authority = memory_graph_json_string(patch, "authority", &memory_graph_json_string(&existing, "authority", "system"));
     let sensitivity = memory_graph_json_string(patch, "sensitivity", &memory_graph_json_string(&existing, "sensitivity", "normal"));
     let visibility = memory_graph_json_string(patch, "visibility", &memory_graph_json_string(&existing, "visibility", "public"));
-    let properties_json = if patch.get("properties").is_some() {
-        memory_graph_json_blob(patch, "properties")?
-    } else {
-        serde_json::to_string(existing.get("properties").unwrap_or(&serde_json::json!({}))).map_err(|error| error.to_string())?
-    };
+    let properties_json = memory_graph_properties_json_with_epistemic(patch, existing.get("properties"))?;
 
     connection
         .execute(
@@ -3847,10 +3843,66 @@ fn record_memory_graph_version(
     Ok(())
 }
 
+fn memory_graph_properties_json_with_epistemic(
+    value: &serde_json::Value,
+    fallback: Option<&serde_json::Value>,
+) -> Result<String, String> {
+    let mut properties = if value.get("properties").is_some() {
+        value.get("properties").cloned().unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        fallback.cloned().unwrap_or_else(|| serde_json::json!({}))
+    };
+    if !properties.is_object() {
+        properties = serde_json::json!({});
+    }
+    if let Some(epistemic_status) = value.get("epistemicStatus").and_then(|item| item.as_str()) {
+        if let Some(object) = properties.as_object_mut() {
+            object.insert("epistemicStatus".to_string(), serde_json::json!(epistemic_status));
+        }
+    }
+    serde_json::to_string(&properties).map_err(|error| error.to_string())
+}
+
+fn memory_graph_epistemic_status_from_claim(claim: &serde_json::Value) -> String {
+    if let Some(value) = claim.get("epistemicStatus").and_then(|item| item.as_str()) {
+        return value.to_string();
+    }
+    if let Some(value) = claim
+        .get("properties")
+        .and_then(|props| props.get("epistemicStatus"))
+        .and_then(|item| item.as_str())
+    {
+        return value.to_string();
+    }
+    let status = memory_graph_json_string(claim, "status", "active");
+    let authority = memory_graph_json_string(claim, "authority", "system");
+    if status == "disputed" {
+        return "disputed".to_string();
+    }
+    if status == "rejected" || status == "archived" {
+        return "refuted".to_string();
+    }
+    if authority == "developer" || authority == "director" || status == "active" {
+        return "confirmed".to_string();
+    }
+    "claimed".to_string()
+}
+
+fn memory_graph_claim_prompt_use(claim: &serde_json::Value) -> String {
+    if memory_graph_json_string(claim, "status", "active") != "active" {
+        return "none".to_string();
+    }
+    match memory_graph_epistemic_status_from_claim(claim).as_str() {
+        "confirmed" | "observed" => "fact".to_string(),
+        "believed" => "belief".to_string(),
+        _ => "none".to_string(),
+    }
+}
+
 fn memory_graph_claim_row_to_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
     let properties_json: String = row.get(17)?;
     let properties = serde_json::from_str::<serde_json::Value>(&properties_json).unwrap_or_else(|_| serde_json::json!({}));
-    Ok(serde_json::json!({
+    let mut claim = serde_json::json!({
         "id": row.get::<_, String>(0)?,
         "scope": row.get::<_, String>(1)?,
         "kind": row.get::<_, String>(2)?,
@@ -3869,7 +3921,12 @@ fn memory_graph_claim_row_to_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<s
         "lastSeenAt": row.get::<_, String>(15)?,
         "version": row.get::<_, i64>(16)?,
         "properties": properties
-    }))
+    });
+    let epistemic_status = memory_graph_epistemic_status_from_claim(&claim);
+    if let Some(object) = claim.as_object_mut() {
+        object.insert("epistemicStatus".to_string(), serde_json::json!(epistemic_status));
+    }
+    Ok(claim)
 }
 
 fn record_memory_graph_source(connection: &Connection, claim_id: &str, claim: &serde_json::Value) -> Result<(), String> {
@@ -4617,12 +4674,21 @@ fn memory_graph_viewer_can_read_edge_visibility(visibility: &str, context: &serd
 
 fn memory_graph_view_edge_type(edge_type: &str) -> String {
     match edge_type {
-        "CONFLICTS_WITH" | "SUPERSEDES" | "MEMBER_OF" | "HAS_GOAL" | "KNOWN_BY" | "ASSERTED_BY" | "OWNS" | "LOCATED_IN" | "TARGETS" | "SUPPORTS" | "MENTIONS" => edge_type.to_string(),
+        "CONFLICTS_WITH" | "CONTRADICTS" | "SUPERSEDES" | "CLAIMS" | "BELIEVES" | "DOUBTS" | "KNOWS" | "REFUTES" | "MEMBER_OF" | "HAS_GOAL" | "KNOWN_BY" | "ASSERTED_BY" | "OWNS" | "LOCATED_IN" | "TARGETS" | "SUPPORTS" | "MENTIONS" => edge_type.to_string(),
         _ => "ABOUT".to_string(),
     }
 }
 
 fn memory_graph_relationship_view_edge_type(claim: &serde_json::Value) -> String {
+    match memory_graph_epistemic_status_from_claim(claim).as_str() {
+        "claimed" => return "CLAIMS".to_string(),
+        "believed" => return "BELIEVES".to_string(),
+        "doubted" => return "DOUBTS".to_string(),
+        "confirmed" | "observed" => return "KNOWS".to_string(),
+        "refuted" => return "REFUTES".to_string(),
+        "disputed" => return "CONTRADICTS".to_string(),
+        _ => {}
+    }
     let predicate = memory_graph_json_string(claim, "predicate", "mentions");
     let kind = memory_graph_json_string(claim, "kind", "fact");
     match (predicate.as_str(), kind.as_str()) {
@@ -4665,6 +4731,7 @@ fn memory_graph_claim_view_node(claim: &serde_json::Value) -> serde_json::Value 
     let id = memory_graph_json_string(claim, "id", "");
     let kind = memory_graph_json_string(claim, "kind", "fact");
     let status = memory_graph_json_string(claim, "status", "active");
+    let epistemic_status = memory_graph_epistemic_status_from_claim(claim);
     let confidence = memory_graph_json_f64(claim, "confidence", 0.0);
     let caption = memory_graph_claim_semantic_caption(claim);
     let category_group = memory_graph_claim_category_group(claim);
@@ -4672,10 +4739,12 @@ fn memory_graph_claim_view_node(claim: &serde_json::Value) -> serde_json::Value 
         "id": format!("claim:{id}"),
         "kind": "claim",
         "label": caption.clone(),
-        "subtitle": format!("{kind} · {status} · {}%", (confidence * 100.0).round() as i64),
+        "subtitle": format!("{kind} · {epistemic_status} · {status} · {}%", (confidence * 100.0).round() as i64),
         "scope": memory_graph_json_string(claim, "scope", "global"),
         "claimKind": kind,
         "status": status,
+        "epistemicStatus": epistemic_status,
+        "promptUse": memory_graph_claim_prompt_use(claim),
         "visibility": memory_graph_json_string(claim, "visibility", "public"),
         "authority": memory_graph_json_string(claim, "authority", "system"),
         "confidence": confidence,
@@ -4729,12 +4798,13 @@ fn memory_graph_claim_kind_label(kind: &str) -> &'static str {
 fn memory_graph_claim_category_group(claim: &serde_json::Value) -> &'static str {
     let kind = memory_graph_json_string(claim, "kind", "fact");
     let status = memory_graph_json_string(claim, "status", "active");
+    let epistemic_status = memory_graph_epistemic_status_from_claim(claim);
     let visibility = memory_graph_json_string(claim, "visibility", "public");
     let confidence = memory_graph_json_f64(claim, "confidence", 1.0);
-    if status == "disputed" || kind == "conflict" {
+    if status == "disputed" || epistemic_status == "disputed" || kind == "conflict" {
         return "conflict";
     }
-    if status == "needs_review" || confidence < 0.45 || status == "rejected" || status == "archived" {
+    if status == "needs_review" || confidence < 0.45 || status == "rejected" || status == "archived" || epistemic_status == "claimed" || epistemic_status == "refuted" {
         return "quality";
     }
     if kind == "judgement" {
@@ -4963,6 +5033,12 @@ fn memory_graph_claim_matches_view_filters(
             return false;
         }
     }
+    if let Some(epistemic_statuses) = filters.get("epistemicStatuses").and_then(|value| value.as_array()) {
+        let epistemic_status = memory_graph_epistemic_status_from_claim(claim);
+        if !epistemic_statuses.is_empty() && !epistemic_statuses.iter().any(|value| value.as_str() == Some(epistemic_status.as_str())) {
+            return false;
+        }
+    }
     if let Some(visibilities) = filters.get("visibilities").and_then(|value| value.as_array()) {
         if !visibilities.is_empty() && !visibilities.iter().any(|value| value.as_str() == Some(&memory_graph_json_string(claim, "visibility", ""))) {
             return false;
@@ -4993,6 +5069,7 @@ fn memory_graph_claim_matches_view_filters(
         memory_graph_json_string(claim, "text", ""),
         memory_graph_json_string(claim, "kind", ""),
         memory_graph_json_string(claim, "status", ""),
+        memory_graph_epistemic_status_from_claim(claim),
         memory_graph_json_string(claim, "visibility", ""),
         subject_name,
         object_name,

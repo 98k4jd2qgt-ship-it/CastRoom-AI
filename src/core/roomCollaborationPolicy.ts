@@ -1,6 +1,7 @@
 import type {
   FactionCollaborationOpportunity,
   FactionStrategyState,
+  ConsoleMessage,
   RoomActiveChannelId,
   RoomCollaborationMode,
   RoomCollaborationPlan,
@@ -285,7 +286,7 @@ export function createFactionHuddleThread(
     color: "#c7a7ff",
   };
   const members = room.participants.filter((candidate) => candidate.factionId === factionId).slice(0, 6);
-  const topic = trimForReply(userInput || room.messages.at(-1)?.text || room.topic);
+  const topic = trimForReply(userInput || latestNonDirectorChannelMessage(room.messages)?.text || room.topic);
   const goalContext = formatFactionGoalContext(faction);
   const resolvedOpportunity = opportunity ?? resolveFactionCollaborationOpportunity(room, "auto", userInput, factionId);
   const strategyTopic = [resolvedOpportunity?.goal ?? topic, goalContext].filter(Boolean).join(" / ");
@@ -319,6 +320,10 @@ export function createFactionHuddleThread(
     opportunity: resolvedOpportunity ?? undefined,
     createdAt: new Date().toISOString(),
   };
+}
+
+function latestNonDirectorChannelMessage(messages: ConsoleMessage[]): ConsoleMessage | undefined {
+  return [...messages].reverse().find((message) => message.visibility !== "director_channel");
 }
 
 function formatFactionGoalContext(faction: { publicGoal?: string; privateGoal?: string }): string {

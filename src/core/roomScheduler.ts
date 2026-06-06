@@ -3,6 +3,9 @@ import type {
   ContinuityWrite,
   DirectorOverrideLogEntry,
   DirectorOverrideRequest,
+  DirectorScriptItem,
+  DirectorScriptPatch,
+  DirectorTickResult,
   DirectorStructuredOutcome,
   DirectorTurnPlan,
   JudgementCheck,
@@ -61,6 +64,7 @@ import type {
   RoomSceneBoard,
   RoomSimulationPhase,
   RoomSimulationFocus,
+  RoomSpeakerPolicySettings,
   RoomUncertaintyProfile,
   RoomSpeechDecision,
   RoomSpeechIntent,
@@ -73,6 +77,7 @@ import type {
   SimulationObjective,
   SimulationStyle,
   SituationAssessment,
+  SituationAssessmentMode,
   SituationAssessmentSummary,
 } from "./types";
 import type { DirectorModeIntent } from "./directorModePolicy";
@@ -1152,7 +1157,7 @@ function createRuleBasedPlannedTurns(input: {
     ];
   }
 
-  const intents = collectRoomSpeechIntents(input.room, input.trigger, input.room.messages.at(-1), input.addressing, input.userInput);
+  const intents = collectRoomSpeechIntents(input.room, input.trigger, latestPublicRoomMessage(input.room), input.addressing, input.userInput);
   const selectedRoleIds = selectPlannedSpeakerIds(input.room, intents, input.intent, input.maxTurns);
   return selectedRoleIds.map((roleId, index) => {
     const participant = input.room.participants.find((item) => item.id === roleId)!;
@@ -1614,7 +1619,7 @@ export function collectRoomSpeechIntents(
   userInput = "",
 ): RoomSpeechIntent[] {
   const addressedRoleIds = targetRoleIds(addressing.target);
-  const lastMessage = message ?? room.messages.at(-1);
+  const lastMessage = message ?? latestPublicRoomMessage(room);
   const lastTargetRoleIds = targetRoleIds(lastMessage?.target);
   const profile = getRoomPromptProfile(room.promptProfileId);
   const collaborationMode = resolveRoomCollaborationMode(room);
@@ -1718,7 +1723,7 @@ export function selectRoomSpeechTurn(intents: RoomSpeechIntent[], room: RoomStat
   const speakers = intents
     .filter((intent) => intent.decision === "speak")
     .filter((intent) => validateNextSpeakerEligibility(room, intent).ok)
-    .sort((left, right) => right.priority - left.priority);
+    .sort((left, right) => rankRoomSpeechIntent(right, room) - rankRoomSpeechIntent(left, room));
   if (speakers[0]) {
     return speakers[0];
   }
@@ -1731,6 +1736,98 @@ export function selectRoomSpeechTurn(intents: RoomSpeechIntent[], room: RoomStat
   }
 
   return null;
+}
+
+function resolveRoomSpeakerPolicy(room: RoomState): RoomSpeakerPolicySettings {
+  return {
+    mode: room.speakerPolicy?.mode ?? "balanced",
+    maxConsecutivePairTurns: room.speakerPolicy?.maxConsecutivePairTurns ?? 3,
+    lurkerBoostAfterTurns: room.speakerPolicy?.lurkerBoostAfterTurns ?? 4,
+    recentSpeakerPenalty: room.speakerPolicy?.recentSpeakerPenalty ?? true,
+  };
+}
+
+function rankRoomSpeechIntent(intent: RoomSpeechIntent, room: RoomState): number {
+  const policy = resolveRoomSpeakerPolicy(room);
+  if (policy.mode === "freeform" || isExplicitSpeakerIntent(intent)) {
+    return intent.priority;
+  }
+
+  const stats = collectRoleParticipationStats(room, intent.roleId);
+  const boostTurns = Math.max(0, stats.roleTurnsSinceSpoke - policy.lurkerBoostAfterTurns + 1);
+  let score = intent.priority;
+
+  if (policy.mode === "round_robin") {
+    score += Math.min(72, boostTurns * 14);
+    if (policy.recentSpeakerPenalty) {
+      score -= stats.recentRoleTurnCount * 20;
+      score -= stats.wasLastSpeaker ? 34 : 0;
+    }
+    if (isRecentPairLoop(room, intent.roleId, policy.maxConsecutivePairTurns)) {
+      score -= 48;
+    }
+    return score;
+  }
+
+  if (policy.mode === "spotlight") {
+    score += Math.min(28, boostTurns * 7);
+    if (policy.recentSpeakerPenalty) {
+      score -= stats.recentRoleTurnCount * 6;
+      score -= stats.wasLastSpeaker ? 14 : 0;
+    }
+    if (isRecentPairLoop(room, intent.roleId, policy.maxConsecutivePairTurns)) {
+      score -= 30;
+    }
+    return score;
+  }
+
+  score += Math.min(48, boostTurns * 12);
+  if (policy.recentSpeakerPenalty) {
+    score -= stats.recentRoleTurnCount * 10;
+    score -= stats.wasLastSpeaker ? 24 : 0;
+  }
+  if (isRecentPairLoop(room, intent.roleId, policy.maxConsecutivePairTurns)) {
+    score -= 36;
+  }
+  return score;
+}
+
+function isExplicitSpeakerIntent(intent: RoomSpeechIntent): boolean {
+  return intent.priority >= 92 || /direct|explicit|collaboration task|faction huddle/i.test(intent.reason);
+}
+
+function collectRoleParticipationStats(room: RoomState, roleId: string): {
+  roleTurnsSinceSpoke: number;
+  recentRoleTurnCount: number;
+  wasLastSpeaker: boolean;
+} {
+  const recentRoleIds = recentPublicRoomMessages(room, 18)
+    .filter((message) => message.speakerType === "role" && message.speakerId)
+    .map((message) => message.speakerId as string);
+  let roleTurnsSinceSpoke = recentRoleIds.length + 1;
+  for (let index = recentRoleIds.length - 1; index >= 0; index -= 1) {
+    if (recentRoleIds[index] === roleId) {
+      roleTurnsSinceSpoke = recentRoleIds.length - 1 - index;
+      break;
+    }
+  }
+  return {
+    roleTurnsSinceSpoke,
+    recentRoleTurnCount: recentRoleIds.slice(-6).filter((id) => id === roleId).length,
+    wasLastSpeaker: room.lastSpeakerId === roleId,
+  };
+}
+
+function isRecentPairLoop(room: RoomState, roleId: string, maxConsecutivePairTurns: number): boolean {
+  const recentRoleIds = recentPublicRoomMessages(room, Math.max(4, maxConsecutivePairTurns + 2))
+    .filter((message) => message.speakerType === "role" && message.speakerId)
+    .map((message) => message.speakerId as string)
+    .slice(-Math.max(2, maxConsecutivePairTurns));
+  if (recentRoleIds.length < Math.max(2, maxConsecutivePairTurns)) {
+    return false;
+  }
+  const uniqueRoleIds = new Set(recentRoleIds);
+  return uniqueRoleIds.size === 2 && uniqueRoleIds.has(roleId);
 }
 
 export function validateNextSpeakerEligibility(
@@ -2443,6 +2540,68 @@ function createPendingFollowupSpeechIntent(
   };
 }
 
+function createAutonomousFallbackSpeechIntent(
+  room: RoomState,
+  input: ScheduleRoomTurnInput,
+  addressing: RoomAddressing,
+  reason: string,
+): RoomSpeechIntent | null {
+  const participant = chooseNextParticipant(room, input.userInput ?? "", addressing, input.trigger);
+  const eligibility = validateNextSpeakerEligibility(room, {
+    roleId: participant.id,
+    priority: 88,
+    reason: `autonomous_role_fallback ${reason}`,
+  });
+  if (!eligibility.ok) {
+    const visibleAlternative = room.participants.find((candidate) => validateNextSpeakerEligibility(room, {
+      roleId: candidate.id,
+      priority: 88,
+      reason: `autonomous_role_fallback ${reason}`,
+    }).ok);
+    if (!visibleAlternative) {
+      return null;
+    }
+    return {
+      roleId: visibleAlternative.id,
+      decision: "speak",
+      target: "all",
+      delayMs: 0,
+      priority: 88,
+      reason: `autonomous_role_fallback ${reason}`,
+      emotionHint: "idle",
+      maxLength: isDebateRoom(room) ? 420 : 320,
+    };
+  }
+  return {
+    roleId: participant.id,
+    decision: "speak",
+    target: "all",
+    delayMs: 0,
+    priority: 88,
+    reason: `autonomous_role_fallback ${reason}`,
+    emotionHint: "idle",
+    maxLength: isDebateRoom(room) ? 420 : 320,
+  };
+}
+
+function shouldUseRoleFastPathForAutoDirectorPlan(room: RoomState, turn: RoomPlannedTurn | undefined): boolean {
+  if (!turn || turn.speakerType !== "director") {
+    return false;
+  }
+
+  const beatType = turn.beatType;
+  if (beatType === "director_judge" || beatType === "director_twist" || beatType === "scene_shift" || beatType === "score_update") {
+    return false;
+  }
+
+  if (beatType === "director_cue") {
+    const mode = resolveDirectorMode(room);
+    return mode !== "story" && mode !== "mystery";
+  }
+
+  return true;
+}
+
 export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResult {
   const { room, trigger, nowMs } = input;
   const delayMs = getRoomDelayMs(room);
@@ -2502,7 +2661,9 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
       isUserChain(room) &&
       room.autoSpeechState.userTriggeredFollowUps >= room.autoSpeechPolicy.maxUserTriggeredFollowUps
     ) {
-      return finalizeScheduleResult(directorHandoff("burst_limit", room, nowMs + delayMs));
+      if (roomAdvancePolicy(room) !== "continuous") {
+        return finalizeScheduleResult(stop("burst_limit", "paused", room, null));
+      }
     }
 
     if (
@@ -2511,7 +2672,9 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
       !isUserChain(room) &&
       room.autoSpeechState.consecutiveAutoTurns >= room.autoSpeechPolicy.maxIdleBurstTurns
     ) {
-      return finalizeScheduleResult(directorHandoff("burst_limit", room, nowMs + delayMs));
+      if (roomAdvancePolicy(room) !== "continuous") {
+        return finalizeScheduleResult(stop("burst_limit", "paused", room, null));
+      }
     }
 
     if (!pendingFollowup && hasQuestionLoop(room)) {
@@ -2533,15 +2696,19 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
           trigger,
           userInput: input.userInput,
           addressing,
-          triggerMessageId: room.messages.at(-1)?.id ?? null,
+          triggerMessageId: latestPublicRoomMessage(room)?.id ?? null,
           nowIso: new Date(nowMs).toISOString(),
         }));
   const discussionPlan = validateRoomPlan(plannerResult.plan, room);
   const plannedTurn = discussionPlan?.turns[discussionPlan.activeTurnIndex];
   const staleDebatePlan = isStaleDebatePlannedTurn(room, plannedTurn);
   const staleSpeakerPlan = isStaleSpeakerPlannedTurn(room, plannedTurn);
-  const stalePlanResult = (staleDebatePlan || staleSpeakerPlan) && discussionPlan ? terminateRoomPlan(discussionPlan, "no_candidate") ?? undefined : undefined;
-  if (!pendingFollowup && plannedTurn && !staleDebatePlan && !staleSpeakerPlan) {
+  const autoDirectorPlanRoleFastPath =
+    trigger === "auto" && !pendingFollowup && shouldUseRoleFastPathForAutoDirectorPlan(room, plannedTurn);
+  const stalePlanResult = (staleDebatePlan || staleSpeakerPlan || autoDirectorPlanRoleFastPath) && discussionPlan
+    ? terminateRoomPlan(discussionPlan, "no_candidate") ?? undefined
+    : undefined;
+  if (!pendingFollowup && plannedTurn && !staleDebatePlan && !staleSpeakerPlan && !autoDirectorPlanRoleFastPath) {
     const plannedResult = executeRoomPlannedTurn(plannedTurn, room, input, reason);
     if (plannedResult.type === "turn" && plannedResult.message && isRepetition(room, plannedResult.message.text)) {
       if (trigger === "auto" && room.autoChat && room.director.enabled) {
@@ -2567,9 +2734,17 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
     });
   }
 
-  const intents = collectRoomTurnIntents(room, trigger, room.messages.at(-1), addressing, input.userInput ?? "");
+  const intents = collectRoomTurnIntents(room, trigger, latestPublicRoomMessage(room), addressing, input.userInput ?? "");
   const pendingSpeechIntent = createPendingFollowupSpeechIntent(room, pendingFollowup);
-  const speechIntent = pendingSpeechIntent ?? selectRoomSpeechTurn(intents, room);
+  const selectedSpeechIntent = pendingSpeechIntent ?? selectRoomSpeechTurn(intents, room);
+  const speechIntent =
+    selectedSpeechIntent?.decision === "ask_director" && trigger === "auto"
+      ? createAutonomousFallbackSpeechIntent(room, input, addressing, selectedSpeechIntent.reason) ?? selectedSpeechIntent
+      : selectedSpeechIntent ?? (
+          trigger === "auto" && room.autoChat
+            ? createAutonomousFallbackSpeechIntent(room, input, addressing, "no_speaker_intent")
+            : null
+        );
   if (speechIntent?.decision === "start_huddle") {
     const participant = room.participants.find((candidate) => candidate.id === speechIntent.roleId);
     const collaborationNeed = resolveCollaborationNeed(room, trigger, input.userInput ?? "");
@@ -2613,7 +2788,7 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
         );
       }
       return finalizeScheduleResult({
-        ...directorHandoff("waiting_user", room, nowMs + delayMs),
+        ...stop("waiting_user", "paused", room, null),
         discussionPlan: stalePlanResult,
         observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
       });
@@ -2820,6 +2995,276 @@ export function planDirectorObservation(input: {
     knowledgeVisibility: "public",
     waitForUser: false,
   };
+}
+
+export function planDirectorTick(input: {
+  room: RoomState;
+  sourceMessage: ConsoleMessage;
+  source: "user" | "role";
+  nowLabel: string;
+}): DirectorTickResult {
+  const { room, sourceMessage, nowLabel } = input;
+  if (!room.director.enabled || sourceMessage.visibility === "director_channel") {
+    return {};
+  }
+
+  const mode = resolveDirectorMode(room);
+  const isSceneMode = mode === "story" || mode === "mystery";
+  const isCasualMode = mode === "casual";
+  const text = stripMentions(sourceMessage.text).trim();
+  const actionCheck = evaluateRoomAction({
+    room,
+    message: sourceMessage,
+    userInput: text,
+  });
+  const requiredIntervention =
+    actionCheck.result !== "allowed"
+      ? "action_ruling"
+      : room.simulation.directorMemoryDisputedClaims && room.simulation.directorMemoryDisputedClaims > 0
+        ? "memory_conflict"
+        : room.simulation.situationAssessment?.visibilityRisk === "high"
+          ? "visibility_guard"
+          : isDebateRoom(room) && isDebateFinalVerdictDue(room)
+            ? "debate_ruling"
+            : (room.silentAutoTurnCount ?? 0) >= 2 || room.lastNoResponseReason
+              ? "stuck_recovery"
+              : null;
+
+  const narrationTrigger = directorTickNarrationTrigger(room, sourceMessage, mode, requiredIntervention);
+  const publicNarration = narrationTrigger ? createDirectorTickNarration(room, sourceMessage, narrationTrigger) : null;
+  const scriptPatch = createDirectorTickScriptPatch(room, sourceMessage, mode, requiredIntervention, narrationTrigger, nowLabel);
+  const focus = createDirectorTickFocus(room, sourceMessage, mode, requiredIntervention, narrationTrigger);
+  const directorChannelNote = createDirectorTickChannelNote({
+    room,
+    sourceMessage,
+    mode,
+    requiredIntervention,
+    narrationTrigger,
+    scriptPatch,
+  });
+
+  return {
+    publicNarration,
+    narrationTrigger,
+    directorChannelNote,
+    inspectorPatch: {
+      currentFocus: focus,
+      nextPressure: narrationTrigger ? publicNarration ?? undefined : room.simulation.nextPressure,
+      stopReason: requiredIntervention === "stuck_recovery" ? undefined : room.simulation.stopReason,
+    },
+    sceneStatePatch: {
+      currentFocus: focus,
+      nextPressure: narrationTrigger ? publicNarration ?? undefined : room.simulation.nextPressure,
+      stopReason: requiredIntervention === "stuck_recovery" ? undefined : room.simulation.stopReason,
+    },
+    scriptPatch,
+    requiredIntervention,
+    hardPause: null,
+  };
+}
+
+function directorTickNarrationTrigger(
+  room: RoomState,
+  sourceMessage: ConsoleMessage,
+  mode: SituationAssessmentMode,
+  requiredIntervention: DirectorTickResult["requiredIntervention"],
+): DirectorTickResult["narrationTrigger"] {
+  if ((sourceMessage.visibility ?? "public") !== "public") {
+    return null;
+  }
+  if (sourceMessage.speakerType === "room_system") {
+    return null;
+  }
+  if (requiredIntervention === "action_ruling") {
+    return "action_consequence";
+  }
+  const recentNarrations = recentDirectorPublicNarrationCount(room, 6);
+  const hasPublicSceneOpening = room.messages.some(
+    (message) =>
+      message.speakerId === room.director.directorId &&
+      message.visibility !== "director_channel" &&
+      message.directorMove === "cue",
+  );
+  if ((mode === "story" || mode === "mystery") && !hasPublicSceneOpening && sourceMessage.speakerType === "user") {
+    return "scene_opening";
+  }
+  if ((mode === "story" || mode === "mystery") && recentNarrations === 0) {
+    const anchor = activeDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)[0];
+    if (anchor && room.messages.length > 2) {
+      return "environment_change";
+    }
+  }
+  if (!mode || mode === "casual") {
+    return null;
+  }
+  if (requiredIntervention === "stuck_recovery" && recentNarrations === 0) {
+    return mode === "story" || mode === "mystery" ? "ambient_pressure" : "phase_summary";
+  }
+  if ((mode === "debate" || mode === "planning" || mode === "study") && requiredIntervention) {
+    return "phase_summary";
+  }
+  return null;
+}
+
+function recentDirectorPublicNarrationCount(room: RoomState, limit: number): number {
+  return room.messages
+    .filter((message) => message.visibility !== "director_channel")
+    .slice(-limit)
+    .filter((message) => message.speakerId === room.director.directorId && message.speakerType === "room_system").length;
+}
+
+function activeDirectorScriptTexts(items: DirectorScriptItem[] | undefined): string[] {
+  return (items ?? [])
+    .filter((item) => item.status === "planned" || item.status === "active")
+    .map((item) => item.text.trim())
+    .filter(Boolean);
+}
+
+function createDirectorTickNarration(
+  room: RoomState,
+  sourceMessage: ConsoleMessage,
+  trigger: NonNullable<DirectorTickResult["narrationTrigger"]>,
+): string {
+  const scene = trimForReply(room.director.sceneBoard.currentScene || room.topic || "The room", 120);
+  const anchor = activeDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)[0];
+  const pressure = activeDirectorScriptTexts(room.director.scriptBoard.pressureSources)[0];
+  const source = trimForReply(stripMentions(sourceMessage.text), 120);
+  switch (trigger) {
+    case "scene_opening":
+      return `${scene}. The visible details settle into place, giving everyone something concrete to respond to.`;
+    case "environment_change":
+      return `${anchor ?? "Something in the room shifts subtly"}, changing what the room can notice without revealing hidden plans.`;
+    case "action_consequence":
+      return `The attempted action changes the room's attention, but its result still needs a clear ruling before it becomes fact.`;
+    case "ambient_pressure":
+      return `${pressure ?? "A small pressure enters the room"}; the pause now has something visible to push against.`;
+    case "phase_summary":
+      return `${source || scene} becomes the current point to resolve before the room moves on.`;
+    case "scene_transition":
+      return `${scene} gives way to the next visible beat.`;
+    case "time_passage":
+      return `A short stretch of time passes, leaving the last exchange hanging in the room.`;
+    case "atmosphere_shift":
+      return `The mood shifts around the last exchange, making the next response carry more weight.`;
+    default:
+      return `${scene} remains the shared anchor for the room.`;
+  }
+}
+
+function createDirectorTickScriptPatch(
+  room: RoomState,
+  sourceMessage: ConsoleMessage,
+  mode: SituationAssessmentMode,
+  requiredIntervention: DirectorTickResult["requiredIntervention"],
+  narrationTrigger: DirectorTickResult["narrationTrigger"],
+  nowLabel: string,
+): DirectorScriptPatch | null {
+  const board = room.director.scriptBoard;
+  const modeNeedsScript = mode !== "casual";
+  const openThreads = board.openThreads ?? [];
+  const plannedBeats = board.plannedBeats ?? [];
+  const pressureSources = board.pressureSources ?? [];
+  const environmentAnchors = board.environmentAnchors ?? [];
+  const forbiddenReveals = board.forbiddenReveals ?? [];
+  const continuityNotes = board.continuityNotes ?? [];
+  const nextOpenThread = trimForReply(stripMentions(sourceMessage.text), 140);
+  const shouldBootstrap = modeNeedsScript && (
+    openThreads.length === 0 &&
+    plannedBeats.length === 0 &&
+    pressureSources.length === 0 &&
+    continuityNotes.length === 0
+  );
+  const patch: DirectorScriptPatch = {};
+  if (shouldBootstrap) {
+    patch.premise = room.topic && !/^daily chat$/i.test(room.topic) ? room.topic : board.premise;
+    patch.currentPhase = mode === "debate" ? "opening" : mode === "study" ? "explain" : mode === "planning" ? "options" : "setup";
+    patch.openThreads = [
+      ...openThreads,
+      createDirectorScriptItemFromText(`Track the visible room thread: ${nextOpenThread || room.topic}`, nowLabel),
+    ].slice(-24);
+    patch.plannedBeats = [
+      ...plannedBeats,
+      createDirectorScriptItemFromText("Let roles respond naturally before forcing a new beat.", nowLabel),
+    ].slice(-24);
+    patch.environmentAnchors = environmentAnchors.length
+      ? environmentAnchors
+      : [createDirectorScriptItemFromText("Describe visible environment changes only when they create a concrete response target.", nowLabel)];
+    patch.forbiddenReveals = forbiddenReveals.length
+      ? forbiddenReveals
+      : [createDirectorScriptItemFromText("Never reveal director-only plans, private channel content, or hidden facts through public narration.", nowLabel)];
+  }
+  if (requiredIntervention === "stuck_recovery" && nextOpenThread) {
+    patch.pressureSources = [
+      ...pressureSources,
+      createDirectorScriptItemFromText(`Recover from a stall by giving the room a visible pressure around: ${nextOpenThread}`, nowLabel),
+    ].slice(-24);
+  }
+  if (narrationTrigger) {
+    patch.continuityNotes = [
+      ...continuityNotes,
+      createDirectorScriptItemFromText(`Narration trigger ${narrationTrigger}: ${nextOpenThread || room.topic}`, nowLabel),
+    ].slice(-24);
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
+function createDirectorScriptItemFromText(text: string, nowLabel: string): DirectorScriptItem {
+  return {
+    id: crypto.randomUUID(),
+    text: trimForReply(text, 220),
+    status: "planned",
+    visibility: "director_only",
+    createdBy: "director",
+    updatedAt: nowLabel,
+  };
+}
+
+function createDirectorTickFocus(
+  room: RoomState,
+  sourceMessage: ConsoleMessage,
+  mode: SituationAssessmentMode,
+  requiredIntervention: DirectorTickResult["requiredIntervention"],
+  narrationTrigger: DirectorTickResult["narrationTrigger"],
+): string {
+  if (requiredIntervention) {
+    return `Director observing: ${requiredIntervention}`;
+  }
+  if (narrationTrigger) {
+    return `Director narration: ${narrationTrigger}`;
+  }
+  const source = trimForReply(stripMentions(sourceMessage.text), 120);
+  if (mode === "casual") {
+    return source ? `Room can continue naturally from: ${source}` : "Room can continue naturally.";
+  }
+  return source ? `Director observing ${mode}: ${source}` : `Director observing ${mode}.`;
+}
+
+function createDirectorTickChannelNote(input: {
+  room: RoomState;
+  sourceMessage: ConsoleMessage;
+  mode: SituationAssessmentMode;
+  requiredIntervention: DirectorTickResult["requiredIntervention"];
+  narrationTrigger: DirectorTickResult["narrationTrigger"];
+  scriptPatch: DirectorScriptPatch | null;
+}): string | null {
+  if (!input.requiredIntervention && !input.narrationTrigger && !input.scriptPatch) {
+    return null;
+  }
+  const lines = [
+    "Director tick",
+    `Mode: ${input.mode}`,
+    `Observed: ${input.sourceMessage.speaker}: ${trimForReply(stripMentions(input.sourceMessage.text), 160)}`,
+  ];
+  if (input.narrationTrigger) {
+    lines.push(`Public narration trigger: ${input.narrationTrigger}`);
+  }
+  if (input.requiredIntervention) {
+    lines.push(`Required intervention: ${input.requiredIntervention}`);
+  }
+  if (input.scriptPatch) {
+    lines.push("Script board: patched director-only planning state.");
+  }
+  return lines.join("\n");
 }
 
 function createDirectorStructuredOutcomeFromPlan(input: {
@@ -3649,7 +4094,7 @@ function directorHandoff(reason: RoomScheduleReason, room: RoomState, nextTurnAt
 }
 
 function directorHandoffPrompt(reason: RoomScheduleReason, room: RoomState): string {
-  const recentText = room.messages.slice(-3).map((message) => message.text).join(" ");
+  const recentText = recentPublicRoomMessages(room, 3).map((message) => message.text).join(" ");
   const chinese = prefersChinese(`${room.topic} ${recentText}`);
   if (isDebateRoom(room)) {
     const nextAssignment = resolveNextDebateSpeakerAssignment(room);
@@ -3670,7 +4115,7 @@ function directorHandoffPrompt(reason: RoomScheduleReason, room: RoomState): str
 }
 
 function recentDirectorWaitingForUser(room: RoomState): boolean {
-  const lastVisible = [...room.messages].reverse().find((message) => message.visibility !== "private_ai");
+  const lastVisible = latestPublicRoomMessage(room);
   return Boolean(
     lastVisible?.speakerType === "room_system" &&
       lastVisible.target !== "all" &&
@@ -3848,6 +4293,7 @@ function chooseNextParticipant(
   addressing: RoomAddressing,
   trigger: RoomTurnTrigger,
 ): RoomParticipant {
+  const speakerPolicy = resolveRoomSpeakerPolicy(room);
   const addressedRoleIds = targetRoleIds(addressing.target);
   if (addressedRoleIds.length > 0) {
     const addressed = pickRoleByIds(room, addressedRoleIds);
@@ -3856,8 +4302,8 @@ function chooseNextParticipant(
     }
   }
 
-  if (trigger === "auto") {
-    const lastTargeted = pickRoleByIds(room, targetRoleIds(room.messages.at(-1)?.target));
+  if (trigger === "auto" && speakerPolicy.mode === "freeform") {
+    const lastTargeted = pickRoleByIds(room, targetRoleIds(latestPublicRoomMessage(room)?.target));
     if (lastTargeted) {
       return lastTargeted;
     }
@@ -3872,8 +4318,13 @@ function chooseNextParticipant(
   const candidates = room.participants.filter((participant) => participant.id !== room.lastSpeakerId);
   const pool = candidates.length > 0 ? candidates : room.participants;
   const topicHit = pool.find((participant) => lower.includes(participant.packId.toLowerCase()));
-  if (topicHit) {
+  if (topicHit && speakerPolicy.mode !== "round_robin") {
     return topicHit;
+  }
+
+  const policyParticipant = chooseParticipantBySpeakerPolicy(room, pool, lower, speakerPolicy);
+  if (policyParticipant) {
+    return policyParticipant;
   }
 
   const lastIndex = room.participants.findIndex((participant) => participant.id === room.lastSpeakerId);
@@ -3887,12 +4338,46 @@ function chooseNextParticipant(
   return room.participants[0]!;
 }
 
+function chooseParticipantBySpeakerPolicy(
+  room: RoomState,
+  candidates: RoomParticipant[],
+  lowerText: string,
+  policy: RoomSpeakerPolicySettings,
+): RoomParticipant | null {
+  if (policy.mode === "freeform") {
+    return null;
+  }
+  const visibleRoleIds = new Set(getChannelVisibleRoleIds(room, room.activeChannelId));
+  const ranked = candidates
+    .filter((participant) => visibleRoleIds.has(participant.id))
+    .map((participant) => {
+      const topicBonus =
+        lowerText.includes(participant.name.toLowerCase()) || lowerText.includes(participant.packId.toLowerCase()) ? 14 : 0;
+      const intent: RoomSpeechIntent = {
+        roleId: participant.id,
+        decision: "speak",
+        target: "all",
+        delayMs: 0,
+        priority: 50 + topicBonus,
+        reason: "speaker_policy_fallback",
+        emotionHint: "idle",
+        maxLength: isDebateRoom(room) ? 420 : 320,
+      };
+      return {
+        participant,
+        score: rankRoomSpeechIntent(intent, room),
+      };
+    })
+    .sort((left, right) => right.score - left.score);
+  return ranked[0]?.participant ?? null;
+}
+
 function chooseTurnTarget(room: RoomState, trigger: RoomTurnTrigger, participant: RoomParticipant): RoomMessageTarget {
   if (trigger === "user") {
     return { targets: [{ type: "user", userId: room.userProfile.userId }] };
   }
 
-  const last = room.messages.at(-1);
+  const last = latestPublicRoomMessage(room);
   if (last?.speakerType === "role" && last.speakerId && targetRoleIds(last.target).includes(participant.id)) {
     return { targets: [{ type: "role", roleId: last.speakerId }] };
   }
@@ -4307,7 +4792,12 @@ function directorPublicTextReason(
   if ((move === "cue" || move === "twist") && isExplicitPublicDirectorTextRequest(userInput, move)) {
     return "narration";
   }
-  if (move === "cue" || move === "twist") {
+  const narrationMode = modeIntent?.mode ?? resolveDirectorModeIntent(room, userInput).mode;
+  const hasScenePressure = Boolean(stripMentions(userInput).trim());
+  if (move === "cue" && (narrationMode === "story" || narrationMode === "mystery") && hasScenePressure) {
+    return "narration";
+  }
+  if (move === "twist" && (narrationMode === "story" || narrationMode === "mystery")) {
     return "narration";
   }
   return "none";
@@ -4361,7 +4851,7 @@ function sanitizeDirectorNarrationSource(text: string): string {
 }
 
 function directorNarrationPrefersChinese(room: RoomState, userInput: string): boolean {
-  const recentText = room.messages.slice(-3).map((message) => message.text).join(" ");
+  const recentText = recentPublicRoomMessages(room, 3).map((message) => message.text).join(" ");
   return prefersChinese(`${userInput} ${room.topic} ${recentText}`);
 }
 
@@ -4626,7 +5116,7 @@ function directorKnownFacts(room: RoomState, directorMemory?: RoomDirectorMemory
     ...(directorMemory?.continuity.entries.map((entry) => entry.detail) ?? []),
     ...(directorMemory?.entries.filter((entry) => entry.status !== "archived").map((entry) => entry.text) ?? []),
     ...(directorMemory?.secrets.map((secret) => `${secret.title}: ${secret.detail}`) ?? []),
-    ...room.messages.slice(-6).filter((message) => message.visibility !== "private_ai").map((message) => `${message.speaker}: ${message.text}`),
+    ...recentPublicRoomMessages(room, 6).map((message) => `${message.speaker}: ${message.text}`),
   ]);
 }
 
@@ -4832,7 +5322,7 @@ function hasQuestionLoop(room: RoomState): boolean {
 }
 
 function lastMessageTargetsUserQuestion(room: RoomState): boolean {
-  const last = room.messages.at(-1);
+  const last = latestPublicRoomMessage(room);
   return Boolean(last && last.kind === "character" && isTargetingUser(last.target, room.userProfile) && /[?？]\s*$/.test(last.text));
 }
 
@@ -4841,6 +5331,18 @@ function isRepetition(room: RoomState, text: string): boolean {
     .filter((message) => message.kind === "character")
     .slice(-3)
     .some((message) => normalizeRepeat(message.text) === normalizeRepeat(text));
+}
+
+function latestPublicRoomMessage(room: RoomState): ConsoleMessage | undefined {
+  return [...room.messages].reverse().find(isPublicRoomTimelineMessage);
+}
+
+function recentPublicRoomMessages(room: RoomState, count: number): ConsoleMessage[] {
+  return room.messages.filter(isPublicRoomTimelineMessage).slice(-count);
+}
+
+function isPublicRoomTimelineMessage(message: ConsoleMessage): boolean {
+  return (message.visibility ?? "public") === "public";
 }
 
 function normalizeRepeat(value: string): string {

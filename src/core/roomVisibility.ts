@@ -116,6 +116,14 @@ export function resolveRoomMessageVisibility(
   message: ConsoleMessage,
   room: RoomState,
 ): Pick<ConsoleMessage, "visibility" | "visibleTo" | "privateReason"> {
+  if (message.visibility === "director_channel") {
+    return {
+      visibility: "director_channel",
+      visibleTo: [{ type: "room_director", directorId: "room-director" }],
+      privateReason: "director_channel",
+    };
+  }
+
   if (message.visibility === "faction_huddle") {
     return {
       visibility: "faction_huddle",
@@ -348,6 +356,10 @@ function messageBelongsToChannel(message: ConsoleMessage, room: RoomState, chann
     return (message.visibility ?? "public") === "public";
   }
 
+  if (channelId === "director") {
+    return room.freedomLevel === "developer" && message.visibility === "director_channel";
+  }
+
   const privateThreadId = privateThreadIdFromChannel(channelId);
   if (privateThreadId) {
     return message.visibility === "private_thread" && privateThreadIdFromChannel(message.channelId ?? "public") === privateThreadId;
@@ -374,6 +386,17 @@ export function deriveRoomChannels(room: RoomState): RoomChannel[] {
       private: false,
     },
   ];
+
+  if (developerFreedom) {
+    channels.push({
+      id: "director",
+      type: "director",
+      label: "Director",
+      memberRoleIds: [],
+      unreadCount: unreadCountForChannel(room, "director"),
+      private: true,
+    });
+  }
 
   if (room.factionHuddles === "on") {
     for (const faction of room.factions) {
@@ -438,6 +461,12 @@ export function filterRoomTimelineForChannel(
     return messages.filter((message) => (message.visibility ?? "public") === "public");
   }
 
+  if (channelId === "director") {
+    return room.freedomLevel === "developer"
+      ? messages.filter((message) => message.visibility === "director_channel" && (message.channelId ?? "director") === "director")
+      : [];
+  }
+
   const privateThreadId = privateThreadIdFromChannel(channelId);
   if (privateThreadId) {
     return messages.filter(
@@ -467,6 +496,16 @@ export function resolveRoomInputVisibility(
       visibleTo: undefined,
       privateReason: undefined,
       channelId: "public",
+      factionId: undefined,
+    };
+  }
+
+  if (channelId === "director" && room.freedomLevel === "developer") {
+    return {
+      visibility: "director_channel",
+      visibleTo: [{ type: "room_director", directorId: "room-director" }],
+      privateReason: "director_channel",
+      channelId: "director",
       factionId: undefined,
     };
   }
@@ -503,6 +542,10 @@ export function resolveRoomInputVisibility(
 }
 
 export function getChannelVisibleRoleIds(room: RoomState, channelId: RoomActiveChannelId): string[] {
+  if (channelId === "director") {
+    return [];
+  }
+
   const privateThread = privateThreadForChannel(room, channelId);
   if (privateThread) {
     return privateThread.memberTargets
@@ -525,7 +568,10 @@ export function filterRoomTimelineForUser(
 ): ConsoleMessage[] {
   return messages.filter(
     (message) =>
-      (message.visibility !== "private_ai" && message.visibility !== "faction_huddle" && message.visibility !== "private_thread") ||
+      (message.visibility !== "private_ai" &&
+        message.visibility !== "faction_huddle" &&
+        message.visibility !== "private_thread" &&
+        message.visibility !== "director_channel") ||
       message.visibleTo?.some((target) => target.type === "user" && target.userId === userProfile.userId),
   );
 }

@@ -44,6 +44,9 @@ for (const marker of [
   "resolveMemoryGraphViewerContext",
   "renderMemoryGraphEditorPanel",
   "renderMemoryGraphConflictPanel",
+  "truthStatus",
+  "epistemicStatus",
+  "memoryGraphEpistemicOptions",
   "room_faction",
 ]) {
   expect(petConsole.includes(marker) || graph.includes(marker), `graph editor UI must include ${marker}`, failures);
@@ -80,11 +83,13 @@ const updated = await repo.updateClaim({
   predicate: "located_in",
   confidence: 0.92,
   status: "active",
+  epistemicStatus: "believed",
 });
 
 expect(updated.text === "钥匙在抽屉里。", "updateClaim should update claim text", failures);
 expect(updated.kind === "clue", "updateClaim should update claim kind", failures);
 expect(Math.round(updated.confidence * 100) === 92, "updateClaim should update confidence", failures);
+expect(updated.epistemicStatus === "believed", "updateClaim should update epistemic status", failures);
 
 await repo.archiveClaim(first.id);
 const archived = repo.listAllClaimsSync("room:editor-room").find((claim) => claim.id === first.id);
