@@ -105,11 +105,19 @@ const portableEntries = new Set(
     .filter(Boolean),
 );
 
+const allowedPortableDataEntries = new Set([
+  "CastRoom AI/portable-data/.gitkeep",
+  "CastRoom AI/portable-data/app-data/.gitkeep",
+  "CastRoom AI/portable-data/runtime-data/.gitkeep",
+  "CastRoom AI/portable-data/character-packs/.gitkeep",
+]);
+
 for (const entry of [
   "CastRoom AI/CastRoom AI.exe",
   "CastRoom AI/README_TESTERS.txt",
   "CastRoom AI/LICENSE",
   "CastRoom AI/character-packs/README.md",
+  ...allowedPortableDataEntries,
   "CastRoom AI/resources/models/chat/qwen3-0.6b-q8_0/manifest.json",
   "CastRoom AI/resources/runners/llama.cpp/llama-cli.exe",
 ]) {
@@ -119,6 +127,12 @@ for (const entry of [
 }
 
 for (const entry of portableEntries) {
+  if (entry.startsWith("CastRoom AI/portable-data/")) {
+    if (!allowedPortableDataEntries.has(entry)) {
+      fail(`portable-data must contain only empty placeholders in release zip: ${entry}`);
+    }
+    continue;
+  }
   if (
     /(^|\/)\.env($|\/)/.test(entry) ||
     /(^|\/)runtime-data(\/|$)/.test(entry) ||
@@ -145,7 +159,7 @@ if (bundledResources.includes("../character-packs/**/*")) {
 }
 
 const notes = fs.readFileSync(path.join(outDir, "RELEASE_NOTES.md"), "utf8");
-for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Character pack instance folders are not included", "fresh local app data namespace", "What changed", "Checksums"]) {
+for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Character pack instance folders are not included", "portable-data", "What changed", "Checksums"]) {
   if (!notes.includes(required)) {
     fail(`release notes missing required text: ${required}`);
   }

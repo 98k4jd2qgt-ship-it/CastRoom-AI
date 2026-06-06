@@ -2697,6 +2697,9 @@ fn mask_secret(value: &str) -> String {
 }
 
 fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(portable_dir) = portable_data_dir() {
+        return Ok(portable_dir.join("app-data"));
+    }
     if let Ok(path) = app.path().app_data_dir() {
         return Ok(path);
     }
@@ -2707,12 +2710,30 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn project_runtime_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(portable_dir) = portable_data_dir() {
+        return Ok(portable_dir.join("runtime-data"));
+    }
     if let Some(pack_dir) = project_character_pack_dir(app) {
         if let Some(project_dir) = pack_dir.parent() {
             return Ok(project_dir.join("runtime-data"));
         }
     }
     Ok(app_data_dir(app)?.join("project-runtime-data"))
+}
+
+fn portable_data_dir() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            candidates.push(exe_dir.join("portable-data"));
+        }
+    }
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("portable-data"));
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists() && candidate.is_dir())
 }
 
 fn assert_path_inside_root(path: &Path, root: &Path) -> Result<PathBuf, String> {
@@ -2780,10 +2801,16 @@ fn safe_pack_file_path(root: &Path, value: &str, field: &str) -> Result<PathBuf,
 }
 
 fn imported_pack_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(portable_dir) = portable_data_dir() {
+        return Ok(portable_dir.join("character-packs"));
+    }
     Ok(project_character_pack_dir(app).unwrap_or(app_data_dir(app)?.join("character-packs")))
 }
 
 fn deleted_pack_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(portable_dir) = portable_data_dir() {
+        return Ok(portable_dir.join("deleted-character-packs"));
+    }
     if let Some(pack_dir) = project_character_pack_dir(app) {
         if let Some(parent) = pack_dir.parent() {
             return Ok(parent.join("deleted-character-packs"));

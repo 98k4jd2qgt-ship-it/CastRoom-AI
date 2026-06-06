@@ -93,6 +93,16 @@ for (const entry of portableSources) {
   fs.cpSync(entry.source, entry.target, { recursive: true });
 }
 
+for (const portableDataPath of [
+  path.join(portableAppDir, "portable-data", ".gitkeep"),
+  path.join(portableAppDir, "portable-data", "app-data", ".gitkeep"),
+  path.join(portableAppDir, "portable-data", "runtime-data", ".gitkeep"),
+  path.join(portableAppDir, "portable-data", "character-packs", ".gitkeep"),
+]) {
+  fs.mkdirSync(path.dirname(portableDataPath), { recursive: true });
+  fs.writeFileSync(portableDataPath, "", "utf8");
+}
+
 const testerReadme = `CastRoom AI portable test build
 
 How to run:
@@ -108,7 +118,8 @@ Notes:
 - Local model and runner assets are included for basic local AI chat.
 - API keys, user data, runtime data, character memory data, logs, node_modules, and source build caches are not included.
 - Character pack instance folders are not included. The app starts from its built-in default state.
-- This build uses a fresh local app data namespace, so it does not reuse older local test data from previous CastRoom AI builds.
+- This portable build stores new local data under "portable-data" next to CastRoom AI.exe. Delete that folder to reset the test build.
+- The included portable-data folders contain only empty .gitkeep placeholders.
 - Please report crashes, launch problems, confusing UI, provider compatibility issues, local AI behavior issues, and voice issues.
 `;
 
@@ -182,7 +193,8 @@ ${alternativeSection}
 - Local model and runner assets are included in the portable zip and desktop installers for basic local AI chat.
 - Runtime data, character memory data, logs, API keys, .env files, and user data are not included in the release assets or source repository.
 - Character pack instance folders are not included. The app starts from its built-in default state.
-- This build uses a fresh local app data namespace, so it does not reuse older local test data from previous CastRoom AI builds.
+- The portable zip stores new local data under "portable-data" next to CastRoom AI.exe. Delete that folder to reset the test build.
+- The included portable-data folders contain only empty .gitkeep placeholders.
 - This is a test/demo-oriented build, not a final public product release.
 
 ## What changed
