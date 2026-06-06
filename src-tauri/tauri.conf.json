@@ -3,7 +3,7 @@
   "productName": "CastRoom AI",
   "mainBinaryName": "CastRoom AI",
   "version": "0.1.1",
-  "identifier": "com.castroom.ai",
+  "identifier": "com.castroom.ai.v011",
   "build": {
     "beforeDevCommand": "npm.cmd run dev",
     "devUrl": "http://127.0.0.1:5173",

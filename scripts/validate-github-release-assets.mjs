@@ -136,13 +136,16 @@ for (const entry of portableEntries) {
 }
 
 const tauriConfig = JSON.parse(fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"));
+if (tauriConfig?.identifier === "com.castroom.ai") {
+  fail("tauri.conf.json identifier must use a fresh release namespace, not the legacy local data namespace");
+}
 const bundledResources = tauriConfig?.bundle?.resources ?? [];
 if (bundledResources.includes("../character-packs/**/*")) {
   fail("tauri.conf.json bundle.resources must not include character pack instance folders");
 }
 
 const notes = fs.readFileSync(path.join(outDir, "RELEASE_NOTES.md"), "utf8");
-for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Character pack instance folders are not included", "What changed", "Checksums"]) {
+for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Character pack instance folders are not included", "fresh local app data namespace", "What changed", "Checksums"]) {
   if (!notes.includes(required)) {
     fail(`release notes missing required text: ${required}`);
   }

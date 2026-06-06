@@ -108,6 +108,7 @@ Notes:
 - Local model and runner assets are included for basic local AI chat.
 - API keys, user data, runtime data, character memory data, logs, node_modules, and source build caches are not included.
 - Character pack instance folders are not included. The app starts from its built-in default state.
+- This build uses a fresh local app data namespace, so it does not reuse older local test data from previous CastRoom AI builds.
 - Please report crashes, launch problems, confusing UI, provider compatibility issues, local AI behavior issues, and voice issues.
 `;
 
@@ -181,6 +182,7 @@ ${alternativeSection}
 - Local model and runner assets are included in the portable zip and desktop installers for basic local AI chat.
 - Runtime data, character memory data, logs, API keys, .env files, and user data are not included in the release assets or source repository.
 - Character pack instance folders are not included. The app starts from its built-in default state.
+- This build uses a fresh local app data namespace, so it does not reuse older local test data from previous CastRoom AI builds.
 - This is a test/demo-oriented build, not a final public product release.
 
 ## What changed
