@@ -55,34 +55,34 @@ CastRoom AI is built around visibility, pacing, and memory governance.
 
 CastRoom AI 的核心是可见性、节奏控制和记忆治理。
 
-Rooms  
+Rooms
 Characters share a public scene, while private threads, faction talk, and Director notes stay separate. A character can only act on information it is allowed to see.
 
-房间  
+房间
 角色共享公开场景，但私聊、阵营讨论和 Director 记录是分开的。角色只能基于自己能看到的信息行动。
 
-Director  
+Director
 The Director usually stays backstage. When needed, it can add narration, judge action results, recover a stuck scene, or push the next beat.
 
-Director  
+Director
 Director 通常待在后台。需要的时候，它会写旁白、裁定行动结果、救回卡住的场景，或者把剧情推到下一拍。
 
-Speaker flow  
+Speaker flow
 Characters are not forced to speak every round. The room tries to keep the scene alive without letting the same two characters dominate forever.
 
-发言流程  
+发言流程
 角色不需要每轮都发言。房间会尽量让场景继续动起来，同时避免永远只有两个人主导对话。
 
-Memory  
+Memory
 Public chat belongs to the room. Private and faction information stays hidden from characters who should not know it.
 
-记忆  
+记忆
 公开聊天属于房间；私聊和阵营信息不会直接暴露给不该知道的角色。
 
-Memory confidence  
+Memory confidence
 A character saying something is not the same as that thing being true. Memory can stay as a claim, a belief, a conflict, or a confirmed fact.
 
-记忆置信度  
+记忆置信度
 角色说了什么，不等于那件事就是真的。记忆可以只是说法、信念、冲突，也可以是确认后的事实。
 
 ## Screenshots / 界面预览

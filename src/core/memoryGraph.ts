@@ -49,6 +49,44 @@ export type MemoryGraphEpistemicStatus =
   | "disputed"
   | "refuted";
 export type MemoryGraphPromptUse = "fact" | "belief" | "none";
+export type MemoryGraphRelationCategory = "observation" | "cognition" | "attitude" | "goal" | "social" | "world";
+export type MemoryGraphReasonChainStepType = "observation" | "interpretation" | "effect";
+
+export interface MemoryGraphReasonChainStep {
+  type: MemoryGraphReasonChainStepType;
+  text: string;
+}
+
+export type MemoryGraphPerspectiveEdgeType =
+  | "SAID"
+  | "DID"
+  | "AVOIDED"
+  | "RESPONDED_TO"
+  | "CLAIMS"
+  | "BELIEVES"
+  | "DOUBTS"
+  | "KNOWS_ABOUT"
+  | "IS_CONFUSED_ABOUT"
+  | "TRUSTS"
+  | "DISTRUSTS"
+  | "LIKES"
+  | "DISLIKES"
+  | "RESPECTS"
+  | "FEARS"
+  | "WANTS"
+  | "OPPOSES_GOAL"
+  | "SUPPORTS_GOAL"
+  | "DEPENDS_ON"
+  | "ALLIED_WITH"
+  | "OPPOSES"
+  | "NEGOTIATES_WITH"
+  | "HIDES_FROM"
+  | "CONFIRMED_AS"
+  | "ENABLES"
+  | "BLOCKS"
+  | "MAY_REVEAL_WHEN"
+  | "REQUIRES_RULING"
+  | "SHOULD_NUDGE";
 
 export const MEMORY_GRAPH_EPISTEMIC_STATUSES: MemoryGraphEpistemicStatus[] = [
   "observed",
@@ -113,6 +151,9 @@ export interface MemoryClaimInput {
   status?: MemoryGraphClaimStatus;
   epistemicStatus?: MemoryGraphEpistemicStatus;
   evidenceCount?: number;
+  relationCategory?: MemoryGraphRelationCategory;
+  reasonChain?: MemoryGraphReasonChainStep[];
+  revisionOf?: string;
   properties?: Record<string, unknown>;
 }
 
@@ -132,6 +173,9 @@ export interface MemoryGraphClaim {
   sensitivity: MemorySensitivity;
   visibility: MemoryGraphVisibility;
   evidenceCount: number;
+  relationCategory?: MemoryGraphRelationCategory;
+  reasonChain?: MemoryGraphReasonChainStep[];
+  revisionOf?: string;
   firstSeenAt: string;
   lastSeenAt: string;
   version: number;
@@ -159,7 +203,8 @@ export interface MemoryGraphEdgeInput {
     | "OWNS"
     | "LOCATED_IN"
     | "TARGETS"
-    | "MENTIONS";
+    | "MENTIONS"
+    | MemoryGraphPerspectiveEdgeType;
   toNodeId: string;
   confidence: number;
   visibility: MemoryGraphVisibility;
@@ -233,6 +278,9 @@ export interface MemoryGraphViewNode {
   semanticKind?: string;
   categoryGroup?: string;
   relationshipType?: string;
+  relationCategory?: MemoryGraphRelationCategory;
+  reasonChain?: MemoryGraphReasonChainStep[];
+  revisionOf?: string;
   graphSyncState?: "ready" | "fallback" | "unsynced";
 }
 
@@ -261,7 +309,8 @@ export interface MemoryGraphViewEdge {
     | "LOCATED_IN"
     | "TARGETS"
     | "SUPPORTS"
-    | "MENTIONS";
+    | "MENTIONS"
+    | MemoryGraphPerspectiveEdgeType;
   label: string;
   visibility: MemoryGraphVisibility;
   dashed?: boolean;
@@ -336,6 +385,9 @@ export interface MemoryGraphClaimPatch {
   visibility?: MemoryGraphVisibility;
   authority?: MemoryGraphAuthority;
   sensitivity?: MemorySensitivity;
+  relationCategory?: MemoryGraphRelationCategory;
+  reasonChain?: MemoryGraphReasonChainStep[];
+  revisionOf?: string;
   properties?: Record<string, unknown>;
   changedBy?: string;
 }
@@ -440,10 +492,24 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
     const confidence = developerOverride ? 1 : clamp(input.confidence, 0, 1);
     const id = existing?.id ?? input.id ?? stableMemoryGraphId("claim", uniqueKey);
     const epistemicStatus = resolveMemoryGraphEpistemicStatus(input, existing);
+    const relationCategory = normalizeMemoryGraphRelationCategory(input.relationCategory ?? input.properties?.relationCategory)
+      ?? existing?.relationCategory
+      ?? normalizeMemoryGraphRelationCategory(existing?.properties?.relationCategory)
+      ?? memoryGraphClaimRelationCategory(input);
+    const reasonChain = normalizeMemoryGraphReasonChain(input.reasonChain ?? input.properties?.reasonChain)
+      ?? existing?.reasonChain
+      ?? normalizeMemoryGraphReasonChain(existing?.properties?.reasonChain)
+      ?? defaultMemoryGraphReasonChain(input.text, input.source.excerpt);
+    const revisionOf = normalizeMemoryGraphString(input.revisionOf ?? input.properties?.revisionOf)
+      ?? existing?.revisionOf
+      ?? normalizeMemoryGraphString(existing?.properties?.revisionOf);
     const properties = {
       ...(existing?.properties ?? {}),
       ...(input.properties ?? {}),
       epistemicStatus,
+      relationCategory,
+      reasonChain,
+      ...(revisionOf ? { revisionOf } : {}),
     };
     const claim: MemoryGraphClaim = {
       id,
@@ -461,6 +527,9 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       sensitivity: input.sensitivity,
       visibility,
       evidenceCount: (existing?.evidenceCount ?? 0) + Math.max(1, input.evidenceCount ?? 1),
+      relationCategory,
+      reasonChain,
+      revisionOf,
       firstSeenAt: existing?.firstSeenAt ?? input.source.createdAt ?? now,
       lastSeenAt: input.source.createdAt ?? now,
       version: (existing?.version ?? 0) + 1,
@@ -513,10 +582,18 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       visibility: patch.visibility ?? existing.visibility,
       authority: patch.authority ?? existing.authority,
       sensitivity: patch.sensitivity ?? existing.sensitivity,
+      relationCategory: normalizeMemoryGraphRelationCategory(patch.relationCategory ?? patch.properties?.relationCategory) ?? existing.relationCategory,
+      reasonChain: normalizeMemoryGraphReasonChain(patch.reasonChain ?? patch.properties?.reasonChain) ?? existing.reasonChain,
+      revisionOf: normalizeMemoryGraphString(patch.revisionOf ?? patch.properties?.revisionOf) ?? existing.revisionOf,
       properties: {
         ...existing.properties,
         ...(patch.properties ?? {}),
         epistemicStatus: patch.epistemicStatus ?? existing.epistemicStatus,
+        relationCategory: normalizeMemoryGraphRelationCategory(patch.relationCategory ?? patch.properties?.relationCategory) ?? existing.relationCategory,
+        reasonChain: normalizeMemoryGraphReasonChain(patch.reasonChain ?? patch.properties?.reasonChain) ?? existing.reasonChain,
+        ...(normalizeMemoryGraphString(patch.revisionOf ?? patch.properties?.revisionOf) ?? existing.revisionOf
+          ? { revisionOf: normalizeMemoryGraphString(patch.revisionOf ?? patch.properties?.revisionOf) ?? existing.revisionOf }
+          : {}),
       },
       lastSeenAt: new Date().toISOString(),
       version: existing.version + 1,
@@ -677,6 +754,9 @@ export class InMemoryMemoryGraphRepository implements MemoryGraphRepository {
       status: claim.status,
       epistemicStatus: claim.epistemicStatus,
       evidenceCount: claim.evidenceCount,
+      relationCategory: claim.relationCategory,
+      reasonChain: claim.reasonChain,
+      revisionOf: claim.revisionOf,
       properties: claim.properties,
     };
   }
@@ -1153,6 +1233,75 @@ function normalizeMemoryGraphEpistemicStatus(value: unknown): MemoryGraphEpistem
     : undefined;
 }
 
+const MEMORY_GRAPH_RELATION_CATEGORIES: MemoryGraphRelationCategory[] = ["observation", "cognition", "attitude", "goal", "social", "world"];
+const MEMORY_GRAPH_REASON_CHAIN_STEP_TYPES: MemoryGraphReasonChainStepType[] = ["observation", "interpretation", "effect"];
+
+function normalizeMemoryGraphRelationCategory(value: unknown): MemoryGraphRelationCategory | undefined {
+  return typeof value === "string" && (MEMORY_GRAPH_RELATION_CATEGORIES as string[]).includes(value)
+    ? value as MemoryGraphRelationCategory
+    : undefined;
+}
+
+function normalizeMemoryGraphReasonChain(value: unknown): MemoryGraphReasonChainStep[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const steps = value
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return undefined;
+      }
+      const record = item as Record<string, unknown>;
+      const type = typeof record.type === "string" && (MEMORY_GRAPH_REASON_CHAIN_STEP_TYPES as string[]).includes(record.type)
+        ? record.type as MemoryGraphReasonChainStepType
+        : undefined;
+      const text = normalizeMemoryGraphString(record.text);
+      return type && text ? { type, text } : undefined;
+    })
+    .filter((item): item is MemoryGraphReasonChainStep => Boolean(item));
+  return steps.length > 0 ? steps.slice(0, 6) : undefined;
+}
+
+function normalizeMemoryGraphString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function defaultMemoryGraphReasonChain(text: string, excerpt?: string): MemoryGraphReasonChainStep[] | undefined {
+  const source = normalizeMemoryGraphString(excerpt);
+  if (!source || source === text.trim()) {
+    return undefined;
+  }
+  return [
+    { type: "observation", text: source.slice(0, 220) },
+    { type: "interpretation", text: text.trim().slice(0, 220) },
+  ];
+}
+
+function memoryGraphClaimRelationCategory(input: Pick<MemoryClaimInput, "kind" | "predicate" | "epistemicStatus" | "properties">): MemoryGraphRelationCategory {
+  const explicit = normalizeMemoryGraphRelationCategory(input.properties?.relationCategory);
+  if (explicit) {
+    return explicit;
+  }
+  const predicate = input.predicate.toLowerCase();
+  const epistemic = normalizeMemoryGraphEpistemicStatus(input.epistemicStatus ?? input.properties?.epistemicStatus);
+  if (epistemic === "claimed" || epistemic === "believed" || epistemic === "doubted" || input.kind === "argument" || input.kind === "stance") {
+    return "cognition";
+  }
+  if (input.kind === "relationship" || /trust|distrust|like|dislike|respect|fear|suspect|avoid/.test(predicate)) {
+    return "attitude";
+  }
+  if (input.kind === "goal" || input.kind === "plan" || input.kind === "task" || /goal|want|support|oppose|depend/.test(predicate)) {
+    return "goal";
+  }
+  if (input.kind === "conflict" || input.kind === "judgement" || input.kind === "secret" || input.kind === "scene" || input.kind === "item" || input.kind === "clue") {
+    return "world";
+  }
+  if (/ally|oppos|negotiat|hide/.test(predicate)) {
+    return "social";
+  }
+  return "observation";
+}
+
 function memoryGraphClaimSourceLabel(claim: MemoryGraphClaim): string {
   const speaker = typeof claim.properties?.sourceSpeaker === "string" ? claim.properties.sourceSpeaker.trim() : "";
   if (speaker) {
@@ -1540,6 +1689,9 @@ function memoryGraphClaimViewNode(claim: MemoryGraphClaim): MemoryGraphViewNode 
     nodeCaption: concept.caption,
     semanticKind: concept.semanticKind,
     categoryGroup: concept.categoryGroup,
+    relationCategory: claim.relationCategory ?? memoryGraphClaimCategoryGroupAsRelationCategory(concept.categoryGroup),
+    reasonChain: claim.reasonChain,
+    revisionOf: claim.revisionOf,
   };
 }
 
@@ -1605,6 +1757,19 @@ function memoryGraphClaimCategoryGroup(claim: MemoryGraphClaim): string {
     return "faction_strategy";
   }
   return "fact";
+}
+
+function memoryGraphClaimCategoryGroupAsRelationCategory(group: string): MemoryGraphRelationCategory {
+  if (group === "conflict" || group === "judgement" || group === "continuity" || group === "hidden") {
+    return "world";
+  }
+  if (group === "faction_strategy") {
+    return "goal";
+  }
+  if (group === "quality") {
+    return "cognition";
+  }
+  return "observation";
 }
 
 function memoryGraphPreferenceValueFromClaim(claim: MemoryGraphClaim): string | undefined {
@@ -1740,7 +1905,12 @@ function memoryGraphScopeLabel(scope: MemoryScope): string {
 }
 
 function memoryGraphViewEdgeType(type: MemoryGraphEdgeInput["type"]): MemoryGraphViewEdge["type"] {
-  if (type === "CONFLICTS_WITH" || type === "CONTRADICTS" || type === "SUPERSEDES" || type === "CLAIMS" || type === "BELIEVES" || type === "DOUBTS" || type === "KNOWS" || type === "REFUTES" || type === "MEMBER_OF" || type === "HAS_GOAL" || type === "OWNS" || type === "LOCATED_IN" || type === "TARGETS" || type === "SUPPORTS" || type === "MENTIONS") {
+  if (
+    type === "CONFLICTS_WITH" || type === "CONTRADICTS" || type === "SUPERSEDES" ||
+    type === "CLAIMS" || type === "BELIEVES" || type === "DOUBTS" || type === "KNOWS" || type === "REFUTES" ||
+    type === "MEMBER_OF" || type === "HAS_GOAL" || type === "OWNS" || type === "LOCATED_IN" || type === "TARGETS" ||
+    type === "SUPPORTS" || type === "MENTIONS" || isMemoryGraphPerspectiveEdgeType(type)
+  ) {
     return type;
   }
   if (type === "KNOWN_BY" || type === "ASSERTED_BY") {
@@ -1750,6 +1920,10 @@ function memoryGraphViewEdgeType(type: MemoryGraphEdgeInput["type"]): MemoryGrap
 }
 
 function memoryGraphRelationshipViewEdgeType(claim: MemoryGraphClaim): MemoryGraphViewEdge["type"] {
+  const propertyRelation = normalizeMemoryGraphPerspectiveEdgeType(claim.properties?.relationshipType ?? claim.properties?.relation ?? claim.predicate);
+  if (propertyRelation) {
+    return propertyRelation;
+  }
   const epistemicStatus = memoryGraphClaimEpistemicStatus(claim);
   if (epistemicStatus === "claimed") {
     return "CLAIMS";
@@ -1785,6 +1959,49 @@ function memoryGraphRelationshipViewEdgeType(claim: MemoryGraphClaim): MemoryGra
     return "MENTIONS";
   }
   return "ABOUT";
+}
+
+function isMemoryGraphPerspectiveEdgeType(value: string): value is MemoryGraphPerspectiveEdgeType {
+  return normalizeMemoryGraphPerspectiveEdgeType(value) !== undefined;
+}
+
+function normalizeMemoryGraphPerspectiveEdgeType(value: unknown): MemoryGraphPerspectiveEdgeType | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toUpperCase();
+  const accepted: MemoryGraphPerspectiveEdgeType[] = [
+    "SAID",
+    "DID",
+    "AVOIDED",
+    "RESPONDED_TO",
+    "CLAIMS",
+    "BELIEVES",
+    "DOUBTS",
+    "KNOWS_ABOUT",
+    "IS_CONFUSED_ABOUT",
+    "TRUSTS",
+    "DISTRUSTS",
+    "LIKES",
+    "DISLIKES",
+    "RESPECTS",
+    "FEARS",
+    "WANTS",
+    "OPPOSES_GOAL",
+    "SUPPORTS_GOAL",
+    "DEPENDS_ON",
+    "ALLIED_WITH",
+    "OPPOSES",
+    "NEGOTIATES_WITH",
+    "HIDES_FROM",
+    "CONFIRMED_AS",
+    "ENABLES",
+    "BLOCKS",
+    "MAY_REVEAL_WHEN",
+    "REQUIRES_RULING",
+    "SHOULD_NUDGE",
+  ];
+  return accepted.includes(normalized as MemoryGraphPerspectiveEdgeType) ? normalized as MemoryGraphPerspectiveEdgeType : undefined;
 }
 
 function isPrivateMemoryGraphVisibility(visibility: MemoryGraphVisibility): boolean {

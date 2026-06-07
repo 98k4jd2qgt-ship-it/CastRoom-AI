@@ -12,6 +12,7 @@ import type {
   MemoryGraphIssue,
   MemoryGraphNodeKind,
   MemoryGraphQueryContext,
+  MemoryGraphRelationCategory,
   MemoryGraphViewEdge,
   MemoryGraphViewModel,
   MemoryGraphViewNode,
@@ -84,6 +85,8 @@ import type {
   RoomObservationEntry,
   RoomMemoryMessage,
   RoomState,
+  SemanticMemoryEpistemicStatus,
+  SemanticMemoryObservation,
   ShortTermMention,
   SupportedChatImageFormat,
   WindowFrameAction,
@@ -138,6 +141,7 @@ type MemoryTreeNodeKind =
 
 interface MemoryDashboardScope {
   scope: MemoryScope;
+  graphScopes: MemoryScope[];
   title: string;
   subtitle: string;
   path: string;
@@ -146,6 +150,7 @@ interface MemoryDashboardScope {
   graphClaims: MemoryGraphClaim[];
   candidates: CandidateMemory[];
   shortTerm: ShortTermMention[];
+  semanticObservations: SemanticMemoryObservation[];
   recentMessages: RoomMemoryMessage[];
   directorEntries: DirectorMemoryEntry[];
   observerEntries: RoomObservationEntry[];
@@ -174,12 +179,12 @@ interface MemoryDashboardFact {
   status: string;
   evidenceCount: number;
   confidence?: number;
-  epistemicStatus?: MemoryGraphEpistemicStatus;
+  epistemicStatus?: MemoryGraphEpistemicStatus | SemanticMemoryEpistemicStatus;
   firstSeenAt?: string;
   lastSeenAt?: string;
   sourceCount: number;
   sensitivity?: string;
-  sourceType: "compressed" | "graph" | "candidate" | "short" | "director" | "observer" | "faction" | "room_activity";
+  sourceType: "compressed" | "graph" | "candidate" | "short" | "semantic" | "director" | "observer" | "faction" | "room_activity";
   canConfirm?: boolean;
   canArchive?: boolean;
   canDelete?: boolean;
@@ -242,6 +247,23 @@ const memoryGraphEdgeTypeOptions: MemoryGraphEdgeInput["type"][] = [
   "ABOUT",
   "KNOWN_BY",
   "ASSERTED_BY",
+  "SAID",
+  "DID",
+  "CLAIMS",
+  "BELIEVES",
+  "DOUBTS",
+  "KNOWS_ABOUT",
+  "TRUSTS",
+  "DISTRUSTS",
+  "WANTS",
+  "OPPOSES_GOAL",
+  "SUPPORTS_GOAL",
+  "ALLIED_WITH",
+  "OPPOSES",
+  "HIDES_FROM",
+  "CONFIRMED_AS",
+  "REQUIRES_RULING",
+  "SHOULD_NUDGE",
   "SUPPORTS",
   "CONFLICTS_WITH",
   "SUPERSEDES",
@@ -3138,6 +3160,10 @@ function memoryGraphEpistemicText(language: ConsoleAppState["language"], value: 
   return memoryGraphText(language, value, value);
 }
 
+function memoryGraphRelationCategoryText(language: ConsoleAppState["language"], value: MemoryGraphRelationCategory): string {
+  return memoryGraphText(language, value, value);
+}
+
 function memoryGraphAuthorityText(language: ConsoleAppState["language"], value: string): string {
   return memoryGraphText(language, value, value);
 }
@@ -3426,9 +3452,9 @@ function renderMemoryGraphPanel(
   });
 
   let drawRevision = 0;
-  const fallbackGraphView = (): MemoryGraphViewModel =>
-    memoryStore.getGraphView({
-      scope: resolveMemoryGraphScopeForQuery(selectedScope),
+  const graphScopes = () => selectedScope?.graphScopes?.length ? selectedScope.graphScopes : [resolveMemoryGraphScopeForQuery(selectedScope)];
+  const fallbackGraphView = (): MemoryGraphViewModel => {
+    const contextBase = {
       viewer: resolveMemoryGraphViewerContext(selectedScope, state, graphState),
       maxNodes: 120,
       includeDisputed: true,
@@ -3442,8 +3468,13 @@ function renderMemoryGraphPanel(
         visibilities: graphState.visibility === "all" ? undefined : [graphState.visibility],
       },
       expandedNodeIds: graphState.expandedNodeIds,
-    });
+    };
+    return mergeMemoryGraphViews(graphScopes().map((scope) => memoryStore.getGraphView({ ...contextBase, scope })));
+  };
   const queryGraphView = async (): Promise<MemoryGraphViewModel> => {
+    if (graphScopes().length > 1) {
+      return fallbackGraphView();
+    }
     const context = {
       scope: resolveMemoryGraphScopeForQuery(selectedScope),
       viewer: resolveMemoryGraphViewerContext(selectedScope, state, graphState),
@@ -3533,6 +3564,52 @@ function shouldUseFallbackMemoryGraphView(
     (graphView.visibleClaimCount ?? 0) === 0 &&
     (fallbackView.visibleClaimCount ?? 0) > 0
   );
+}
+
+function mergeMemoryGraphViews(views: MemoryGraphViewModel[]): MemoryGraphViewModel {
+  if (views.length === 0) {
+    return {
+      nodes: [],
+      edges: [],
+      filters: {},
+      hiddenPrivateCount: 0,
+      visibleClaimCount: 0,
+      modeClaimCount: 0,
+      pendingReviewCount: 0,
+    };
+  }
+  if (views.length === 1) {
+    return views[0];
+  }
+
+  const nodes = new Map<string, MemoryGraphViewNode>();
+  const edges = new Map<string, MemoryGraphViewEdge>();
+  const issues = new Map<string, MemoryGraphIssue>();
+  for (const view of views) {
+    for (const node of view.nodes) {
+      nodes.set(node.id, node);
+    }
+    for (const edge of view.edges) {
+      edges.set(edge.id, edge);
+    }
+    for (const issue of view.issues ?? []) {
+      issues.set(issue.id, issue);
+    }
+  }
+
+  const nodeIds = new Set(nodes.keys());
+  return {
+    nodes: Array.from(nodes.values()),
+    edges: Array.from(edges.values()).filter((edge) => nodeIds.has(edge.from) && nodeIds.has(edge.to)),
+    filters: views[0]?.filters ?? {},
+    mode: views[0]?.mode,
+    issues: Array.from(issues.values()),
+    truncated: views.some((view) => view.truncated),
+    hiddenPrivateCount: views.reduce((sum, view) => sum + (view.hiddenPrivateCount ?? 0), 0),
+    visibleClaimCount: views.reduce((sum, view) => sum + (view.visibleClaimCount ?? 0), 0),
+    modeClaimCount: views.reduce((sum, view) => sum + (view.modeClaimCount ?? 0), 0),
+    pendingReviewCount: views.reduce((sum, view) => sum + (view.pendingReviewCount ?? 0), 0),
+  };
 }
 
 function memoryGraphViewerLabel(
@@ -4863,6 +4940,7 @@ function renderMemoryGraphDetail(
     propertyGrid.append(
       readonlyRow(memoryGraphText(language, "status", "Status"), selected.status ? memoryGraphStatusText(language, selected.status) : "-"),
       readonlyRow(memoryGraphText(language, "truthStatus", "Truth status"), selected.epistemicStatus ? memoryGraphEpistemicText(language, selected.epistemicStatus) : "-"),
+      readonlyRow(memoryGraphText(language, "relationCategory", "Relation category"), selected.relationCategory ? memoryGraphRelationCategoryText(language, selected.relationCategory) : "-"),
       readonlyRow(memoryGraphText(language, "promptUse", "Prompt use"), selected.promptUse ?? "-"),
       readonlyRow(memoryGraphText(language, "authority", "Authority"), selected.authority ? memoryGraphAuthorityText(language, selected.authority) : "-"),
       readonlyRow(memoryGraphText(language, "confidence", "Confidence"), selected.confidence === undefined ? "-" : `${Math.round(selected.confidence * 100)}%`),
@@ -4882,8 +4960,27 @@ function renderMemoryGraphDetail(
     evidenceGrid.append(
       readonlyRow(memoryGraphText(language, "evidence", "Evidence"), String(selected.evidenceCount ?? 0)),
       readonlyRow(memoryGraphText(language, "source", "Source"), selected.sourceClaimId ?? "-"),
+      readonlyRow(memoryGraphText(language, "revisionOf", "Revision of"), selected.revisionOf ?? "-"),
     );
     detail.append(memoryGraphDetailSection(memoryGraphText(language, "evidence", "Evidence"), evidenceGrid));
+
+    if (selected.reasonChain?.length) {
+      const chain = document.createElement("div");
+      chain.className = "memory-graph-detail-content";
+      const list = document.createElement("ol");
+      list.className = "memory-graph-reason-chain";
+      for (const step of selected.reasonChain) {
+        const item = document.createElement("li");
+        const label = document.createElement("strong");
+        label.textContent = memoryGraphText(language, step.type, step.type);
+        const text = document.createElement("span");
+        text.textContent = step.text;
+        item.append(label, text);
+        list.append(item);
+      }
+      chain.append(list);
+      detail.append(memoryGraphDetailSection(memoryGraphText(language, "reasonChain", "Reason chain"), chain));
+    }
   }
   if (selected.kind === "issue") {
     const issue = (view.issues ?? []).find((item) => item.id === selected.sourceIssueId);
@@ -5661,6 +5758,7 @@ function buildMemoryTree(memoryStore: MemoryStore, state: ConsoleAppState, curre
     graphClaims: memoryStore.listGraphClaimsForViewer("global", { type: "global" }),
     candidates: memoryStore.listCandidateMemories("global"),
     shortTerm: memoryStore.listShortTerm("global"),
+    semanticObservations: memoryStore.listSemanticObservations("global"),
     summary: uiText(language, "Small cross-room preferences.", "极少量跨房间偏好。"),
     visibilityHint: uiText(language, "Visible globally", "全局可用"),
   });
@@ -5696,28 +5794,12 @@ function buildRoomMemoryTreeNode(memoryStore: MemoryStore, room: RoomState, lang
   const directorScope = createDirectorMemoryScope(memoryStore, room, language);
   const roleNodes = room.participants.map((participant) => {
     const roleScope = createRoomRoleMemoryScope(memoryStore, room, participant, language);
-    const observerScope = createObserverMemoryScope(memoryStore, room, participant, language);
-    return createMemoryTreeGroup({
-      id: `room:${room.id}:role-node:${participant.id}`,
+    return createMemoryTreeLeaf({
+      id: `room:${room.id}:role:${participant.id}`,
       title: participant.displayName,
-      subtitle: uiText(language, "This role instance in the room", "房间里的这个角色"),
-      kind: "room_role_group",
-      children: [
-        createMemoryTreeLeaf({
-          id: `room:${room.id}:role:${participant.id}`,
-          title: uiText(language, "Room role memory", "房间角色记忆"),
-          subtitle: participant.displayName,
-          kind: "room_role",
-          scope: roleScope,
-        }),
-        createMemoryTreeLeaf({
-          id: `room:${room.id}:observer:${participant.id}`,
-          title: uiText(language, "Private and observer threads", "私下/旁听暗线"),
-          subtitle: uiText(language, "{name} + Director visible", "{name} + Director 可见").replace("{name}", participant.displayName),
-          kind: "observer",
-          scope: observerScope,
-        }),
-      ],
+      subtitle: uiText(language, "Room perspective", "房间视角"),
+      kind: "room_role",
+      scope: roleScope,
     });
   });
   const factionNodes = room.factions
@@ -5768,8 +5850,8 @@ function buildRoomMemoryTreeNode(memoryStore: MemoryStore, room: RoomState, lang
       }),
       createMemoryTreeGroup({
         id: `${roomScope}:roles`,
-        title: uiText(language, "Role memory", "角色记忆"),
-        subtitle: uiText(language, "Room roles and private threads", "房间角色与私下暗线"),
+        title: uiText(language, "Role perspectives", "角色视角"),
+        subtitle: uiText(language, "Public, private, and faction understanding", "公开、私密与阵营理解"),
         kind: "room_role_group",
         children: roleNodes,
       }),
@@ -5797,6 +5879,7 @@ function createRoomPublicMemoryScope(memoryStore: MemoryStore, room: RoomState, 
     graphClaims: memoryStore.listGraphClaimsForViewer(scope, roomPublicGraphViewer(room)),
     candidates: memoryStore.listCandidateMemories(scope),
     shortTerm: snapshot.shortTerm,
+    semanticObservations: memoryStore.listSemanticObservations(scope),
     recentMessages: snapshot.recentMessages,
     summary: snapshot.summary,
     visibilityHint: uiText(language, "Public room facts", "公开房间事实"),
@@ -5816,10 +5899,37 @@ function createDirectorMemoryScope(memoryStore: MemoryStore, room: RoomState, la
     graphClaims: memoryStore.listGraphClaimsForViewer(scope, directorGraphViewer(room)),
     candidates: memoryStore.listCandidateMemories(scope),
     shortTerm: memoryStore.listShortTerm(scope),
+    semanticObservations: memoryStore.listSemanticObservations(scope),
     recentMessages: [],
     directorEntries: snapshot.entries,
     summary: snapshot.summary,
     visibilityHint: uiText(language, "Director visible, may include hidden threads", "Director 可见，可包含隐藏暗线"),
+  });
+}
+
+function uniqueMemoryScopes(scopes: Array<MemoryScope | undefined>): MemoryScope[] {
+  return Array.from(new Set(scopes.filter((scope): scope is MemoryScope => Boolean(scope))));
+}
+
+function dedupeMemoryGraphClaims(claims: MemoryGraphClaim[]): MemoryGraphClaim[] {
+  const seen = new Set<string>();
+  return claims.filter((claim) => {
+    if (seen.has(claim.id)) {
+      return false;
+    }
+    seen.add(claim.id);
+    return true;
+  });
+}
+
+function dedupeSemanticObservations(observations: SemanticMemoryObservation[]): SemanticMemoryObservation[] {
+  const seen = new Set<string>();
+  return observations.filter((observation) => {
+    if (seen.has(observation.id)) {
+      return false;
+    }
+    seen.add(observation.id);
+    return true;
   });
 }
 
@@ -5829,44 +5939,30 @@ function createRoomRoleMemoryScope(
   participant: RoomParticipant,
   language: ConsoleAppState["language"],
 ): MemoryDashboardScope {
+  const roomScope = `room:${room.id}` as const;
+  const observerSnapshot = memoryStore.getRoomObserverMemorySnapshot(roomScope, participant.id);
+  const factionSnapshot = participant.factionId && participant.factionId !== "neutral"
+    ? memoryStore.getFactionMemorySnapshot(roomScope, participant.factionId)
+    : undefined;
+  const graphScopes = uniqueMemoryScopes([participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope]);
+  const viewer = roomRoleGraphViewer(room, participant);
   return createMemoryDashboardScope({
     scope: participant.memoryScope,
-    title: `${participant.displayName} / ${uiText(language, "Room role memory", "房间角色记忆")}`,
-    subtitle: uiText(language, "Only affects this role in this room", "只影响这个房间里的这个角色"),
-    path: `${room.title} / ${participant.displayName} / ${uiText(language, "Room role memory", "房间角色记忆")}`,
+    graphScopes,
+    title: `${participant.displayName} / ${uiText(language, "Room perspective", "房间视角")}`,
+    subtitle: uiText(language, "This role's public, private, and faction understanding", "这个角色的公开、私密与阵营理解"),
+    path: `${room.title} / ${participant.displayName} / ${uiText(language, "Room perspective", "房间视角")}`,
     kind: "room_role",
-    longTerm: memoryStore.listCompressedMemories(participant.memoryScope),
-    graphClaims: memoryStore.listGraphClaimsForViewer(participant.memoryScope, roomRoleGraphViewer(room, participant)),
-    candidates: memoryStore.listCandidateMemories(participant.memoryScope),
-    shortTerm: memoryStore.listShortTerm(participant.memoryScope),
+    longTerm: graphScopes.flatMap((scope) => memoryStore.listCompressedMemories(scope)),
+    graphClaims: dedupeMemoryGraphClaims(graphScopes.flatMap((scope) => memoryStore.listGraphClaimsForViewer(scope, viewer))),
+    candidates: graphScopes.flatMap((scope) => memoryStore.listCandidateMemories(scope)),
+    shortTerm: graphScopes.flatMap((scope) => memoryStore.listShortTerm(scope)),
+    semanticObservations: dedupeSemanticObservations(graphScopes.flatMap((scope) => memoryStore.listSemanticObservations(scope))),
     recentMessages: [],
-    summary: uiText(language, "Room-only memory for this role instance.", "这个角色在当前房间里的独立记忆。"),
-    visibilityHint: uiText(language, "Only this room role uses it", "仅当前房间角色可用"),
-  });
-}
-
-function createObserverMemoryScope(
-  memoryStore: MemoryStore,
-  room: RoomState,
-  participant: RoomParticipant,
-  language: ConsoleAppState["language"],
-): MemoryDashboardScope {
-  const roomScope = `room:${room.id}` as const;
-  const snapshot = memoryStore.getRoomObserverMemorySnapshot(roomScope, participant.id);
-  return createMemoryDashboardScope({
-    scope: snapshot.scope,
-    title: `${participant.displayName} / ${uiText(language, "Private and observer threads", "私下/旁听暗线")}`,
-    subtitle: uiText(language, "Visible to this role and Director", "仅这个角色和 Director 可见"),
-    path: `${room.title} / ${participant.displayName} / ${uiText(language, "Private and observer threads", "私下/旁听暗线")}`,
-    kind: "observer",
-    longTerm: memoryStore.listCompressedMemories(snapshot.scope),
-    graphClaims: memoryStore.listGraphClaimsForViewer(snapshot.scope, observerGraphViewer(room, participant.id, participant.factionId)),
-    candidates: memoryStore.listCandidateMemories(snapshot.scope),
-    shortTerm: memoryStore.listShortTerm(snapshot.scope),
-    recentMessages: [],
-    observerEntries: snapshot.entries.filter((entry) => entry.visibility !== "public"),
-    summary: snapshot.summary,
-    visibilityHint: uiText(language, "Visible to {name} and Director", "仅 {name} 和 Director 可见").replace("{name}", participant.displayName),
+    observerEntries: observerSnapshot.entries.filter((entry) => entry.visibility !== "public"),
+    factionEntries: factionSnapshot?.entries ?? [],
+    summary: uiText(language, "Merged room perspective for this role instance.", "这个角色在当前房间里的合并视角。"),
+    visibilityHint: uiText(language, "Role perspective: public + private + faction-visible", "角色视角：公开 + 私密 + 阵营可见"),
   });
 }
 
@@ -5889,6 +5985,7 @@ function createFactionMemoryScope(
     graphClaims: memoryStore.listGraphClaimsForViewer(snapshot.scope, factionGraphViewer(room, factionId)),
     candidates: memoryStore.listCandidateMemories(snapshot.scope),
     shortTerm: memoryStore.listShortTerm(snapshot.scope),
+    semanticObservations: memoryStore.listSemanticObservations(snapshot.scope),
     recentMessages: [],
     factionEntries: snapshot.entries,
     summary: snapshot.summary,
@@ -5908,6 +6005,7 @@ function createCharacterMemoryScope(memoryStore: MemoryStore, pack: CharacterPac
     graphClaims: memoryStore.listGraphClaimsForViewer(scope, { type: "one_on_one", packId: pack.id }),
     candidates: memoryStore.listCandidateMemories(scope),
     shortTerm: memoryStore.listShortTerm(scope),
+    semanticObservations: memoryStore.listSemanticObservations(scope),
     recentMessages: [],
     summary: uiText(language, "One-to-one memory for this character pack.", "这个角色包的一对一记忆。"),
     visibilityHint: uiText(language, "Used by one-to-one chat", "一对一聊天使用"),
@@ -6017,6 +6115,7 @@ function buildMemoryDashboardScopes(
     graphClaims: memoryStore.listGraphClaimsForViewer(roomScope, room ? roomPublicGraphViewer(room) : undefined),
     candidates: memoryStore.listCandidateMemories(roomScope),
     shortTerm: roomSnapshot.shortTerm,
+    semanticObservations: memoryStore.listSemanticObservations(roomScope),
     recentMessages: roomSnapshot.recentMessages,
     summary: roomSnapshot.summary,
   }));
@@ -6032,6 +6131,7 @@ function buildMemoryDashboardScopes(
     graphClaims: memoryStore.listGraphClaimsForViewer(directorScope, room ? directorGraphViewer(room) : undefined),
     candidates: memoryStore.listCandidateMemories(directorScope),
     shortTerm: memoryStore.listShortTerm(directorScope),
+    semanticObservations: memoryStore.listSemanticObservations(directorScope),
     directorEntries: directorSnapshot.entries,
     summary: directorSnapshot.summary,
   }));
@@ -6047,6 +6147,7 @@ function buildMemoryDashboardScopes(
         graphClaims: memoryStore.listGraphClaimsForViewer(participant.memoryScope, roomRoleGraphViewer(room, participant)),
         candidates: memoryStore.listCandidateMemories(participant.memoryScope),
         shortTerm: memoryStore.listShortTerm(participant.memoryScope),
+        semanticObservations: memoryStore.listSemanticObservations(participant.memoryScope),
         summary: uiText(language, "Room-only memory for this role instance.", "这个角色在当前房间里的独立记忆。"),
       }));
     }
@@ -6063,6 +6164,7 @@ function buildMemoryDashboardScopes(
       graphClaims: memoryStore.listGraphClaimsForViewer(characterScope, { type: "one_on_one", packId: pack.id }),
       candidates: memoryStore.listCandidateMemories(characterScope),
       shortTerm: memoryStore.listShortTerm(characterScope),
+      semanticObservations: memoryStore.listSemanticObservations(characterScope),
       summary: uiText(language, "One-on-one memory for this character pack.", "这个角色包的一对一记忆。"),
     }));
   }
@@ -6070,18 +6172,22 @@ function buildMemoryDashboardScopes(
   if (room) {
     for (const snapshot of memoryStore.listRoomObserverMemorySnapshots(roomScopeId)) {
       const participant = room.participants.find((item) => item.roleId === snapshot.roleId || item.id === snapshot.roleId);
+      if (participant) {
+        continue;
+      }
       scopes.push(createMemoryDashboardScope({
         scope: snapshot.scope,
-        title: `${uiText(language, "Observer", "旁听")} · ${participant?.displayName ?? snapshot.roleId}`,
-        subtitle: uiText(language, "Heard-but-not-spoken strategy memory", "听见但未发言的策略记忆"),
+        title: `${uiText(language, "Legacy private perspective", "旧私密视角")} · ${snapshot.roleId}`,
+        subtitle: uiText(language, "Unmatched private room perspective", "未匹配角色的私密房间视角"),
         kind: "observer",
         longTerm: memoryStore.listCompressedMemories(snapshot.scope),
         graphClaims: memoryStore.listGraphClaimsForViewer(
           snapshot.scope,
-          observerGraphViewer(room, snapshot.roleId, participant?.factionId),
+          observerGraphViewer(room, snapshot.roleId),
         ),
         candidates: memoryStore.listCandidateMemories(snapshot.scope),
         shortTerm: memoryStore.listShortTerm(snapshot.scope),
+        semanticObservations: memoryStore.listSemanticObservations(snapshot.scope),
         observerEntries: snapshot.entries.filter((entry) => entry.visibility !== "public"),
         summary: snapshot.summary,
       }));
@@ -6098,6 +6204,7 @@ function buildMemoryDashboardScopes(
         graphClaims: memoryStore.listGraphClaimsForViewer(snapshot.scope, factionGraphViewer(room, snapshot.factionId)),
         candidates: memoryStore.listCandidateMemories(snapshot.scope),
         shortTerm: memoryStore.listShortTerm(snapshot.scope),
+        semanticObservations: memoryStore.listSemanticObservations(snapshot.scope),
         factionEntries: snapshot.entries,
         summary: snapshot.summary,
       }));
@@ -6113,6 +6220,7 @@ function buildMemoryDashboardScopes(
     graphClaims: memoryStore.listGraphClaimsForViewer("global", { type: "global" }),
     candidates: memoryStore.listCandidateMemories("global"),
     shortTerm: memoryStore.listShortTerm("global"),
+    semanticObservations: memoryStore.listSemanticObservations("global"),
     recentMessages: [],
     summary: uiText(language, "Small cross-room preferences.", "极少量跨房间偏好。"),
   }));
@@ -6153,6 +6261,7 @@ function factionGraphViewer(room: RoomState, factionId: string): MemoryGraphQuer
 function createMemoryDashboardScope(input: Partial<MemoryDashboardScope> & Pick<MemoryDashboardScope, "scope" | "title" | "subtitle" | "kind">): MemoryDashboardScope {
   return {
     scope: input.scope,
+    graphScopes: input.graphScopes ?? [input.scope],
     title: input.title,
     subtitle: input.subtitle,
     path: input.path ?? input.title,
@@ -6161,6 +6270,7 @@ function createMemoryDashboardScope(input: Partial<MemoryDashboardScope> & Pick<
     graphClaims: input.graphClaims ?? [],
     candidates: input.candidates ?? [],
     shortTerm: input.shortTerm ?? [],
+    semanticObservations: input.semanticObservations ?? [],
     recentMessages: input.recentMessages ?? [],
     directorEntries: input.directorEntries ?? [],
     observerEntries: input.observerEntries ?? [],
@@ -6281,7 +6391,7 @@ function compactMemoryTreeTitle(node: MemoryTreeNode, language: ConsoleAppState[
     return uiText(language, "Director", "导演");
   }
   if (node.kind === "room_role") {
-    return uiText(language, "Role", "房内");
+    return node.title;
   }
   if (node.kind === "observer") {
     return uiText(language, "Private", "暗线");
@@ -6846,29 +6956,28 @@ function buildMemoryDashboardFacts(scope: MemoryDashboardScope): MemoryDashboard
       sourceType: "graph",
     });
   }
-  if (scope.kind === "room_public") {
-    for (const message of scope.recentMessages) {
-      const text = `${message.speaker}: ${message.text}`;
-      const key = memoryDashboardFactDedupeKey(text);
-      if (key && persistentDedupeKeys.has(key)) {
-        continue;
-      }
-      if (key) {
-        persistentDedupeKeys.add(key);
-      }
-      facts.push({
-        id: message.id,
-        group: "short",
-        kind: "public_activity",
-        text,
-        status: "public activity",
-        evidenceCount: 1,
-        firstSeenAt: message.at,
-        lastSeenAt: message.at,
-        sourceCount: 1,
-        sourceType: "room_activity",
-      });
+  for (const observation of scope.semanticObservations) {
+    const key = memoryDashboardFactDedupeKey(observation.text);
+    if (key && persistentDedupeKeys.has(key)) {
+      continue;
     }
+    if (key) {
+      persistentDedupeKeys.add(key);
+    }
+    facts.push({
+      id: observation.id,
+      group: observation.epistemicStatus === "disputed" || observation.epistemicStatus === "refuted" ? "review" : "short",
+      kind: observation.kind,
+      text: observation.text,
+      status: observation.epistemicStatus,
+      evidenceCount: observation.evidenceCount,
+      confidence: observation.confidence,
+      epistemicStatus: observation.epistemicStatus,
+      firstSeenAt: observation.createdAt,
+      lastSeenAt: observation.lastUpdatedAt,
+      sourceCount: observation.sourceMessageIds.length,
+      sourceType: "semantic",
+    });
   }
   for (const mention of scope.shortTerm) {
     const key = memoryDashboardFactDedupeKey(mention.normalizedText);
@@ -6917,7 +7026,7 @@ function memoryScopeKindLabel(kind: MemoryDashboardScopeKind, language: ConsoleA
     director: uiText(language, "Director memory", "导演记忆"),
     room_role: uiText(language, "Room role memory", "房间角色记忆"),
     character: uiText(language, "One-to-one memory", "角色一对一记忆"),
-    observer: uiText(language, "Private and observer threads", "私下/旁听暗线"),
+    observer: uiText(language, "Legacy private perspective", "旧私密视角"),
     faction: uiText(language, "Faction memory", "阵营记忆"),
     global: uiText(language, "Global", "全局"),
   };
@@ -6932,7 +7041,7 @@ function memoryFileSourceLabel(kind: MemoryDashboardScopeKind, language: Console
     return uiText(language, "Room role memory file", "房间角色记忆文件");
   }
   if (kind === "observer") {
-    return uiText(language, "Private/observer memory file", "私下/旁听暗线文件");
+    return uiText(language, "Private perspective memory file", "私密视角记忆文件");
   }
   if (kind === "faction") {
     return uiText(language, "Faction memory file", "阵营记忆文件");

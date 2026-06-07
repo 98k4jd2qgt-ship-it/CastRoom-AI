@@ -32,6 +32,11 @@ import type {
   RoomSceneBoard,
   RoomSecretEntry,
   RoomSystemMemoryScope,
+  SemanticMemoryEpistemicStatus,
+  SemanticMemoryObservation,
+  SemanticMemoryObservationKind,
+  SemanticMemorySubjectType,
+  SemanticMemoryVisibility,
   ShortTermMention,
 } from "./types";
 import {
@@ -58,6 +63,8 @@ export interface RecordMentionInput {
 export interface RecordRoomMessageInput {
   scope: `room:${string}`;
   speaker: string;
+  speakerId?: string;
+  speakerType?: RoomMemoryMessage["speakerType"];
   text: string;
   source: "user" | "room";
   now: Date;
@@ -113,6 +120,7 @@ export interface MemoryStoreData {
   candidates: CandidateMemory[];
   compressedMemories?: CompressedMemoryEntry[];
   rollingSummaries?: MemoryRollingSummary[];
+  semanticObservations?: SemanticMemoryObservation[];
   versionHistory?: MemoryVersionEntry[];
   roomMessages: Array<{ scope: `room:${string}`; messages: RoomMemoryMessage[] }>;
   roomDirectorMemories: RoomDirectorMemorySnapshot[];
@@ -128,12 +136,26 @@ interface MemoryAtomDraft {
   confidence: number;
 }
 
+interface SemanticObservationDraft {
+  scope: MemoryScope;
+  subjectId?: string;
+  subjectType: SemanticMemorySubjectType;
+  subjectName?: string;
+  kind: SemanticMemoryObservationKind;
+  text: string;
+  epistemicStatus: SemanticMemoryEpistemicStatus;
+  confidence: number;
+  sourceMessageIds: string[];
+  visibility: SemanticMemoryVisibility;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_ROOM_MESSAGES = 80;
 const MAX_OBSERVER_ENTRIES = 80;
 const MAX_FACTION_HUDDLES = 40;
 const MAX_COMPRESSED_FACT_CHARS = 160;
 const MAX_ROOM_SUMMARY_CHARS = 500;
+const MAX_SEMANTIC_OBSERVATIONS_PER_SCOPE = 120;
 const editableMemoryKinds: MemoryAtomKind[] = [
   "preference",
   "fact",
@@ -179,6 +201,7 @@ export class MemoryStore {
   private readonly candidates = new Map<string, CandidateMemory>();
   private readonly compressedMemories = new Map<string, CompressedMemoryEntry>();
   private readonly rollingSummaries = new Map<MemoryScope, MemoryRollingSummary>();
+  private readonly semanticObservations = new Map<string, SemanticMemoryObservation>();
   private readonly versionHistory: MemoryVersionEntry[] = [];
   private readonly roomMessages = new Map<`room:${string}`, RoomMemoryMessage[]>();
   private readonly roomDirectorMemories = new Map<RoomSystemMemoryScope, RoomDirectorMemorySnapshot>();
@@ -319,6 +342,8 @@ export class MemoryStore {
       id: messageId,
       scope: input.scope,
       speaker: input.speaker,
+      speakerId: input.speakerId,
+      speakerType: input.speakerType,
       source: input.source,
       text: sanitizeMessageHistoryText(input.text),
       at: input.now.toISOString(),
@@ -376,6 +401,100 @@ export class MemoryStore {
       ...this.graph.listAllClaimsSync(scope).map(compressedEntryFromGraphClaim),
       ...[...this.compressedMemories.values()].filter((entry) => !scope || entry.scope === scope).map(normalizeCompressedEntry),
     ]);
+  }
+
+  listSemanticObservations(scope?: MemoryScope): SemanticMemoryObservation[] {
+    return [...this.semanticObservations.values()]
+      .filter((entry) => !scope || entry.scope === scope)
+      .sort((left, right) => new Date(right.lastUpdatedAt).getTime() - new Date(left.lastUpdatedAt).getTime());
+  }
+
+  processSemanticObservationsForScope(scope: MemoryScope): SemanticMemoryObservation[] {
+    if (isPlainRoomMemoryScope(scope)) {
+      return this.processRoomSemanticObservations(scope as `room:${string}`);
+    }
+    if (isRoomObserverMemoryScope(scope)) {
+      const entries = this.roomObserverMemories.get(scope) ?? [];
+      return this.mergeSemanticObservationDrafts(entries.flatMap((entry) => semanticObservationDraftsFromObserverEntry(entry)));
+    }
+    if (isRoomFactionMemoryScope(scope)) {
+      const snapshot = this.roomFactionMemories.get(scope);
+      return this.mergeSemanticObservationDrafts(
+        (snapshot?.entries ?? []).flatMap((thread) => semanticObservationDraftsFromFactionThread(scope, thread)),
+      );
+    }
+    if (isRoomSystemMemoryScope(scope)) {
+      const snapshot = this.roomDirectorMemories.get(scope);
+      return this.mergeSemanticObservationDrafts((snapshot?.entries ?? []).flatMap((entry) => semanticObservationDraftsFromDirectorEntry(scope, entry)));
+    }
+    return [];
+  }
+
+  processSemanticObservationsForScopes(scopes: MemoryScope[]): SemanticMemoryObservation[] {
+    const saved: SemanticMemoryObservation[] = [];
+    for (const scope of Array.from(new Set(scopes))) {
+      saved.push(...this.processSemanticObservationsForScope(scope));
+    }
+    return saved;
+  }
+
+  processRoomSemanticObservations(scope: `room:${string}`): SemanticMemoryObservation[] {
+    const messages = (this.roomMessages.get(scope) ?? [])
+      .filter((message) => (message.visibility ?? "public") === "public")
+      .slice(-24);
+    return this.mergeSemanticObservationDrafts(messages.flatMap((message) => semanticObservationDraftsFromRoomMessage(scope, message)));
+  }
+
+  private mergeSemanticObservationDrafts(drafts: SemanticObservationDraft[]): SemanticMemoryObservation[] {
+    const saved: SemanticMemoryObservation[] = [];
+    const now = new Date().toISOString();
+    for (const draft of drafts) {
+      const normalizedText = semanticObservationText(draft.text);
+      if (!normalizedText || classifySensitivity(normalizedText) === "forbidden" || isMemoryArtifactText(normalizedText)) {
+        continue;
+      }
+      const id = stableId(
+        "semantic-observation",
+        `${draft.scope}:${draft.subjectType}:${draft.subjectId ?? draft.subjectName ?? "unknown"}:${draft.kind}:${draft.epistemicStatus}:${semanticObservationKey(normalizedText)}`,
+      );
+      const current = this.semanticObservations.get(id);
+      const sourceMessageIds = Array.from(new Set([...(current?.sourceMessageIds ?? []), ...draft.sourceMessageIds.filter(Boolean)]));
+      const next: SemanticMemoryObservation = {
+        id,
+        scope: draft.scope,
+        subjectId: draft.subjectId,
+        subjectType: draft.subjectType,
+        subjectName: draft.subjectName,
+        kind: draft.kind,
+        text: normalizedText,
+        epistemicStatus: strongestSemanticStatus(current?.epistemicStatus, draft.epistemicStatus),
+        confidence: Math.max(current?.confidence ?? 0, clampNumber(draft.confidence, 0.1, 0.98)),
+        evidenceCount: Math.max(current?.evidenceCount ?? 0, sourceMessageIds.length, 1),
+        sourceMessageIds,
+        visibility: draft.visibility,
+        createdAt: current?.createdAt ?? now,
+        lastUpdatedAt: now,
+      };
+      this.semanticObservations.set(id, next);
+      saved.push(next);
+    }
+    this.trimSemanticObservationsByScope();
+    return saved;
+  }
+
+  private trimSemanticObservationsByScope() {
+    const byScope = new Map<MemoryScope, SemanticMemoryObservation[]>();
+    for (const entry of this.semanticObservations.values()) {
+      byScope.set(entry.scope, [...(byScope.get(entry.scope) ?? []), entry]);
+    }
+    for (const entries of byScope.values()) {
+      const overflow = entries
+        .sort((left, right) => new Date(right.lastUpdatedAt).getTime() - new Date(left.lastUpdatedAt).getTime())
+        .slice(MAX_SEMANTIC_OBSERVATIONS_PER_SCOPE);
+      for (const entry of overflow) {
+        this.semanticObservations.delete(entry.id);
+      }
+    }
   }
 
   private memoryGraphScopes(): MemoryScope[] {
@@ -496,11 +615,15 @@ export class MemoryStore {
         .slice(0, longTermLimit)
         .map((entry) => entry.text);
     const longTerm = dedupePromptMemoryLines([...graphLongTerm, ...legacyLongTerm]).slice(0, longTermLimit);
+    const semantic = this.listSemanticObservations(scope)
+      .filter(shouldInjectSemanticObservationIntoPrompt)
+      .slice(0, options.localModel ? 2 : 5)
+      .map(semanticObservationTextForPrompt);
     const shortTerm = this.listShortTerm(scope)
       .sort((left, right) => new Date(right.lastSeenAt).getTime() - new Date(left.lastSeenAt).getTime())
       .slice(0, shortTermLimit)
       .map((mention) => `${mention.kind}: ${mention.normalizedText}`);
-    return trimMemoryToBudget(dedupePromptMemoryLines([...longTerm, ...shortTerm]), options.localModel ? 480 : 900);
+    return trimMemoryToBudget(dedupePromptMemoryLines([...longTerm, ...semantic, ...shortTerm]), options.localModel ? 480 : 900);
   }
 
   getRoomMemorySnapshot(scope: `room:${string}`): RoomMemorySnapshot {
@@ -533,8 +656,13 @@ export class MemoryStore {
       .filter((entry) => entry.status === "active")
       .slice(-6)
       .map((entry) => entry.text);
+    const semanticMemory = this.listSemanticObservations(scope)
+      .filter((entry) => entry.visibility === "public" || entry.visibility === "global")
+      .filter(shouldInjectSemanticObservationIntoPrompt)
+      .slice(0, 4)
+      .map(semanticObservationTextForPrompt);
     const shortTerm = snapshot.shortTerm.slice(-5).map((mention) => `${mention.kind}: ${mention.normalizedText}`);
-    const memoryLines = dedupePromptMemoryLines([...graphMemory, ...legacyMemory, ...shortTerm]).slice(0, 7);
+    const memoryLines = dedupePromptMemoryLines([...graphMemory, ...legacyMemory, ...semanticMemory, ...shortTerm]).slice(0, 7);
     return [
       snapshot.summary,
       ...memoryLines,
@@ -756,7 +884,7 @@ export class MemoryStore {
     return this.getRoomDirectorMemorySnapshot(scope);
   }
 
-  deleteRoomMemory(scope: `room:${string}`) {
+  deleteRoomMemory(scope: `room:${string}`): MemoryScope[] {
     const relatedScopes = this.collectRoomMemoryScopes(scope);
     for (const relatedScope of relatedScopes) {
       this.deleteScopeMemoryRecords(relatedScope);
@@ -764,6 +892,7 @@ export class MemoryStore {
     for (const relatedScope of relatedScopes) {
       void this.graph.deleteScope(relatedScope);
     }
+    return relatedScopes;
   }
 
   deleteScopeMemory(scope: MemoryScope) {
@@ -792,6 +921,12 @@ export class MemoryStore {
     for (const [key, entry] of this.compressedMemories.entries()) {
       if (entry.scope === scope) {
         this.compressedMemories.delete(key);
+      }
+    }
+
+    for (const [key, entry] of this.semanticObservations.entries()) {
+      if (entry.scope === scope) {
+        this.semanticObservations.delete(key);
       }
     }
 
@@ -983,6 +1118,7 @@ export class MemoryStore {
       candidates: [...this.candidates.values()].filter((item) => item.scope === scope),
       compressedMemories: [...this.compressedMemories.values()].filter((item) => item.scope === scope),
       rollingSummaries: [...this.rollingSummaries.values()].filter((item) => item.scope === scope),
+      semanticObservations: [...this.semanticObservations.values()].filter((item) => item.scope === scope),
       versionHistory: this.versionHistory.filter((item) => item.scope === scope),
       roomMessages: [...this.roomMessages.entries()]
         .filter(([entryScope]) => entryScope === scope)
@@ -1066,6 +1202,12 @@ export class MemoryStore {
         });
       }
     }
+    for (const observation of storeData.semanticObservations ?? []) {
+      const normalized = normalizeSemanticObservation({ ...observation, scope });
+      if (normalized && normalized.scope === scope) {
+        this.semanticObservations.set(normalized.id, normalized);
+      }
+    }
   }
 
   serialize(): MemoryStoreData {
@@ -1074,6 +1216,7 @@ export class MemoryStore {
       candidates: [...this.candidates.values()],
       compressedMemories: [...this.compressedMemories.values()],
       rollingSummaries: [...this.rollingSummaries.values()],
+      semanticObservations: [...this.semanticObservations.values()],
       versionHistory: [...this.versionHistory],
       roomMessages: [...this.roomMessages.entries()].map(([scope, messages]) => ({ scope, messages })),
       roomDirectorMemories: [...this.roomDirectorMemories.values()],
@@ -1088,6 +1231,7 @@ export class MemoryStore {
     this.candidates.clear();
     this.compressedMemories.clear();
     this.rollingSummaries.clear();
+    this.semanticObservations.clear();
     this.versionHistory.length = 0;
     this.roomMessages.clear();
     this.roomDirectorMemories.clear();
@@ -1137,6 +1281,13 @@ export class MemoryStore {
     for (const summary of cleanData.rollingSummaries ?? []) {
       if (isValidRollingSummary(summary)) {
         this.rollingSummaries.set(summary.scope, summary);
+      }
+    }
+
+    for (const observation of cleanData.semanticObservations ?? []) {
+      const normalized = normalizeSemanticObservation(observation);
+      if (normalized) {
+        this.semanticObservations.set(normalized.id, normalized);
       }
     }
 
@@ -1374,6 +1525,7 @@ export class MemoryStore {
     for (const mention of this.mentions.values()) addIfRelated(mention.scope);
     for (const candidate of this.candidates.values()) addIfRelated(candidate.scope);
     for (const memory of this.compressedMemories.values()) addIfRelated(memory.scope);
+    for (const observation of this.semanticObservations.values()) addIfRelated(observation.scope);
     for (const summaryScope of this.rollingSummaries.keys()) addIfRelated(summaryScope);
     for (const version of this.versionHistory) addIfRelated(version.scope);
     for (const messageScope of this.roomMessages.keys()) addIfRelated(messageScope);
@@ -1605,6 +1757,37 @@ function isValidCompressedMemory(value: CompressedMemoryEntry): boolean {
 
 function isValidRollingSummary(value: MemoryRollingSummary): boolean {
   return typeof value.scope === "string" && typeof value.text === "string" && Array.isArray(value.sourceIds);
+}
+
+function normalizeSemanticObservation(value: Partial<SemanticMemoryObservation>): SemanticMemoryObservation | null {
+  if (typeof value.id !== "string" || typeof value.scope !== "string" || typeof value.text !== "string") {
+    return null;
+  }
+  const text = semanticObservationText(value.text);
+  if (!text || classifySensitivity(text) === "forbidden" || isMemoryArtifactText(text)) {
+    return null;
+  }
+  const createdAt = typeof value.createdAt === "string" ? value.createdAt : new Date().toISOString();
+  const lastUpdatedAt = typeof value.lastUpdatedAt === "string" ? value.lastUpdatedAt : createdAt;
+  const sourceMessageIds = Array.isArray(value.sourceMessageIds)
+    ? value.sourceMessageIds.filter((item): item is string => typeof item === "string")
+    : [];
+  return {
+    id: value.id,
+    scope: value.scope as MemoryScope,
+    subjectId: typeof value.subjectId === "string" ? value.subjectId : undefined,
+    subjectType: semanticSubjectType(value.subjectType),
+    subjectName: typeof value.subjectName === "string" ? trimMemoryText(value.subjectName, 80) : undefined,
+    kind: semanticObservationKind(value.kind),
+    text,
+    epistemicStatus: semanticEpistemicStatus(value.epistemicStatus),
+    confidence: clampNumber(value.confidence ?? 0.45, 0.1, 0.98),
+    evidenceCount: Math.max(1, Math.round(value.evidenceCount ?? sourceMessageIds.length ?? 1)),
+    sourceMessageIds,
+    visibility: semanticVisibility(value.visibility),
+    createdAt,
+    lastUpdatedAt,
+  };
 }
 
 function isValidMemoryVersion(value: MemoryVersionEntry): boolean {
@@ -2290,6 +2473,296 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function semanticObservationDraftsFromRoomMessage(roomScope: `room:${string}`, message: RoomMemoryMessage): SemanticObservationDraft[] {
+  const clean = semanticObservationSourceText(message.text);
+  if (!clean || !hasSemanticObservationSignal(clean, message)) {
+    return [];
+  }
+  const kind = inferSemanticObservationKind(clean, message);
+  const epistemicStatus = inferSemanticEpistemicStatus(clean, kind, message);
+  const subjectType = semanticSubjectTypeFromSpeaker(message.speakerType);
+  const subjectName = message.speaker || subjectType;
+  const baseText = semanticObservationSentence(subjectName, kind, epistemicStatus, clean);
+  const roomDraft: SemanticObservationDraft = {
+    scope: roomScope,
+    subjectId: message.speakerId,
+    subjectType,
+    subjectName,
+    kind,
+    text: baseText,
+    epistemicStatus,
+    confidence: semanticObservationConfidence(kind, epistemicStatus, clean),
+    sourceMessageIds: [message.id],
+    visibility: "public",
+  };
+  if (message.speakerType === "role" && message.speakerId) {
+    const roleScope = `${roomScope}:role:${message.speakerId}` as MemoryScope;
+    return [
+      roomDraft,
+      {
+        ...roomDraft,
+        scope: roleScope,
+        subjectType: "role",
+        subjectId: message.speakerId,
+        text: semanticRoleObservationSentence(subjectName, kind, epistemicStatus, clean),
+      },
+    ];
+  }
+  return [roomDraft];
+}
+
+function semanticObservationDraftsFromObserverEntry(entry: RoomObservationEntry): SemanticObservationDraft[] {
+  const clean = semanticObservationSourceText(entry.text);
+  if (!clean || !hasSemanticObservationSignal(clean, { speakerType: entry.speakerType, source: "room" } as RoomMemoryMessage)) {
+    return [];
+  }
+  const kind = inferSemanticObservationKind(clean, { speakerType: entry.speakerType, source: "room" } as RoomMemoryMessage);
+  const subjectType = semanticSubjectTypeFromSpeaker(entry.speakerType);
+  return [
+    {
+      scope: entry.scope,
+      subjectId: entry.speakerId,
+      subjectType,
+      subjectName: entry.speaker,
+      kind,
+      text: semanticObservationSentence(entry.speaker, kind, inferSemanticEpistemicStatus(clean, kind), clean),
+      epistemicStatus: inferSemanticEpistemicStatus(clean, kind),
+      confidence: Math.max(0.45, entry.importance / 120),
+      sourceMessageIds: entry.sourceMessageId ? [entry.sourceMessageId] : [],
+      visibility: "private_character",
+    },
+  ];
+}
+
+function semanticObservationDraftsFromFactionThread(scope: RoomFactionMemoryScope, thread: RoomFactionHuddleThread): SemanticObservationDraft[] {
+  const clean = semanticObservationSourceText(thread.summary);
+  if (!clean) {
+    return [];
+  }
+  return [
+    {
+      scope,
+      subjectId: thread.factionId,
+      subjectType: "faction",
+      subjectName: thread.factionId,
+      kind: "event",
+      text: `Faction ${thread.factionId} formed an internal understanding: ${trimMemoryText(clean, 140)}`,
+      epistemicStatus: "observed",
+      confidence: 0.65,
+      sourceMessageIds: [thread.id],
+      visibility: "faction",
+    },
+  ];
+}
+
+function semanticObservationDraftsFromDirectorEntry(scope: RoomSystemMemoryScope, entry: DirectorMemoryEntry): SemanticObservationDraft[] {
+  const clean = semanticObservationSourceText(entry.text);
+  if (!clean) {
+    return [];
+  }
+  return [
+    {
+      scope,
+      subjectId: "director",
+      subjectType: "director",
+      subjectName: "Director",
+      kind: semanticObservationKind(entry.category as SemanticMemoryObservationKind),
+      text: `Director recorded ${entry.category}: ${trimMemoryText(clean, 140)}`,
+      epistemicStatus: entry.status === "disputed" ? "disputed" : "confirmed",
+      confidence: clampNumber(entry.confidence ?? 0.75, 0.1, 0.98),
+      sourceMessageIds: entry.sourceMessageIds,
+      visibility: "director_only",
+    },
+  ];
+}
+
+function semanticObservationSourceText(text: string): string {
+  const clean = stripRepeatedMemoryPrefixes(stripMemoryNoise(text));
+  if (!clean || isMemoryArtifactText(clean) || classifySensitivity(clean) === "forbidden") {
+    return "";
+  }
+  return trimMemoryText(clean, 220);
+}
+
+function hasSemanticObservationSignal(text: string, message: Pick<RoomMemoryMessage, "speakerType" | "source">): boolean {
+  const clean = normalizeForMemory(text);
+  if (clean.length < 8) {
+    return false;
+  }
+  if (MEMORY_STATUS_NOISE_PATTERN.test(clean)) {
+    return false;
+  }
+  if (semanticSignalPattern().test(clean)) {
+    return true;
+  }
+  return message.speakerType === "role" && clean.length >= 24 && /[。.!?！？；;]/u.test(text);
+}
+
+function semanticSignalPattern(): RegExp {
+  return /(喜欢|不喜欢|偏好|希望|更想|习惯|经常|总是|倾向|回避|沉默|观察|质疑|相信|怀疑|信任|不信任|反对|支持|主张|认为|立场|观点|目标|计划|打算|接下来|准备|钥匙|锁|门|物品|拿到|拥有|知道|秘密|冲突|矛盾|关系|朋友|敌人|合作|背叛|可靠|不可靠|like|dislike|prefer|habit|trust|doubt|believe|support|oppose|stance|goal|plan|claim|key|lock|door|item|secret|conflict|reliable)/i;
+}
+
+function inferSemanticObservationKind(text: string, message?: Pick<RoomMemoryMessage, "speakerType" | "source">): SemanticMemoryObservationKind {
+  const clean = normalizeForMemory(text);
+  if (/(冲突|矛盾|争执|反驳|conflict|contradict|dispute)/i.test(clean)) return "conflict";
+  if (/(信任|不信任|可靠|不可靠|怀疑.*可靠|trust|reliable)/i.test(clean)) return "reliability";
+  if (/(怀疑|质疑|不确定|doubt|suspect)/i.test(clean)) return "doubt";
+  if (/(相信|认同|belief|believe)/i.test(clean)) return "belief";
+  if (/(关系|朋友|敌人|合作|背叛|relationship|friend|enemy|ally)/i.test(clean)) return "relationship";
+  if (/(支持|反对|主张|认为|立场|观点|agree|disagree|stance|position)/i.test(clean)) return "stance";
+  if (/(喜欢|不喜欢|偏好|希望|更想|prefer|like|dislike)/i.test(clean)) return "preference";
+  if (/(习惯|经常|总是|倾向|回避|沉默|观察|habit|tend|avoid|silent)/i.test(clean)) return "habit";
+  if (/(目标|计划|打算|接下来|准备|goal|plan|next)/i.test(clean)) return "goal";
+  if (/(钥匙|锁|门|物品|拿到|拥有|key|lock|door|item|has|own)/i.test(clean)) return "item";
+  if (/(地点|房间|位置|location|place)/i.test(clean)) return "location";
+  if (/(声称|说自己|我有|我知道|claim)/i.test(clean)) return "claim";
+  if (message?.speakerType === "role") return "trait";
+  return "event";
+}
+
+function inferSemanticEpistemicStatus(
+  text: string,
+  kind: SemanticMemoryObservationKind = "event",
+  message?: Pick<RoomMemoryMessage, "speakerType" | "source">,
+): SemanticMemoryEpistemicStatus {
+  const clean = normalizeForMemory(text);
+  if (/(冲突|矛盾|contradict|dispute)/i.test(clean) || kind === "conflict") return "disputed";
+  if (/(怀疑|质疑|doubt|suspect)/i.test(clean) || kind === "doubt") return "doubted";
+  if (/(相信|认同|believe)/i.test(clean) || kind === "belief") return "believed";
+  if (/(声称|说自己|claim|我有|我知道)/i.test(clean) || kind === "claim" || kind === "item") return "claimed";
+  if (kind === "trait" || kind === "habit" || kind === "preference" || kind === "reliability") return "inferred";
+  if (message?.speakerType === "room_system") return "observed";
+  return "observed";
+}
+
+function semanticObservationConfidence(kind: SemanticMemoryObservationKind, status: SemanticMemoryEpistemicStatus, text: string): number {
+  let score = 0.46;
+  if (status === "confirmed") score += 0.3;
+  if (status === "claimed" || status === "believed" || status === "doubted") score += 0.12;
+  if (kind === "trait" || kind === "habit" || kind === "reliability") score += 0.08;
+  if (normalizeForMemory(text).length >= 32) score += 0.05;
+  return clampNumber(score, 0.35, 0.86);
+}
+
+function semanticObservationSentence(
+  subjectName: string,
+  kind: SemanticMemoryObservationKind,
+  status: SemanticMemoryEpistemicStatus,
+  text: string,
+): string {
+  const compressed = trimMemoryText(text, 140);
+  if (status === "claimed") return `${subjectName} claims or implies: ${compressed}`;
+  if (status === "believed") return `${subjectName} appears to believe: ${compressed}`;
+  if (status === "doubted") return `${subjectName} doubts or questions: ${compressed}`;
+  if (status === "disputed") return `${subjectName} is part of a disputed memory: ${compressed}`;
+  if (kind === "trait" || kind === "habit" || kind === "preference" || kind === "reliability") {
+    return `${subjectName} shows an observed tendency: ${compressed}`;
+  }
+  return `${subjectName} contributed a semantic room observation: ${compressed}`;
+}
+
+function semanticRoleObservationSentence(
+  subjectName: string,
+  kind: SemanticMemoryObservationKind,
+  status: SemanticMemoryEpistemicStatus,
+  text: string,
+): string {
+  const compressed = trimMemoryText(text, 140);
+  if (status === "claimed") return `${subjectName}'s room claim: ${compressed}`;
+  if (status === "believed") return `${subjectName}'s current belief signal: ${compressed}`;
+  if (status === "doubted") return `${subjectName}'s doubt signal: ${compressed}`;
+  if (kind === "trait" || kind === "habit" || kind === "preference" || kind === "reliability") {
+    return `${subjectName}'s room-only observed tendency: ${compressed}`;
+  }
+  return `${subjectName}'s room-only semantic activity: ${compressed}`;
+}
+
+function semanticObservationText(text: string): string {
+  return trimMemoryText(stripRepeatedMemoryPrefixes(stripMemoryNoise(text)), MAX_COMPRESSED_FACT_CHARS);
+}
+
+function semanticObservationKey(text: string): string {
+  return normalizeForMemory(text).slice(0, 96);
+}
+
+function semanticSubjectTypeFromSpeaker(value?: RoomMemoryMessage["speakerType"]): SemanticMemorySubjectType {
+  if (value === "user") return "user";
+  if (value === "role") return "role";
+  if (value === "room_system") return "director";
+  return "unknown";
+}
+
+function semanticSubjectType(value: unknown): SemanticMemorySubjectType {
+  return ["room", "user", "role", "director", "faction", "item", "unknown"].includes(String(value))
+    ? (value as SemanticMemorySubjectType)
+    : "unknown";
+}
+
+function semanticObservationKind(value: unknown): SemanticMemoryObservationKind {
+  const allowed: SemanticMemoryObservationKind[] = [
+    "trait", "preference", "habit", "relationship", "trust", "stance", "goal", "event", "item", "location", "claim", "belief", "doubt", "conflict", "reliability",
+  ];
+  return allowed.includes(value as SemanticMemoryObservationKind) ? (value as SemanticMemoryObservationKind) : "event";
+}
+
+function semanticEpistemicStatus(value: unknown): SemanticMemoryEpistemicStatus {
+  const allowed: SemanticMemoryEpistemicStatus[] = ["observed", "inferred", "claimed", "believed", "doubted", "confirmed", "disputed", "refuted"];
+  return allowed.includes(value as SemanticMemoryEpistemicStatus) ? (value as SemanticMemoryEpistemicStatus) : "observed";
+}
+
+function semanticVisibility(value: unknown): SemanticMemoryVisibility {
+  const allowed: SemanticMemoryVisibility[] = ["public", "known_to_roles", "faction", "director_only", "private_character", "global"];
+  return allowed.includes(value as SemanticMemoryVisibility) ? (value as SemanticMemoryVisibility) : "public";
+}
+
+function strongestSemanticStatus(
+  current: SemanticMemoryEpistemicStatus | undefined,
+  next: SemanticMemoryEpistemicStatus,
+): SemanticMemoryEpistemicStatus {
+  if (!current) return next;
+  const rank: Record<SemanticMemoryEpistemicStatus, number> = {
+    refuted: 7,
+    disputed: 6,
+    confirmed: 5,
+    doubted: 4,
+    believed: 3,
+    claimed: 2,
+    inferred: 1,
+    observed: 0,
+  };
+  return rank[next] >= rank[current] ? next : current;
+}
+
+function shouldInjectSemanticObservationIntoPrompt(entry: SemanticMemoryObservation): boolean {
+  if (entry.epistemicStatus === "disputed" || entry.epistemicStatus === "refuted") {
+    return false;
+  }
+  if (classifySensitivity(entry.text) === "forbidden") {
+    return false;
+  }
+  return entry.confidence >= 0.42;
+}
+
+function semanticObservationTextForPrompt(entry: SemanticMemoryObservation): string {
+  const subject = entry.subjectName || entry.subjectId || entry.subjectType;
+  if (entry.epistemicStatus === "confirmed") {
+    return `${entry.kind}: ${entry.text}`;
+  }
+  if (entry.epistemicStatus === "claimed") {
+    return `${subject} claims: ${entry.text}`;
+  }
+  if (entry.epistemicStatus === "believed") {
+    return `${subject} currently believes: ${entry.text}`;
+  }
+  if (entry.epistemicStatus === "doubted") {
+    return `${subject} doubts: ${entry.text}`;
+  }
+  if (entry.epistemicStatus === "inferred") {
+    return `Observed tendency for ${subject}: ${entry.text}`;
+  }
+  return `Observed memory for ${subject}: ${entry.text}`;
+}
+
 export function extractMemoryAtoms(
   text: string,
   context: { scope: MemoryScope; source: ShortTermMention["source"] },
@@ -2434,6 +2907,7 @@ export function cleanCorruptedRoomMemoryData(data: Partial<MemoryStoreData>): Me
     ),
     compressedMemories: (data.compressedMemories ?? []).filter((entry) => keepText(entry.text)),
     rollingSummaries: (data.rollingSummaries ?? []).filter((summary) => keepText(summary.text)),
+    semanticObservations: (data.semanticObservations ?? []).filter((entry) => keepText(entry.text)),
     versionHistory: (data.versionHistory ?? []).filter(
       (version) => keepText(version.previousText) && keepText(version.nextText) && !removedCompressedIds.has(version.memoryId),
     ),

@@ -17,9 +17,12 @@ const scheduler = fs.readFileSync("src/core/roomScheduler.ts", "utf8");
 mustInclude(scheduler, 'isDirectorPublicSchedulingText(plan.publicText)', "Director public text blocks scheduling language");
 mustInclude(scheduler, 'return "narration";', "Director cue/twist can publish narration beats");
 mustInclude(scheduler, "isExplicitPublicDirectorTextRequest(userInput, move)", "Director explicit public request helper is retained for recap compatibility");
-mustInclude(scheduler, 'reason !== "mentioned"', "Director private directives only consider @You for explicit Director mentions");
-mustInclude(scheduler, "shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)", "Director private directives decide whether the user is a valid target");
-mustInclude(scheduler, 'target: shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)', "Director follow-up directives do not default to @You");
+const createDirectives = sliceFunctionFrom(scheduler, "createDirectorPrivateDirectives");
+mustIncludeIn(createDirectives, 'target: "all"', "Director private directives address the room instead of scheduling @You");
+mustNotIncludeIn(createDirectives, 'type: "user"', "Director private directives must not target the user");
+const createPlanText = sliceFunctionFrom(scheduler, "createDirectorPlanText");
+mustNotIncludeIn(createPlanText, "@${player}", "Director choice/pause text must not mention @You");
+mustNotIncludeIn(createPlanText, "You can ask", "Director choice text must not tell the user what to do");
 mustInclude(scheduler, "policyBlockedAutoResult(room, \"repetition_guard\", \"soft_user_preference\"", "Auto repetition guard is policy-gated instead of forced public stopping");
 mustInclude(scheduler, "createAutonomousFallbackSpeechIntent", "Auto scheduler has a role fast path before asking Director");
 mustInclude(scheduler, "shouldUseRoleFastPathForAutoDirectorPlan", "Auto Director planned turns can be downgraded to role fast path");
@@ -36,9 +39,10 @@ mustIncludeIn(applyDirector, "canContinueWithoutPublicText", "Repeated Director 
 mustIncludeIn(applyDirector, "pendingFollowup: canContinueWithoutPublicText ? pendingFollowup : null", "Repeated Director text preserves safe follow-up when public text is blocked");
 
 const followupFn = sliceFunction("directorFollowupTimerAction");
-mustIncludeIn(followupFn, 'return "clear_wait_user"', "Director choice/pause clears timer and waits for user");
 mustIncludeIn(followupFn, "hasExecutableDirectorFollowup(result)", "Director timer action checks executable follow-up before waiting");
 mustIncludeIn(followupFn, 'return "schedule_once"', "Director follow-up schedules a finite one-shot timer");
+const waitFn = sliceFunction("shouldWaitForUserAfterDirector");
+mustNotIncludeIn(waitFn, 'result.move === "pause"', "Director pause no longer automatically waits for the user");
 
 const createFollowup = sliceFunction("createDirectorPendingFollowup");
 mustIncludeIn(createFollowup, 'mode: "one_shot"', "Director follow-up is finite by default");
@@ -75,6 +79,20 @@ function sliceFunction(name) {
   return next < 0 ? main.slice(start) : main.slice(start, next);
 }
 
+function sliceFunctionFrom(source, name) {
+  const match = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
+  const start = match?.index ?? -1;
+  if (start < 0) {
+    failures.push(`missing function ${name}`);
+    return "";
+  }
+  const candidates = ["\nfunction ", "\nasync function ", "\nexport function ", "\ninterface "]
+    .map((marker) => source.indexOf(marker, start + 1))
+    .filter((index) => index >= 0);
+  const next = candidates.length ? Math.min(...candidates) : -1;
+  return next < 0 ? source.slice(start) : source.slice(start, next);
+}
+
 function mustInclude(text, marker, label) {
   if (!text.includes(marker)) {
     failures.push(`missing ${label}: ${marker}`);
@@ -88,6 +106,12 @@ function mustIncludeIn(text, marker, label) {
 }
 
 function mustNotInclude(text, marker, label) {
+  if (text.includes(marker)) {
+    failures.push(`unexpected ${label}: ${marker}`);
+  }
+}
+
+function mustNotIncludeIn(text, marker, label) {
   if (text.includes(marker)) {
     failures.push(`unexpected ${label}: ${marker}`);
   }

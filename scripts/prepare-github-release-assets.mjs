@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.1";
-const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-06";
+const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.2";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-07";
 const appVersion = version.replace(/^v/i, "");
 const outDir = path.join(root, "artifacts", "github-release", version);
 const portableStageDir = path.join(outDir, "portable-stage");
@@ -197,17 +197,33 @@ ${alternativeSection}
 - The included portable-data folders contain only empty .gitkeep placeholders.
 - This is a test/demo-oriented build, not a final public product release.
 
-## What changed
+## Development log
 
-- Added Director Channel and backstage Director scheduling so scheduling notes stay out of the main room.
-- Cleaned public Director narration so the main channel keeps scene, environment, action result, and phase summary text.
-- Improved one-shot casual replies and room auto-flow semantics for fill_gap and continuous modes.
-- Added speaker distribution behavior to reduce two-character loops and long-term lurkers.
-- Fixed public/private memory routing: public chat now appears in Room public memory, while private, faction, and Director-only memory stays scoped.
-- Added multi-view memory confidence and governance concepts for claims, beliefs, confirmed facts, conflicts, and review candidates.
-- Updated Memory Graph and memory dashboard behavior for candidates, confidence, authorized hidden views, and recent public activity.
-- Improved default Prompt Center templates for general multi-character rooms and reasoner-style models.
-- Updated the GitHub README, screenshots, positioning, and memory confidence messaging.
+This update is focused on making Room sessions easier to reset, easier to read, and safer to test from a fresh download.
+
+### Room reset and memory isolation
+
+- New Rooms no longer reuse the old deterministic \`new-room\` scope after a deleted room is recreated.
+- Deleting a Room now persists deletion for every related memory and graph scope the MemoryStore actually cleared.
+- Semantic observations are included in Room memory scope cleanup.
+- Public Room memory, private/faction memory, Director-only memory, and role perspectives remain separated.
+
+### Room UI cleanup
+
+- Removed the "How this room works" information card from the Room rules panel.
+- Simplified the visible Room controls so users see controls and prompt editing first, not explanatory policy text.
+
+### Director and room flow
+
+- Director no longer schedules \`@You\` as the next actor during automatic Room flow.
+- Director backstage notes are cleaned so user-instruction text does not leak into scheduling output.
+- Continuous Room flow, fill-gap behavior, and speaker distribution remain available for multi-character testing.
+
+### Memory and graph behavior
+
+- Memory confidence and perspective graph validation remain part of the release check.
+- Claimed, believed, confirmed, disputed, and hidden-scope memory boundaries continue to be checked before release.
+- Public chat is routed to Room public memory; private, faction, and Director-only content stays scoped.
 
 ## Checksums
 

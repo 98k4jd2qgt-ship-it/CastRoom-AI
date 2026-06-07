@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.1";
-const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-06";
+const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.2";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-07";
 const assetVersion = version.startsWith("v") ? version : `v${version}`;
 const assetPrefix = `CastRoom-AI_${assetVersion}_${assetStamp}`;
 const outDir = path.join(root, "artifacts", "github-release", version);
@@ -159,7 +159,7 @@ if (bundledResources.includes("../character-packs/**/*")) {
 }
 
 const notes = fs.readFileSync(path.join(outDir, "RELEASE_NOTES.md"), "utf8");
-for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Character pack instance folders are not included", "portable-data", "What changed", "Checksums"]) {
+for (const required of ["early Windows test build", "portable zip", "configure their own AI provider", "Character pack instance folders are not included", "portable-data", "Development log", "Checksums"]) {
   if (!notes.includes(required)) {
     fail(`release notes missing required text: ${required}`);
   }

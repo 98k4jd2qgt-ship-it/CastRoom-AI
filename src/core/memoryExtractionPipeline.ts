@@ -6,6 +6,7 @@ import type {
   MemoryGraphClaimKind,
   MemoryGraphClaimStatus,
   MemoryGraphEpistemicStatus,
+  MemoryGraphRelationCategory,
   MemoryGraphVisibility,
   MemorySourceInput,
 } from "./memoryGraph";
@@ -153,14 +154,67 @@ export function extractMemoryClaimsFromEvent(event: MemoryExtractionEvent): Memo
     status: resolveClaimStatus(event, authority),
     epistemicStatus,
     evidenceCount: 1,
+    relationCategory: relationCategoryForAtom(atom, epistemicStatus),
+    reasonChain: reasonChainForAtom(atom, source),
     properties: {
       extractionSourceType: event.sourceType,
       compressionReason: atom.compressionReason,
       originalExcerpt: source.excerpt,
       epistemicStatus,
+      relationCategory: relationCategoryForAtom(atom, epistemicStatus),
+      relationshipType: relationshipTypeForAtom(atom, epistemicStatus),
+      reasonChain: reasonChainForAtom(atom, source),
       sourceSpeaker: event.source?.speakerId ?? event.source?.speakerType,
     },
   }));
+}
+
+function relationCategoryForAtom(atom: ExtractedMemoryAtom, epistemicStatus: MemoryGraphEpistemicStatus): MemoryGraphRelationCategory {
+  if (epistemicStatus === "claimed" || epistemicStatus === "believed" || epistemicStatus === "doubted" || atom.kind === "stance" || atom.kind === "argument") {
+    return "cognition";
+  }
+  if (atom.kind === "relationship" || /trust|distrust|like|dislike|respect|fear|suspect|avoid/i.test(atom.predicate)) {
+    return "attitude";
+  }
+  if (atom.kind === "goal" || atom.kind === "plan" || atom.kind === "task" || /goal|want|support|oppose|depend/i.test(atom.predicate)) {
+    return "goal";
+  }
+  if (atom.kind === "judgement" || atom.kind === "conflict" || atom.kind === "secret" || atom.kind === "scene" || atom.kind === "item" || atom.kind === "clue") {
+    return "world";
+  }
+  if (/ally|oppos|negotiat|hide/i.test(atom.predicate)) {
+    return "social";
+  }
+  return "observation";
+}
+
+function relationshipTypeForAtom(atom: ExtractedMemoryAtom, epistemicStatus: MemoryGraphEpistemicStatus): string {
+  if (epistemicStatus === "claimed") return "CLAIMS";
+  if (epistemicStatus === "believed") return "BELIEVES";
+  if (epistemicStatus === "doubted") return "DOUBTS";
+  if (epistemicStatus === "disputed") return "CONTRADICTS";
+  if (epistemicStatus === "refuted") return "REFUTES";
+  if (atom.predicate === "has_goal" || atom.kind === "goal") return "WANTS";
+  if (atom.predicate === "asserts_stance" || atom.kind === "stance" || atom.kind === "argument") return "SUPPORTS";
+  if (atom.predicate === "located_in") return "LOCATED_IN";
+  if (atom.predicate === "has_item" || atom.kind === "item") return "OWNS";
+  if (atom.kind === "judgement") return "CONFIRMED_AS";
+  if (atom.kind === "secret") return "HIDES_FROM";
+  if (atom.kind === "relationship") return "KNOWS_ABOUT";
+  return epistemicStatus === "confirmed" ? "CONFIRMED_AS" : "SAID";
+}
+
+function reasonChainForAtom(atom: ExtractedMemoryAtom, source: MemorySourceInput): MemoryClaimInput["reasonChain"] {
+  const excerpt = source.excerpt.trim();
+  const steps: NonNullable<MemoryClaimInput["reasonChain"]> = [];
+  if (excerpt) {
+    steps.push({ type: "observation", text: trimToLength(excerpt, MAX_EXCERPT_CHARS) });
+  }
+  steps.push({ type: "interpretation", text: trimToLength(atom.text, MAX_EXCERPT_CHARS) });
+  if (atom.compressionReason) {
+    steps.push({ type: "effect", text: `Stored as ${atom.kind}/${atom.predicate} via ${atom.compressionReason}.` });
+  }
+  return steps;
 }
 
 function shouldAttemptMemoryExtraction(text: string, event: MemoryExtractionEvent): boolean {

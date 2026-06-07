@@ -97,6 +97,7 @@ import {
   formatRoomTarget,
   getRoomRecipeByInput,
   getVisibleContextForParticipant,
+  getRoomAutoTimerDelayMs,
   getRoomDelayMs,
   getRoomPromptProfile,
   getRoomPromptProfileByInput,
@@ -566,6 +567,12 @@ interface MemoryGraphPersistOptions {
   graphNotify?: boolean;
 }
 
+const SEMANTIC_MEMORY_BATCH_THRESHOLD = 6;
+const SEMANTIC_MEMORY_IDLE_DELAY_MS = 800;
+const semanticMemoryDirtyScopes = new Set<MemoryScope>();
+let semanticMemoryDirtyWrites = 0;
+let semanticMemoryTimer: number | null = null;
+
 function persistMemoryStore(options: MemoryGraphPersistOptions = {}) {
   try {
     window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(memoryStore.serialize()));
@@ -577,6 +584,68 @@ function persistMemoryStore(options: MemoryGraphPersistOptions = {}) {
     replace: options.graphReplace ?? false,
     notify: options.graphNotify ?? false,
   });
+}
+
+function recordRoomMemoryAdapterResult(result: { observerRoleIds: string[]; writtenScopes?: MemoryScope[] }) {
+  applyRoomObservationUiEffects(result.observerRoleIds);
+  persistWrittenMemoryScopes(result.writtenScopes ?? []);
+}
+
+function persistWrittenMemoryScopes(scopes: MemoryScope[]) {
+  const writtenScopes = Array.from(new Set(scopes));
+  if (writtenScopes.length === 0) {
+    return;
+  }
+  markSemanticMemoryDirty(writtenScopes);
+  const graphNotify = activeSurface === "console" && activeConsoleView === "memory";
+  persistMemoryStore({ graphScopes: writtenScopes, graphNotify });
+  if (graphNotify) {
+    notifyMemoryDashboardUpdated();
+  }
+}
+
+function markSemanticMemoryDirty(scopes: MemoryScope[]) {
+  for (const scope of scopes) {
+    semanticMemoryDirtyScopes.add(scope);
+  }
+  semanticMemoryDirtyWrites += 1;
+  if (semanticMemoryDirtyWrites >= SEMANTIC_MEMORY_BATCH_THRESHOLD) {
+    flushSemanticMemoryDirtyScopes("batch");
+    return;
+  }
+  scheduleSemanticMemoryFlush();
+}
+
+function scheduleSemanticMemoryFlush() {
+  if (semanticMemoryTimer !== null) {
+    return;
+  }
+  semanticMemoryTimer = window.setTimeout(() => {
+    semanticMemoryTimer = null;
+    flushSemanticMemoryDirtyScopes("idle");
+  }, SEMANTIC_MEMORY_IDLE_DELAY_MS);
+}
+
+function flushSemanticMemoryDirtyScopes(_reason: "batch" | "idle" | "memory_view" | "manual") {
+  if (semanticMemoryTimer !== null) {
+    window.clearTimeout(semanticMemoryTimer);
+    semanticMemoryTimer = null;
+  }
+  const scopes = Array.from(semanticMemoryDirtyScopes);
+  semanticMemoryDirtyScopes.clear();
+  semanticMemoryDirtyWrites = 0;
+  if (scopes.length === 0) {
+    return;
+  }
+  const observations = memoryStore.processSemanticObservationsForScopes(scopes);
+  if (observations.length === 0) {
+    return;
+  }
+  const graphNotify = activeSurface === "console" && activeConsoleView === "memory";
+  persistMemoryStore({ graphScopes: Array.from(new Set(observations.map((entry) => entry.scope))), graphNotify });
+  if (graphNotify) {
+    notifyMemoryDashboardUpdated();
+  }
 }
 
 function canUseTauriCommands(): boolean {
@@ -611,6 +680,7 @@ function addSerializedMemoryScopes(records: Set<MemoryScope>, data: MemoryStoreD
   for (const candidate of data.candidates) records.add(candidate.scope);
   for (const entry of data.compressedMemories ?? []) records.add(entry.scope);
   for (const summary of data.rollingSummaries ?? []) records.add(summary.scope);
+  for (const observation of data.semanticObservations ?? []) records.add(observation.scope);
   for (const version of data.versionHistory ?? []) records.add(version.scope);
   for (const roomMessages of data.roomMessages) records.add(roomMessages.scope);
   for (const director of data.roomDirectorMemories) records.add(director.scope as MemoryScope);
@@ -650,6 +720,7 @@ function collectDeletedRoomMemoryScopes(roomId: string): MemoryScope[] {
   for (const candidate of data.candidates) addIfRelated(candidate.scope);
   for (const entry of data.compressedMemories ?? []) addIfRelated(entry.scope);
   for (const summary of data.rollingSummaries ?? []) addIfRelated(summary.scope);
+  for (const observation of data.semanticObservations ?? []) addIfRelated(observation.scope);
   for (const version of data.versionHistory ?? []) addIfRelated(version.scope);
   for (const roomMessages of data.roomMessages) addIfRelated(roomMessages.scope);
   for (const director of data.roomDirectorMemories) addIfRelated(director.scope as MemoryScope);
@@ -669,6 +740,7 @@ function hasMemoryScopePayload(data: Partial<MemoryStoreData> | Partial<Characte
       (Array.isArray(data.candidates) && data.candidates.length) ||
       (Array.isArray((data as Partial<MemoryStoreData>).compressedMemories) && (data as Partial<MemoryStoreData>).compressedMemories?.length) ||
       (Array.isArray((data as Partial<CharacterPackMemoryFile>).entries) && (data as Partial<CharacterPackMemoryFile>).entries?.length) ||
+      (Array.isArray((data as Partial<MemoryStoreData>).semanticObservations) && (data as Partial<MemoryStoreData>).semanticObservations?.length) ||
       (Array.isArray(data.versionHistory) && data.versionHistory.length) ||
       (Array.isArray((data as Partial<MemoryStoreData>).roomMessages) && (data as Partial<MemoryStoreData>).roomMessages?.length) ||
       (Array.isArray((data as Partial<MemoryStoreData>).roomDirectorMemories) && (data as Partial<MemoryStoreData>).roomDirectorMemories?.length) ||
@@ -1685,6 +1757,7 @@ function filterMemoryStoreDataForScope(data: ReturnType<MemoryStore["serialize"]
     candidates: data.candidates.filter((item) => item.scope === scope),
     compressedMemories: (data.compressedMemories ?? []).filter((item) => item.scope === scope),
     rollingSummaries: (data.rollingSummaries ?? []).filter((item) => item.scope === scope),
+    semanticObservations: (data.semanticObservations ?? []).filter((item) => item.scope === scope),
     versionHistory: (data.versionHistory ?? []).filter((item) => item.scope === scope),
     roomMessages: data.roomMessages.filter((item) => item.scope === scope),
     roomDirectorMemories: data.roomDirectorMemories.filter((item) => item.scope === scope),
@@ -1771,6 +1844,7 @@ function exportDiagnosticsReport() {
       shortTermCount: memoryData.mentions.length,
       candidateCount: memoryData.candidates.length,
       confirmedCandidateCount: memoryData.candidates.filter((candidate) => candidate.confirmed).length,
+      semanticObservationCount: (memoryData.semanticObservations ?? []).length,
       roomScopeCount: memoryData.roomMessages.length,
       roomMessageCount: memoryData.roomMessages.reduce((sum, entry) => sum + entry.messages.length, 0),
       contents: "[redacted]",
@@ -2568,19 +2642,20 @@ function formatDebugMemoryDiagnostics(): string {
     longTerm: (data.compressedMemories ?? []).filter((item) => item.scope === scope).length,
     candidates: data.candidates.filter((item) => item.scope === scope).length,
     summaries: (data.rollingSummaries ?? []).filter((item) => item.scope === scope).length,
+    semantic: (data.semanticObservations ?? []).filter((item) => item.scope === scope).length,
   });
   const roomCounts = countScope(roomScope);
   const directorFacts = memoryStore.getRoomDirectorMemorySnapshot(directorScope);
   const characterCounts = countScope(characterScope);
   const roomRoleLines = roomRoleScopes.map((scope) => {
     const counts = countScope(scope);
-    return `${scope}: long=${counts.longTerm}, short=${counts.shortTerm}, candidates=${counts.candidates}`;
+    return `${scope}: long=${counts.longTerm}, short=${counts.shortTerm}, semantic=${counts.semantic}, candidates=${counts.candidates}`;
   });
   return [
     "Debug memory:",
-    `room ${roomScope}: long=${roomCounts.longTerm}, short=${roomCounts.shortTerm}, candidates=${roomCounts.candidates}, summaries=${roomCounts.summaries}`,
+    `room ${roomScope}: long=${roomCounts.longTerm}, short=${roomCounts.shortTerm}, semantic=${roomCounts.semantic}, candidates=${roomCounts.candidates}, summaries=${roomCounts.summaries}`,
     `director ${directorScope}: scene=${directorFacts.sceneBoard.currentScene ? "set" : "empty"}, clues=${directorFacts.sceneBoard.openClues.length}, continuity=${directorFacts.continuity.entries.length}, constraints=${directorFacts.constraints.length}, judgements=${directorFacts.judgements.length}, secrets=${directorFacts.secrets.length}`,
-    `character ${characterScope}: long=${characterCounts.longTerm}, short=${characterCounts.shortTerm}, candidates=${characterCounts.candidates}`,
+    `character ${characterScope}: long=${characterCounts.longTerm}, short=${characterCounts.shortTerm}, semantic=${characterCounts.semantic}, candidates=${characterCounts.candidates}`,
     "room role scopes:",
     ...(roomRoleLines.length ? roomRoleLines.map((line) => `- ${line}`) : ["- none"]),
     "Prompt memory budget: local=1-3 short facts, cloud=budgeted summaries and relevant facts.",
@@ -2999,9 +3074,9 @@ function handleConsoleAction(action: ConsoleAction) {
   consoleState = reduceConsoleState(consoleState, action);
 
   if (deletedRoomId) {
-    memoryStore.deleteRoomMemory(`room:${deletedRoomId}` as `room:${string}`);
+    const deletedStoreScopes = memoryStore.deleteRoomMemory(`room:${deletedRoomId}` as `room:${string}`);
     persistMemoryStore({
-      graphScopes: deletedRoomMemoryScopes,
+      graphScopes: Array.from(new Set([...deletedRoomMemoryScopes, ...deletedStoreScopes])),
       graphReplace: true,
       graphNotify: activeSurface === "console" && activeConsoleView === "memory",
     });
@@ -3041,8 +3116,16 @@ function handleConsoleAction(action: ConsoleAction) {
     }
   }
 
-  if (action.type === "room.setSpeed" && consoleState.room.autoChat) {
-    primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false);
+  if (
+    (action.type === "room.setSpeed" ||
+      action.type === "room.setAutoPacePreset" ||
+      action.type === "room.setAutoPaceNumberField" ||
+      action.type === "room.setAutoPaceRandomize") &&
+    consoleState.room.autoChat
+  ) {
+    primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false, undefined, {
+      delayMode: "base",
+    });
   }
 
   requestRender("console_action", { structural: true });
@@ -4574,12 +4657,13 @@ function formatCompactTarget(target: RoomMessageTarget | undefined): string {
 }
 
 function recordFactionHuddleMessageMemory(message: ConsoleMessage, factionId: string) {
-  roomMemoryAdapter.recordRoomMessage({
+  const result = roomMemoryAdapter.recordRoomMessage({
     room: consoleState.room,
     message: { ...message, visibility: "faction_huddle", factionId },
     source: message.speakerType === "user" ? "user" : "room",
     recordObservations: false,
   });
+  recordRoomMemoryAdapterResult(result);
 }
 
 function recordRoomMessageMemory(
@@ -4595,7 +4679,7 @@ function recordRoomMessageMemory(
     excludeRoleIds,
     recordObservations: options.recordObservations,
   });
-  applyRoomObservationUiEffects(result.observerRoleIds);
+  recordRoomMemoryAdapterResult(result);
 }
 
 function applyRoomObservationUiEffects(observerRoleIds: string[]) {
@@ -4674,7 +4758,7 @@ function directorObservationLabel(tags: RoomObservationTag[], room: RoomState): 
 
 function recordPrivateRoomMemory(message: ConsoleMessage, room: RoomState) {
   const result = roomMemoryAdapter.recordPrivateMessage({ room, message });
-  applyRoomObservationUiEffects(result.observerRoleIds);
+  recordRoomMemoryAdapterResult(result);
 }
 
 function recordDirectorHiddenRoomMemory(
@@ -5635,7 +5719,7 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
     continuityWrites: result.plan?.continuityWrites,
     secretWrites: result.plan?.secretWrites,
   });
-  applyRoomObservationUiEffects(memoryResult.observerRoleIds);
+  recordRoomMemoryAdapterResult(memoryResult);
   if (directorChannelMessage) {
     commitRoomTimelineMessage(directorChannelMessage, "room_director_channel_note");
   }
@@ -5674,7 +5758,7 @@ function createDirectorChannelMessage(result: RoomDirectorScheduleResult): Conso
     lines.push(`Private directive: ${participant?.name ?? directive.roleId} - ${trimRoomPromptLine(directive.task, 180)}`);
   }
   if (publicTextIsBackstage) {
-    lines.push(`Backstage text blocked from public: ${trimRoomPromptLine(publicText, 220)}`);
+    lines.push(`Backstage text blocked from public: ${neutralizeDirectorUserInstruction(publicText)}`);
   }
   const focus = result.inspectorPatch?.currentFocus ?? result.simulation?.currentFocus;
   if (focus) {
@@ -5699,6 +5783,21 @@ function createDirectorChannelMessage(result: RoomDirectorScheduleResult): Conso
     directorMove: result.move,
     knowledgeVisibility: "hidden_from_user",
   };
+}
+
+function neutralizeDirectorUserInstruction(text: string): string {
+  const trimmed = trimRoomPromptLine(text, 220);
+  if (!trimmed) {
+    return "";
+  }
+  if (!isDirectorUserInstructionText(trimmed)) {
+    return trimmed;
+  }
+  return "User input remains optional. Continue role flow unless a hard choice is required.";
+}
+
+function isDirectorUserInstructionText(text: string): boolean {
+  return /(?:@\s*(?:You|你|我)\b|You\s+can\s+ask|ask\s+a\s+role\s+to\s+act|watch\s+the\s+room\s+move\s+on|用户.*(?:可以|可选)|现在可以让.{0,16}角色|让某个角色先行动|等\s*[^，。,.]{0,16}\s*决定下一步)/i.test(text);
 }
 
 function latestRoomMessageForReplyChannel(messages: ConsoleMessage[]): ConsoleMessage | undefined {
@@ -5748,9 +5847,6 @@ function createDirectorPendingFollowup(result: RoomDirectorScheduleResult): Room
 
 function shouldWaitForUserAfterDirector(result: RoomDirectorScheduleResult): boolean {
   if (result.type !== "turn") {
-    return true;
-  }
-  if (result.move === "pause") {
     return true;
   }
   if (!result.plan?.waitForUser) {
@@ -5900,7 +5996,7 @@ function applyDirectorTickResult(tick: DirectorTickResult) {
     continuityWrites: [],
     secretWrites: [],
   });
-  applyRoomObservationUiEffects(memoryResult.observerRoleIds);
+  recordRoomMemoryAdapterResult(memoryResult);
 }
 
 function createDirectorTickChannelMessage(tick: DirectorTickResult): ConsoleMessage {
@@ -5977,7 +6073,7 @@ function inferDeveloperDirectorChannelMove(input: string): RoomDirectorMove {
 
 function recordRoomObservations(message: ConsoleMessage, room: RoomState, excludeRoleIds: string[] = []) {
   const result = roomMemoryAdapter.recordObservations({ room, message, excludeRoleIds });
-  applyRoomObservationUiEffects(result.observerRoleIds);
+  recordRoomMemoryAdapterResult(result);
 }
 
 function classifyObservationTags(text: string, room: RoomState): RoomObservationTag[] {
@@ -6361,7 +6457,7 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     participant: result.participant,
     excludeRoleIds: [result.participant.id],
   });
-  applyRoomObservationUiEffects(memoryResult.observerRoleIds);
+  recordRoomMemoryAdapterResult(memoryResult);
   applyDirectorTickAfterMessage(message, "role");
   if (isTargetingDirector(message.target)) {
     void applyRoomDirectorTurnAsync({
@@ -6389,7 +6485,9 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     });
   }
   queueRoomParticipantIdle(result.participant.id);
-  if (shouldScheduleFiniteRoomFlowAfterTurn(result)) {
+  if (shouldScheduleContinuousRoomFlowAfterVisibleTurn(result)) {
+    primeRoomAutoTimer(result.reason, false, undefined, { delayMode: "base" });
+  } else if (shouldScheduleFiniteRoomFlowAfterTurn(result)) {
     primeRoomAutoTimer("director_followup", false, createFiniteRoomFlowPendingFollowupAfterTurn(result));
   } else {
     syncRoomAutoTimer();
@@ -6409,6 +6507,10 @@ function shouldScheduleFiniteRoomFlowAfterTurn(result: RoomScheduleResult): bool
     return true;
   }
   return hasPendingDebateSpeakerAfterTurn(result);
+}
+
+function shouldScheduleContinuousRoomFlowAfterVisibleTurn(result: RoomScheduleResult): boolean {
+  return result.type === "turn" && consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous";
 }
 
 function hasPendingDebateSpeakerAfterTurn(result: RoomScheduleResult): boolean {
@@ -8258,8 +8360,11 @@ function primeRoomAutoTimer(
   reason: RoomScheduleResult["reason"],
   resetCounters: boolean,
   pendingFollowup?: RoomPendingFollowup | null,
+  options: { delayMode?: "reason" | "base" } = {},
 ) {
-  const nextTurnAt = Date.now() + getRoomDelayMs(consoleState.room);
+  const delay =
+    options.delayMode === "base" ? getRoomDelayMs(consoleState.room) : getRoomAutoTimerDelayMs(consoleState.room, reason);
+  const nextTurnAt = Date.now() + delay;
   consoleState = reduceConsoleState(consoleState, {
     type: "room.setAutoSpeechStatus",
     status: "cooling_down",
@@ -8314,8 +8419,7 @@ function canRunForegroundRoomFlow(): boolean {
     activeSurface === "room" &&
     activeConsoleView === "room" &&
     consoleState.room.isOpen &&
-    consoleState.room.id === consoleState.activeRoomId &&
-    consoleTurnEngine.activeTurn?.status !== "pending"
+    consoleState.room.id === consoleState.activeRoomId
   );
 }
 
@@ -8340,6 +8444,11 @@ async function runRoomAutoTurn() {
   if (!hasRunnableRoomAutoWork()) {
     syncRoomAutoTimer();
     requestRender("room_auto_no_runnable_work", { kind: "status" });
+    return;
+  }
+  if (consoleTurnEngine.activeTurn?.status === "pending") {
+    primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false);
+    requestRender("room_auto_turn_busy", { kind: "status" });
     return;
   }
 
@@ -9852,6 +9961,10 @@ function render() {
     markLatestConsoleTurnRendered();
     restoreConversationInputState(inputSnapshot);
     return;
+  }
+
+  if (activeConsoleView === "memory") {
+    flushSemanticMemoryDirtyScopes("memory_view");
   }
 
   appRoot.replaceChildren(

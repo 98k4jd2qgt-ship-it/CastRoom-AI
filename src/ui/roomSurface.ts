@@ -15,6 +15,7 @@ import type {
   RoomIdentityCardField,
   RoomParticipant,
   RoomAdvancePolicy,
+  RoomAutoPacePreset,
   RoomSpeakerPolicy,
   RoomBlockingNeed,
   RoomAdvanceDecision,
@@ -854,25 +855,18 @@ function renderRoomInspectorStatus(props: RoomSurfaceProps): HTMLElement {
   const language = props.state.language;
   const room = props.state.room;
   const activeChannel = getActiveRoomChannel(room);
-  const mode = resolveRoomCollaborationMode(room);
   const scheduler = buildRoomInspectorSchedulerState(room);
   const section = document.createElement("section");
   section.className = "room-inspector-status";
+  const showModelWarning = room.apiProfile.mode === "custom_room" && room.apiProfile.status !== "ready";
   section.append(
     statusPill(t(language, "roomInspectorFlow"), roomFlowModeLabel(scheduler.flowMode, language)),
     statusPill(t(language, "roomInspectorDirector"), room.director.enabled ? t(language, "statusOn") : t(language, "statusOff")),
-    statusPill(roomUiText(language, "mode"), collaborationModeLabel(mode, language)),
-    statusPill(roomUiText(language, "show"), simulationStyleLabel(scheduler.style, language)),
-    statusPill(roomUiText(language, "freedom"), freedomLevelLabel(scheduler.freedomLevel, language)),
-    statusPill(roomUiText(language, "objective"), simulationObjectiveLabel(scheduler.objective, language)),
-    statusPill(
-      roomUiText(language, "turn"),
-      `${floorOwnerLabel(room, language)} / ${turnPhaseLabel(room.turnPhase, language)}`,
-    ),
-    statusPill(roomUiText(language, "plan"), roomPlanLabel(room, language)),
-    statusPill(t(language, "roomInspectorModel"), roomApiBadge(props)),
     statusPill(t(language, "roomInspectorChannel"), displayChannelLabel(props, activeChannel)),
   );
+  if (showModelWarning) {
+    section.append(statusPill(t(language, "roomInspectorModel"), roomApiBadge(props)));
+  }
   return section;
 }
 function renderRoomInspectorActions(props: RoomSurfaceProps): HTMLElement {
@@ -901,6 +895,7 @@ function renderRoomInspectorActions(props: RoomSurfaceProps): HTMLElement {
   const freedom = renderRoomFreedomSelect(props);
   const uncertainty = renderRoomUncertaintySelect(props);
   const advancePolicy = renderRoomAdvancePolicyControl(props);
+  const autoPace = renderRoomAutoPaceControl(props);
   const speakerPolicy = renderRoomSpeakerPolicyControl(props);
 
   const buttons = document.createElement("div");
@@ -919,11 +914,12 @@ function renderRoomInspectorActions(props: RoomSurfaceProps): HTMLElement {
     editPrompt,
   );
 
-  section.append(recipe, freedom, uncertainty, advancePolicy, speakerPolicy, buttons);
+  section.append(recipe, freedom, uncertainty, advancePolicy, autoPace, speakerPolicy, buttons);
   return section;
 }
 
 const ROOM_ADVANCE_POLICIES: RoomAdvancePolicy[] = ["wait_for_instruction", "fill_gap", "continuous"];
+const ROOM_AUTO_PACE_PRESETS: RoomAutoPacePreset[] = ["fast", "natural", "slow", "custom"];
 const ROOM_SPEAKER_POLICIES: RoomSpeakerPolicy[] = ["balanced", "round_robin", "spotlight", "freeform"];
 
 function renderRoomAdvancePolicyControl(props: RoomSurfaceProps): HTMLElement {
@@ -954,6 +950,59 @@ function renderRoomAdvancePolicyControl(props: RoomSurfaceProps): HTMLElement {
     options.append(button);
   }
   wrapper.append(label, options);
+  return wrapper;
+}
+
+function renderRoomAutoPaceControl(props: RoomSurfaceProps): HTMLElement {
+  const language = props.state.language;
+  const settings = props.state.room.autoPace ?? {
+    preset: "natural" as RoomAutoPacePreset,
+    minDelayMs: 3_000,
+    maxDelayMs: 8_000,
+    idleFillDelayMs: 12_000,
+    randomize: true,
+  };
+  const wrapper = document.createElement("div");
+  wrapper.className = "room-advance-policy room-auto-pace";
+  const preset = renderSelectField(
+    roomUiText(language, "autoPace"),
+    settings.preset,
+    ROOM_AUTO_PACE_PRESETS.map((item) => [item, roomAutoPacePresetLabel(item, language)]),
+    (value) => props.onAction({ type: "room.setAutoPacePreset", preset: value as RoomAutoPacePreset }),
+  );
+  preset.title = roomUiText(language, "autoPaceHint");
+  wrapper.append(preset);
+  if (settings.preset === "custom") {
+    const advanced = document.createElement("div");
+    advanced.className = "room-advance-policy-advanced";
+    advanced.append(
+      renderNumberField(
+        roomUiText(language, "autoPaceMinDelay"),
+        msToSeconds(settings.minDelayMs),
+        0.5,
+        60,
+        0.5,
+        (value) => props.onAction({ type: "room.setAutoPaceNumberField", field: "minDelayMs", value: secondsToMs(value) }),
+      ),
+      renderNumberField(
+        roomUiText(language, "autoPaceMaxDelay"),
+        msToSeconds(settings.maxDelayMs),
+        0.5,
+        120,
+        0.5,
+        (value) => props.onAction({ type: "room.setAutoPaceNumberField", field: "maxDelayMs", value: secondsToMs(value) }),
+      ),
+      renderNumberField(
+        roomUiText(language, "autoPaceIdleFill"),
+        msToSeconds(settings.idleFillDelayMs),
+        1,
+        180,
+        1,
+        (value) => props.onAction({ type: "room.setAutoPaceNumberField", field: "idleFillDelayMs", value: secondsToMs(value) }),
+      ),
+    );
+    wrapper.append(advanced);
+  }
   return wrapper;
 }
 
@@ -1151,7 +1200,7 @@ function renderDirectorApiDetail(props: RoomSurfaceProps): HTMLElement {
 function renderRoomRulesDetail(props: RoomSurfaceProps): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "room-rules-detail";
-  wrap.append(renderRoomControls(props), renderRoomPromptControl(props), renderRoomPolicy(props));
+  wrap.append(renderRoomControls(props), renderRoomPromptControl(props));
   return wrap;
 }
 
@@ -1637,7 +1686,7 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
   const activeTasks = collaborationPlan?.tasks.filter((task) => task.status === "pending" || task.status === "active") ?? [];
   const latestHuddle = room.factionHuddleThreads.at(-1);
   const latestHuddleStrategy = collaborationPlan?.factionStrategies.find((strategy) => strategy.sourceThreadId === latestHuddle?.id);
-  const showDirectorScript = room.freedomLevel === "developer" || activeChannel.type === "director";
+  const showDiagnostics = room.freedomLevel === "developer" || activeChannel.type === "director";
   const directorScript = room.director.scriptBoard;
   const directorScriptItems = [
     { label: roomUiText(language, "directorScriptPhase", "Phase"), value: localizedRoomSystemText(directorScript.currentPhase ?? label("noneYet"), language) },
@@ -1699,42 +1748,35 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
           .join(" / ") || label("noneYet"),
     },
   ];
-  if (mode === "team") {
-    const faction = room.factions.find((item) => item.id === activeChannel.factionId);
-    const members = room.participants.filter((participant) => participant.factionId === activeChannel.factionId);
-    return {
-      mode: "team",
-      title: label("teamChannel"),
-      description: label("visibleTeamDirector"),
-      sections: [
+  const teamFaction = room.factions.find((item) => item.id === activeChannel.factionId);
+  const teamMembers = room.participants.filter((participant) => participant.factionId === activeChannel.factionId);
+  const teamSections: RoomContextPanelViewModel["sections"] = [
+    {
+      id: "team",
+      title: label("channel"),
+      items: [
+        { label: label("team"), value: teamFaction?.name ?? activeChannel.label },
+        { label: label("members"), value: teamMembers.map((item) => item.name).join(", ") || label("noRoles") },
+        { label: label("goal"), value: localizedRoomSystemText(scene.goal, language) },
+      ],
+    },
+    {
+      id: "team-memory",
+      title: label("teamSummary"),
+      items: [
         {
-          id: "team",
-          title: label("channel"),
-          items: [
-            { label: label("team"), value: faction?.name ?? activeChannel.label },
-            { label: label("members"), value: members.map((item) => item.name).join(", ") || label("noRoles") },
-            { label: label("goal"), value: localizedRoomSystemText(scene.goal, language) },
-          ],
-        },
-        {
-          id: "team-memory",
-          title: label("teamSummary"),
-          items: [
-            {
-              label: label("recent"),
-              value: compactList(
-                room.messages
-                  .filter((message) => message.factionId === activeChannel.factionId)
-                  .slice(-3)
-                  .map((message) => message.speaker + ": " + message.text),
-                label("noTeamSummary"),
-              ),
-            },
-          ],
+          label: label("recent"),
+          value: compactList(
+            room.messages
+              .filter((message) => message.factionId === activeChannel.factionId)
+              .slice(-3)
+              .map((message) => message.speaker + ": " + message.text),
+            label("noTeamSummary"),
+          ),
         },
       ],
-    };
-  }
+    },
+  ];
 
   const commonScene = [
     { label: label("scene"), value: localizedRoomSystemText(scene.currentScene, language) },
@@ -1771,69 +1813,84 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
     planning: [
       { id: "planning", title: label("planning"), items: [{ label: label("goal"), value: localizedRoomSystemText(scene.goal, language) }, { label: label("tasks"), value: compactLocalizedList(scene.unresolved, label("noTasks"), language) }, { label: label("risks"), value: compactLocalizedList(activeConstraints.map((item) => item.label), label("noVisibleRisks"), language) }] },
     ],
+    team: teamSections,
   };
+  const modeSections = sectionsByMode[mode] ?? sectionsByMode.casual;
+  const needsReviewConstraints = activeConstraints.filter((constraint) => constraint.status === "needs_review");
+  const publicWarningSections: RoomContextPanelViewModel["sections"] =
+    !showDiagnostics && needsReviewConstraints.length > 0
+      ? [
+          {
+            id: "conditions",
+            title: label("conditions"),
+            items: needsReviewConstraints.slice(0, 3).map((constraint) => ({
+              label: localizedRoomSystemText(constraint.label, language),
+              value: localizedRoomSystemText(constraint.detail, language),
+              tone: "warning",
+            })),
+          },
+        ]
+      : [];
+  const diagnosticSections: RoomContextPanelViewModel["sections"] = showDiagnostics
+    ? [
+        {
+          id: "simulation",
+          title: label("simulation"),
+          items: simulationItems,
+        },
+        {
+          id: "plot",
+          title: roomUiText(language, "plotArc"),
+          items: plotItems,
+        },
+        {
+          id: "frame",
+          title: roomUiText(language, "frameControl"),
+          items: frameItems,
+        },
+        {
+          id: "collaboration",
+          title: roomUiText(language, "collaboration"),
+          items: collaborationItems,
+        },
+        {
+          id: "director-script",
+          title: roomUiText(language, "directorScriptBoard", "Director Script"),
+          items: directorScriptItems,
+        },
+        ...(room.simulation.style === "match"
+          ? [
+              {
+                id: "match",
+                title: label("match"),
+                items: matchItems,
+              },
+            ]
+          : []),
+        {
+          id: "constraints",
+          title: label("conditions"),
+          items: activeConstraints.slice(0, 4).map((constraint) => ({
+            label: localizedRoomSystemText(constraint.label, language),
+            value: localizedRoomSystemText(constraint.detail, language),
+            tone: constraint.status === "needs_review" ? "warning" : "neutral",
+          })),
+        },
+        {
+          id: "continuity",
+          title: label("continuity"),
+          items: continuityItems.length
+            ? continuityItems
+            : [{ label: label("ledger"), value: label("noContinuityFacts") }],
+        },
+      ]
+    : [];
 
   return {
     mode,
     title: modeTitle(mode, language),
     description: modeDescription(mode, language),
-    sections: [
-      {
-        id: "simulation",
-        title: label("simulation"),
-        items: simulationItems,
-      },
-      {
-        id: "plot",
-        title: roomUiText(language, "plotArc"),
-        items: plotItems,
-      },
-      {
-        id: "frame",
-        title: roomUiText(language, "frameControl"),
-        items: frameItems,
-      },
-      {
-        id: "collaboration",
-        title: roomUiText(language, "collaboration"),
-        items: collaborationItems,
-      },
-      ...(showDirectorScript
-        ? [
-            {
-              id: "director-script",
-              title: roomUiText(language, "directorScriptBoard", "Director Script"),
-              items: directorScriptItems,
-            },
-          ]
-        : []),
-      ...(room.simulation.style === "match"
-        ? [
-            {
-              id: "match",
-              title: label("match"),
-              items: matchItems,
-            },
-          ]
-        : []),
-      ...(sectionsByMode[mode] ?? sectionsByMode.casual),
-      {
-        id: "constraints",
-        title: label("conditions"),
-        items: activeConstraints.slice(0, 4).map((constraint) => ({
-          label: localizedRoomSystemText(constraint.label, language),
-          value: localizedRoomSystemText(constraint.detail, language),
-          tone: constraint.status === "needs_review" ? "warning" : "neutral",
-        })),
-      },
-      {
-        id: "continuity",
-        title: label("continuity"),
-        items: continuityItems.length
-          ? continuityItems
-          : [{ label: label("ledger"), value: label("noContinuityFacts") }],
-      },
-    ],
+    sections: [...modeSections, ...publicWarningSections, ...diagnosticSections],
   };
 }
 
@@ -2085,23 +2142,6 @@ function renderRoleGenerationFields(props: RoomSurfaceProps, participant: RoomPa
     ),
   );
   return grid;
-}
-
-function renderRoomPolicy(props: RoomSurfaceProps): HTMLElement {
-  const language = props.state.language;
-  const policy = document.createElement("section");
-  policy.className = "room-control-card";
-  policy.innerHTML = `
-    <h3>${escapeHtml(t(language, "roomPolicyTitle"))}</h3>
-    <ul>
-      <li>${escapeHtml(t(language, "roomPolicyVoiceOff"))}</li>
-      <li>${escapeHtml(t(language, "roomPolicyMemoryOnly"))}</li>
-      <li>${escapeHtml(t(language, "roomPolicyAuto", { status: autoSpeechCopy(props) }))}</li>
-      <li>${escapeHtml(t(language, "roomPolicyWhispers", { status: privateWhisperStatusLabel(props) }))}</li>
-      <li>${escapeHtml(t(language, "roomPolicyFactions", { status: factionHuddleStatusLabel(props) }))}</li>
-    </ul>
-  `;
-  return policy;
 }
 
 function renderFactionPanel(props: RoomSurfaceProps): HTMLElement {
@@ -3053,6 +3093,14 @@ function renderNumberField(
   return label;
 }
 
+function msToSeconds(value: number): number {
+  return Math.round((value / 1000) * 10) / 10;
+}
+
+function secondsToMs(value: number): number {
+  return Math.round(value * 1000);
+}
+
 function renderSecretInput(
   labelText: string,
   preview: string,
@@ -3376,6 +3424,10 @@ function roomAdvancePolicyLabel(policy: RoomAdvancePolicy, language: ConsoleAppS
 
 function roomAdvancePolicyHint(policy: RoomAdvancePolicy, language: ConsoleAppState["language"]): string {
   return roomUiText(language, `advancePolicy_${policy}_hint`);
+}
+
+function roomAutoPacePresetLabel(preset: RoomAutoPacePreset, language: ConsoleAppState["language"]): string {
+  return roomUiText(language, `autoPace_${preset}`);
 }
 
 function roomSpeakerPolicyLabel(policy: RoomSpeakerPolicy, language: ConsoleAppState["language"]): string {

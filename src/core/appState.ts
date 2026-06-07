@@ -54,6 +54,8 @@ import type {
   RoomActiveChannelId,
   RoomApiProfile,
   RoomAdvancePolicy,
+  RoomAutoPacePreset,
+  RoomAutoPaceSettings,
   RoomAutoSpeechPolicy,
   RoomAutoSpeechState,
   RoomDirectorApiProfile,
@@ -133,6 +135,14 @@ export const defaultRoomAutoSpeechPolicy: RoomAutoSpeechPolicy = {
 
 export const defaultRoomAdvancePolicy: RoomAdvancePolicy = "fill_gap";
 
+export const defaultRoomAutoPaceSettings: RoomAutoPaceSettings = {
+  preset: "natural",
+  minDelayMs: 3_000,
+  maxDelayMs: 8_000,
+  idleFillDelayMs: 12_000,
+  randomize: true,
+};
+
 export const defaultRoomSpeakerPolicy: RoomSpeakerPolicySettings = {
   mode: "balanced",
   maxConsecutivePairTurns: 3,
@@ -141,6 +151,45 @@ export const defaultRoomSpeakerPolicy: RoomSpeakerPolicySettings = {
 };
 
 const roomSpeakerPolicyValues = new Set<RoomSpeakerPolicy>(["balanced", "round_robin", "spotlight", "freeform"]);
+const roomAutoPacePresetValues = new Set<RoomAutoPacePreset>(["fast", "natural", "slow", "custom"]);
+
+const roomAutoPacePresetSettings: Record<Exclude<RoomAutoPacePreset, "custom">, RoomAutoPaceSettings> = {
+  fast: {
+    preset: "fast",
+    minDelayMs: 1_000,
+    maxDelayMs: 3_000,
+    idleFillDelayMs: 5_000,
+    randomize: true,
+  },
+  natural: defaultRoomAutoPaceSettings,
+  slow: {
+    preset: "slow",
+    minDelayMs: 8_000,
+    maxDelayMs: 20_000,
+    idleFillDelayMs: 25_000,
+    randomize: true,
+  },
+};
+
+function normalizeRoomAutoPaceSettings(settings: Partial<RoomAutoPaceSettings> | undefined): RoomAutoPaceSettings {
+  const preset = settings?.preset && roomAutoPacePresetValues.has(settings.preset) ? settings.preset : defaultRoomAutoPaceSettings.preset;
+  const presetDefaults =
+    preset === "custom" ? { ...defaultRoomAutoPaceSettings, preset: "custom" as const } : roomAutoPacePresetSettings[preset];
+  const minDelayMs = clampNumber(settings?.minDelayMs ?? presetDefaults.minDelayMs, 500, 60_000, presetDefaults.minDelayMs);
+  const maxDelayMs = clampNumber(
+    settings?.maxDelayMs ?? presetDefaults.maxDelayMs,
+    minDelayMs,
+    120_000,
+    Math.max(minDelayMs, presetDefaults.maxDelayMs),
+  );
+  return {
+    preset,
+    minDelayMs,
+    maxDelayMs,
+    idleFillDelayMs: clampNumber(settings?.idleFillDelayMs ?? presetDefaults.idleFillDelayMs, 1_000, 180_000, presetDefaults.idleFillDelayMs),
+    randomize: settings?.randomize ?? presetDefaults.randomize,
+  };
+}
 
 function normalizeRoomSpeakerPolicy(policy: Partial<RoomSpeakerPolicySettings> | undefined): RoomSpeakerPolicySettings {
   return {
@@ -1108,6 +1157,7 @@ function createDefaultRoomState(
     autoSpeechPolicy: { ...defaultRoomAutoSpeechPolicy, speedDelaysMs: { ...defaultRoomAutoSpeechPolicy.speedDelaysMs } },
     autoSpeechState: { ...defaultRoomAutoSpeechState },
     advancePolicy: defaultRoomAdvancePolicy,
+    autoPace: { ...defaultRoomAutoPaceSettings },
     speakerPolicy: { ...defaultRoomSpeakerPolicy },
     lastContinuationAssessment: null,
     lastAdvanceDecision: null,
@@ -3711,6 +3761,43 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
           advancePolicy: action.policy,
         },
       };
+    case "room.setAutoPacePreset": {
+      const presetDefaults =
+        action.preset === "custom"
+          ? normalizeRoomAutoPaceSettings({ ...state.room.autoPace, preset: "custom" })
+          : roomAutoPacePresetSettings[action.preset];
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          autoPace: normalizeRoomAutoPaceSettings(presetDefaults),
+        },
+      };
+    }
+    case "room.setAutoPaceNumberField":
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          autoPace: normalizeRoomAutoPaceSettings({
+            ...state.room.autoPace,
+            preset: "custom",
+            [action.field]: action.value,
+          }),
+        },
+      };
+    case "room.setAutoPaceRandomize":
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          autoPace: normalizeRoomAutoPaceSettings({
+            ...state.room.autoPace,
+            preset: "custom",
+            randomize: action.randomize,
+          }),
+        },
+      };
     case "room.setSpeakerPolicy":
       return {
         ...state,
@@ -4432,7 +4519,7 @@ function ensureRoomCollection(state: ConsoleAppState): ConsoleAppState {
 function createRoomInState(state: ConsoleAppState, title?: string, recipeId: RoomRecipeId = "casual"): ConsoleAppState {
   const normalized = syncActiveRoom(state);
   const nextTitle = uniqueRoomTitle(normalized.rooms, title, defaultNewRoomTitle);
-  const room = createDefaultRoomState(uniqueRoomId(normalized.rooms, nextTitle), normalized.packs, {
+  const room = createDefaultRoomState(uniqueRoomIdForPromptIsolation(normalized.rooms, normalized.prompts, nextTitle), normalized.packs, {
     title: nextTitle,
     recipeId,
     isOpen: true,
@@ -4561,8 +4648,9 @@ function deleteRoomInState(state: ConsoleAppState, roomId: string): ConsoleAppSt
   const normalized = syncActiveRoom(state);
   const promptsWithoutDeletedRoom = removePromptStateForRoom(normalized.prompts, roomId);
   if (normalized.rooms.length <= 1) {
-    const room = createDefaultRoomState("room-template", normalized.packs, {
-      title: defaultNewRoomTitle,
+    const nextTitle = defaultNewRoomTitle;
+    const room = createDefaultRoomState(uniqueRoomIdForPromptIsolation(normalized.rooms, promptsWithoutDeletedRoom, nextTitle), normalized.packs, {
+      title: nextTitle,
       topic: "Daily chat",
       isOpen: false,
       messages: [],
@@ -4871,6 +4959,7 @@ function normalizeRoomForRuntime(room: RoomState, packs: CharacterPackSummary[])
       ...(room.match ?? {}),
     },
     channelReadState: room.channelReadState ?? {},
+    autoPace: normalizeRoomAutoPaceSettings(room.autoPace),
     speakerPolicy: normalizeRoomSpeakerPolicy(room.speakerPolicy),
     privateThreads: normalizeRoomPrivateThreads(room, id),
     privateChatRequests: room.privateChatRequests ?? [],
@@ -4990,20 +5079,21 @@ function uniqueRoomId(rooms: RoomState[], title: string): string {
 
 function uniqueRoomIdForPromptIsolation(rooms: RoomState[], prompts: PromptCenterState, title: string): string {
   const base = slugifyRoomId(title || "room");
+  const freshBase = `${base}-${Date.now().toString(36)}`;
   const existing = new Set(rooms.map((room) => room.id));
   for (const id of roomIdsReferencedByPromptState(prompts)) {
     existing.add(id);
   }
-  if (!existing.has(base)) {
-    return base;
+  if (!existing.has(freshBase)) {
+    return freshBase;
   }
   for (let index = 2; index < 10_000; index += 1) {
-    const candidate = `${base}-${index}`;
+    const candidate = `${freshBase}-${index}`;
     if (!existing.has(candidate)) {
       return candidate;
     }
   }
-  return `${base}-${Date.now()}`;
+  return `${freshBase}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
 function roomIdsReferencedByPromptState(prompts: PromptCenterState): Set<string> {

@@ -150,7 +150,8 @@ function validateDirectorHiddenGraphVisibility() {
 function validateDashboardUsesViewerAwareGraphClaims() {
   const ui = fs.readFileSync("src/ui/petConsole.ts", "utf8");
   expect(ui.includes("memoryStore.listGraphClaimsForViewer(scope, directorGraphViewer(room))"), "Director memory scope should use Director graph viewer");
-  expect(ui.includes("memoryStore.listGraphClaimsForViewer(snapshot.scope, observerGraphViewer(room, participant.id, participant.factionId))"), "Observer memory scope should use role graph viewer");
+  expect(ui.includes("const viewer = roomRoleGraphViewer(room, participant)"), "Role perspective should resolve a role graph viewer");
+  expect(ui.includes("graphClaims: dedupeMemoryGraphClaims(graphScopes.flatMap((scope) => memoryStore.listGraphClaimsForViewer(scope, viewer)))"), "Merged role perspective should query every backing scope with the role viewer");
   expect(ui.includes("memoryStore.listGraphClaimsForViewer(snapshot.scope, factionGraphViewer(room, factionId))"), "Faction memory scope should use faction graph viewer");
   expect(!ui.includes("graphClaims: memoryStore.listGraphClaims(snapshot.scope)"), "Hidden dashboard scopes should not use default public graph viewer");
 }

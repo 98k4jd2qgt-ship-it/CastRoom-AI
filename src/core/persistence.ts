@@ -138,6 +138,7 @@ export function restoreConsoleState(base: ConsoleAppState, persisted: PersistedA
       },
       flowMode: persistedRoom.flowMode ?? (persistedRoom.autoChat ? "auto_simulation" : "player_reactive"),
       freedomLevel: persistedRoom.freedomLevel ?? base.room.freedomLevel,
+      autoPace: persistedRoom.autoPace ?? base.room.autoPace,
       simulationObjective: persistedRoom.simulationObjective ?? base.room.simulationObjective,
       collaborationMode: persistedRoom.collaborationMode ?? base.room.collaborationMode,
       floorOwner: persistedRoom.floorOwner ?? base.room.floorOwner,
@@ -302,6 +303,7 @@ function sanitizeRestoredRoomForCollection(
     id: roomId,
     title: room.title ?? room.topic ?? baseRoom.title,
     flowMode: room.flowMode ?? (room.autoChat ? "auto_simulation" : "player_reactive"),
+    autoPace: room.autoPace ?? baseRoom.autoPace,
     activeDiscussionPlan: room.activeDiscussionPlan ?? null,
     activeChannelId: room.activeChannelId ?? "public",
     director: {

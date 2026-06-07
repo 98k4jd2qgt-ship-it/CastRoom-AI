@@ -21,6 +21,22 @@ function requireIncludes(label, text, patterns) {
 }
 
 const appState = read("src/core/appState.ts");
+const main = read("src/main.ts");
+const memory = read("src/core/memory.ts");
+
+const createIndex = appState.indexOf("function createRoomInState");
+const createBlock = createIndex >= 0 ? appState.slice(createIndex, createIndex + 900) : "";
+if (!createBlock) {
+  fail("createRoomInState must exist.");
+}
+
+requireIncludes("createRoomInState", createBlock, [
+  "uniqueRoomIdForPromptIsolation(normalized.rooms, normalized.prompts, nextTitle)",
+]);
+
+if (createBlock.includes("uniqueRoomId(normalized.rooms, nextTitle)")) {
+  fail("createRoomInState must not reuse the deterministic title-based room id.");
+}
 
 const deleteIndex = appState.indexOf("function deleteRoomInState");
 const deleteBlock = deleteIndex >= 0 ? appState.slice(deleteIndex, deleteIndex + 1900) : "";
@@ -61,6 +77,7 @@ const uniqueBlock = uniqueIndex >= 0 ? appState.slice(uniqueIndex, uniqueIndex +
 requireIncludes("uniqueRoomIdForPromptIsolation", uniqueBlock, [
   "roomIdsReferencedByPromptState(prompts)",
   "existing.add(id)",
+  "Date.now().toString(36)",
   "return candidate",
 ]);
 
@@ -70,6 +87,27 @@ requireIncludes("roomIdFromPromptEntry", promptEntryBlock, [
   'scope === "room" || scope === "director"',
   'scope === "room_role"',
   "targetId.indexOf",
+]);
+
+const deleteMemoryIndex = memory.indexOf("deleteRoomMemory(scope:");
+const deleteMemoryBlock = deleteMemoryIndex >= 0 ? memory.slice(deleteMemoryIndex, deleteMemoryIndex + 550) : "";
+requireIncludes("deleteRoomMemory", deleteMemoryBlock, [
+  "MemoryScope[]",
+  "return relatedScopes",
+]);
+
+const collectMemoryIndex = memory.indexOf("private collectRoomMemoryScopes");
+const collectMemoryBlock = collectMemoryIndex >= 0 ? memory.slice(collectMemoryIndex, collectMemoryIndex + 1300) : "";
+requireIncludes("collectRoomMemoryScopes", collectMemoryBlock, [
+  "this.semanticObservations.values()",
+  "this.graph.listAllClaimsSync()",
+]);
+
+const roomDeleteIndex = main.indexOf("const deletedRoomId = action.type === \"room.delete\"");
+const roomDeleteBlock = roomDeleteIndex >= 0 ? main.slice(roomDeleteIndex, roomDeleteIndex + 900) : "";
+requireIncludes("room delete persistence", roomDeleteBlock, [
+  "const deletedStoreScopes = memoryStore.deleteRoomMemory",
+  "graphScopes: Array.from(new Set([...deletedRoomMemoryScopes, ...deletedStoreScopes]))",
 ]);
 
 if (failures.length > 0) {

@@ -7,6 +7,7 @@ import type {
   ContinuityWrite,
   MemoryCompressionResult,
   MemoryEvent,
+  MemoryScope,
   RoomDirectorMove,
   RoomFactionHuddleThread,
   RoomFactionMemoryScope,
@@ -30,6 +31,7 @@ export interface RoomMemoryAdapterDeps {
 export interface RoomMemoryAdapterResult {
   results: MemoryCompressionResult[];
   observerRoleIds: string[];
+  writtenScopes: MemoryScope[];
 }
 
 export interface RoomMemoryRoomMessageInput {
@@ -112,6 +114,7 @@ export class RoomMemoryAdapter {
       return {
         results: [...results, ...observation.results],
         observerRoleIds: observation.observerRoleIds,
+        writtenScopes: uniqueScopes([roomScope(room), room.director.memoryScope, ...observation.writtenScopes]),
       };
     }
 
@@ -120,6 +123,8 @@ export class RoomMemoryAdapter {
       input: {
         scope: roomScope(room),
         speaker: message.speaker,
+        speakerId: message.speakerId,
+        speakerType: message.speakerType,
         text: message.text,
         source,
         now: this.deps.now(),
@@ -137,6 +142,7 @@ export class RoomMemoryAdapter {
     return {
       results: [...results, ...observation.results],
       observerRoleIds: observation.observerRoleIds,
+      writtenScopes: uniqueScopes([roomScope(room), room.director.memoryScope, ...observation.writtenScopes]),
     };
   }
 
@@ -167,6 +173,11 @@ export class RoomMemoryAdapter {
       return {
         results: [...results, ...observation.results],
         observerRoleIds: observation.observerRoleIds,
+        writtenScopes: uniqueScopes([
+          participant.factionId ? (`${roomScope(room)}:faction:${participant.factionId}` as MemoryScope) : undefined,
+          room.director.memoryScope,
+          ...observation.writtenScopes,
+        ]),
       };
     }
 
@@ -187,6 +198,7 @@ export class RoomMemoryAdapter {
     return {
       results: [...publicMessage.results, mention],
       observerRoleIds: publicMessage.observerRoleIds,
+      writtenScopes: uniqueScopes([participant.memoryScope, ...publicMessage.writtenScopes]),
     };
   }
 
@@ -222,6 +234,7 @@ export class RoomMemoryAdapter {
     return {
       results: [director, ...roomResult.results],
       observerRoleIds: roomResult.observerRoleIds,
+      writtenScopes: uniqueScopes([room.director.memoryScope, ...roomResult.writtenScopes]),
     };
   }
 
@@ -259,6 +272,10 @@ export class RoomMemoryAdapter {
     return {
       results,
       observerRoleIds: knownToRoleIds,
+      writtenScopes: uniqueScopes([
+        ...knownToRoleIds.map((roleId) => `${roomScope(room)}:observer:${roleId}` as MemoryScope),
+        room.director.memoryScope,
+      ]),
     };
   }
 
@@ -277,6 +294,7 @@ export class RoomMemoryAdapter {
         }),
       ],
       observerRoleIds: [],
+      writtenScopes: [`${roomScopeById(thread.roomId)}:faction:${thread.factionId}` as MemoryScope],
     };
   }
 
@@ -299,6 +317,7 @@ export class RoomMemoryAdapter {
         }),
       ],
       observerRoleIds: [],
+      writtenScopes: [input.room.director.memoryScope],
     };
   }
 
@@ -339,6 +358,7 @@ export class RoomMemoryAdapter {
         }),
       ),
       observerRoleIds,
+      writtenScopes: observerRoleIds.map((roleId) => `${roomScope(room)}:observer:${roleId}` as MemoryScope),
     };
   }
 
@@ -592,6 +612,10 @@ function roomScopeById(roomId: string): `room:${string}` {
   return `room:${roomId}`;
 }
 
+function uniqueScopes(scopes: Array<MemoryScope | undefined>): MemoryScope[] {
+  return Array.from(new Set(scopes.filter((scope): scope is MemoryScope => typeof scope === "string")));
+}
+
 function emptyRoomMemoryAdapterResult(): RoomMemoryAdapterResult {
-  return { results: [], observerRoleIds: [] };
+  return { results: [], observerRoleIds: [], writtenScopes: [] };
 }

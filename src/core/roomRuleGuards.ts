@@ -79,7 +79,9 @@ const ROOM_FACT_REWRITE_CN_TERMS = [
 ];
 const ROOM_FACT_REWRITE_CN_PATTERN = new RegExp(`(${ROOM_FACT_REWRITE_CN_TERMS.join("|")})`);
 const ROOM_ACTION_REQUIRES_JUDGE_PATTERN =
-  /(force|steal|attack|break|destroy|teleport|instantly|without permission|pick.*lock|unlock|open.*lock|lock.*open|persuade|sneak|inspect|search|try to|attempt to|judge whether)/i;
+  /(force|steal|attack|break|destroy|teleport|instantly|without permission|pick.*lock|unlock|open.*lock|lock.*open|judge whether)/i;
+const ROOM_ACTION_REQUIRES_JUDGE_CONTEXT_PATTERN =
+  /(?:\b(?:i|we)\s+(?:try|attempt)\s+to\b|\b(?:i|we)\s+(?:persuade|sneak|inspect|search)\b|\b(?:try|attempt)\s+to\s+(?:open|unlock|force|steal|attack|break|destroy|persuade|sneak|inspect|search|take|grab|move|enter|leave|use)\b)/i;
 const ROOM_ACTION_REQUIRES_JUDGE_CN_TERMS = [
   "\u5f3a\u884c",
   "\u5077\u8d70",
@@ -423,7 +425,7 @@ export function evaluateRoomAction(input: {
     };
   }
 
-  const needsJudgement = ROOM_ACTION_REQUIRES_JUDGE_PATTERN.test(text) || ROOM_ACTION_REQUIRES_JUDGE_CN_PATTERN.test(text);
+  const needsJudgement = roomActionNeedsJudgement(text);
   if (needsJudgement && freedomLevel !== "loose") {
     return {
       result: "needs_player_choice",
@@ -610,6 +612,24 @@ function resolveRoomFreedomLevel(room: RoomState): RoomFreedomLevel {
 
 function looksLikePlayerActionAttempt(text: string): boolean {
   return /(?:\bi\s+(?:try|attempt|open|take|give|move|enter|leave|use|check|look|ask|tell|push|pull)\b|\bwe\s+(?:try|attempt|open|take|give|move|enter|leave|use|check|look|ask|tell)\b|\u6211(?:\u5c1d\u8bd5|\u8981|\u53bb|\u6253\u5f00|\u62ff|\u7ed9|\u8fdb\u5165|\u79bb\u5f00|\u4f7f\u7528|\u67e5\u770b|\u95ee|\u544a\u8bc9)|\u6211\u4eec(?:\u5c1d\u8bd5|\u8981|\u53bb|\u6253\u5f00|\u62ff|\u7ed9|\u8fdb\u5165|\u79bb\u5f00|\u4f7f\u7528|\u67e5\u770b|\u95ee|\u544a\u8bc9))/i.test(text);
+}
+
+function roomActionNeedsJudgement(text: string): boolean {
+  if (ROOM_ACTION_REQUIRES_JUDGE_PATTERN.test(text) || ROOM_ACTION_REQUIRES_JUDGE_CN_PATTERN.test(text)) {
+    return true;
+  }
+  if (looksLikeCasualActionQuestion(text)) {
+    return false;
+  }
+  return ROOM_ACTION_REQUIRES_JUDGE_CONTEXT_PATTERN.test(text);
+}
+
+function looksLikeCasualActionQuestion(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized.endsWith("?") &&
+    /^(?:do|does|did|can|could|would|should|will|what|why|how|when|where|who|is|are|was|were)\b/.test(normalized)
+  );
 }
 
 function stripDirectorMention(value: string): string {

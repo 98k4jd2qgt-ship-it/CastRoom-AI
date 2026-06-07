@@ -34,10 +34,11 @@ function validateAdapterRouting() {
 
 function validateDashboardRouting() {
   expect(uiSource.includes("recentMessages: RoomMemoryMessage[]"), "Memory dashboard scope should carry recent public room messages");
-  expect(uiSource.includes("sourceType: \"compressed\" | \"graph\" | \"candidate\" | \"short\" | \"director\" | \"observer\" | \"faction\" | \"room_activity\""), "dashboard facts should distinguish room public activity");
+  expect(uiSource.includes("semanticObservations: SemanticMemoryObservation[]"), "Memory dashboard scope should carry semantic observations");
+  expect(uiSource.includes("sourceType: \"compressed\" | \"graph\" | \"candidate\" | \"short\" | \"semantic\""), "dashboard facts should distinguish semantic observations");
   expect(uiSource.includes("recentMessages: snapshot.recentMessages"), "public room scope should expose recent public activity");
-  expect(uiSource.includes("scope.kind === \"room_public\""), "recent public activity should only render in room_public scope");
-  expect(uiSource.includes("sourceType: \"room_activity\""), "recent public activity should render as room_activity facts");
+  expect(uiSource.includes("scope.semanticObservations"), "memory facts should render semantic observations");
+  expect(!uiSource.includes("kind: \"public_activity\""), "raw public activity should not render as memory facts");
   expect(uiSource.includes("observerEntries: snapshot.entries.filter((entry) => entry.visibility !== \"public\")"), "observer scopes should hide legacy public observer entries");
 }
 
@@ -62,6 +63,7 @@ async function validatePublicRoomSnapshot() {
   expect(snapshot.recentMessages.length === 1, "ordinary public chat should appear as recent public activity");
   expect(snapshot.recentMessages[0]?.text.includes("随便说两句"), "recent public activity should keep the message text");
   expect(snapshot.shortTerm.length === 0, "ordinary public chat should not become semantic short-term memory unless it has a fact signal");
+  expect(store.processSemanticObservationsForScope("room:public-routing").length === 0, "ordinary chat without semantic signal should not become semantic memory");
   expect(store.listGraphClaimInputs("room:public-routing").length === 0, "ordinary public chat should not become graph fact");
   expect(store.getRoomPromptMemory("room:public-routing").every((line) => !line.includes("随便说两句")), "ordinary public activity should not be injected as prompt fact");
 }

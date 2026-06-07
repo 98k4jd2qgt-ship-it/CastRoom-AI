@@ -5,6 +5,7 @@ import type {
   RoomPromptProfileId,
   RoomRecipe,
   RoomRecipeId,
+  RoomScheduleReason,
   RoomState,
 } from "./types";
 
@@ -315,5 +316,33 @@ export function getRoomPromptProfileByInput(value: string): RoomPromptProfile | 
 }
 
 export function getRoomDelayMs(room: RoomState): number {
+  const pace = room.autoPace;
+  if (pace) {
+    const minDelayMs = clampDelayMs(pace.minDelayMs, 500, 60_000, 3_000);
+    const maxDelayMs = clampDelayMs(pace.maxDelayMs, minDelayMs, 120_000, Math.max(minDelayMs, 8_000));
+    if (pace.randomize === false) {
+      return minDelayMs;
+    }
+    return randomDelayMs(minDelayMs, maxDelayMs);
+  }
   return room.autoSpeechPolicy.speedDelaysMs[room.speed];
+}
+
+export function getRoomAutoTimerDelayMs(room: RoomState, reason: RoomScheduleReason): number {
+  if (reason === "idle_auto" && room.autoPace?.idleFillDelayMs) {
+    return clampDelayMs(room.autoPace.idleFillDelayMs, 1_000, 180_000, 12_000);
+  }
+  return getRoomDelayMs(room);
+}
+
+function randomDelayMs(minDelayMs: number, maxDelayMs: number): number {
+  if (maxDelayMs <= minDelayMs) {
+    return minDelayMs;
+  }
+  return Math.floor(minDelayMs + Math.random() * (maxDelayMs - minDelayMs + 1));
+}
+
+function clampDelayMs(value: unknown, min: number, max: number, fallback: number): number {
+  const numeric = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.min(max, Math.max(min, Math.floor(numeric)));
 }

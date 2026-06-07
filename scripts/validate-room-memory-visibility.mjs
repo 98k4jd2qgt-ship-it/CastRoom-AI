@@ -399,8 +399,9 @@ function validateMemoryDashboardTreeWiring() {
   expect(ui.includes("const rooms = state.rooms.length > 0 ? state.rooms : [state.room]"), "memory tree should include all rooms");
   expect(ui.includes('uiText(language, "Room memory"'), "memory tree should label public room memory");
   expect(ui.includes('uiText(language, "Director memory"'), "memory tree should label Director memory");
-  expect(ui.includes('uiText(language, "Role memory"'), "memory tree should group room role memory");
-  expect(ui.includes('uiText(language, "Private and observer threads"'), "memory tree should expose private/observer thread nodes");
+  expect(ui.includes('uiText(language, "Role perspectives"'), "memory tree should group merged room role perspectives");
+  expect(ui.includes("graphScopes = uniqueMemoryScopes([participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope])"), "role perspective should merge public, private, and faction scopes");
+  expect(ui.includes('uiText(language, "Legacy private perspective"'), "memory tree should keep only legacy unmatched private perspective compatibility");
   expect(ui.includes('uiText(language, "Faction memory"'), "memory tree should group faction memory");
   expect(ui.includes('uiText(language, "One-to-one characters"'), "one-to-one character memory should sit outside rooms");
   expect(/createMemoryTreeLeaf\(\{\s*id: "global"[\s\S]*?uiText\(language, "Global"[\s\S]*?scope: globalScope[\s\S]*?\}\)/.test(ui), "global memory should be a single leaf node, not a parent group");

@@ -120,6 +120,7 @@ import {
 } from "./debatePolicy";
 import {
   getDirectorPromptProfile,
+  getRoomAutoTimerDelayMs,
   getRoomDelayMs,
   getRoomDirectorProfile,
   getRoomPromptProfile,
@@ -204,6 +205,7 @@ export {
 export {
   directorPromptProfiles,
   getDirectorPromptProfile,
+  getRoomAutoTimerDelayMs,
   getRoomDelayMs,
   getRoomDirectorProfile,
   getRoomPromptProfile,
@@ -1235,27 +1237,6 @@ function plannedTurnTarget(
     return "all";
   }
   return addressing.target;
-}
-
-function shouldTargetUserForDirectorDirective(
-  room: RoomState,
-  userInput: string,
-  modeIntent: DirectorModeIntent | undefined,
-  reason: RoomDirectorScheduleResult["reason"],
-): boolean {
-  if (reason !== "mentioned") {
-    return false;
-  }
-  if (!userInput.trim()) {
-    return false;
-  }
-  if (resolveRoomFlowMode(room) === "auto_simulation") {
-    return false;
-  }
-  if (modeIntent?.mode === "debate" || modeIntent?.mode === "team_channel") {
-    return false;
-  }
-  return /(@\s*(?:you|你)|对我|问我|让我|向我|问用户|给用户|ask the user|to the user|to me)/i.test(userInput);
 }
 
 function plannedTurnGoal(intent: RoomInputIntent, participant: RoomParticipant, index: number, room: RoomState): string {
@@ -2924,9 +2905,7 @@ export function scheduleRoomDirectorTurn(input: {
   const frame = applyFramePatch(room.frame, structuredOutcome.framePatch, input.nowLabel);
   const target: RoomMessageTarget = plan.move === "whisper"
     ? chooseDirectorWhisperTarget(room)
-    : plan.waitForUser
-      ? { targets: [{ type: "user", userId: room.userProfile.userId }] }
-      : "all";
+    : "all";
   const isPrivateWhisper = plan.move === "whisper" && room.privateWhispers === "on" && target !== "all";
   const channelVisibility = resolveRoomInputVisibility(input.userInput ?? "", room, room.activeChannelId);
   const factionVisibility = !isPrivateWhisper && channelVisibility.visibility === "faction_huddle" ? channelVisibility : null;
@@ -4508,7 +4487,7 @@ function createDirectorTurnPlan(input: {
   const continuityWrites = createContinuityWrites(input.room, move, publicUserInput, judgement);
   const secretWrites = createSecretWrites(input.room, move, publicUserInput);
   const publicText = createDirectorPlanText(input.room, move, publicUserInput, sceneDelta, judgement, modeIntent);
-  const waitForUser = Boolean(modeIntent.waitForUser) || move === "pause" || judgement?.outcome === "needs_player_choice";
+  const waitForUser = Boolean(modeIntent.waitForUser) || judgement?.outcome === "needs_player_choice";
   const privateDirectives = createDirectorPrivateDirectives(input.room, move, publicUserInput, modeIntent, input.reason);
   const publicTextReason = verdictDue ? "ruling" : directorPublicTextReason(input.room, move, publicUserInput, modeIntent, judgement);
 
@@ -4748,9 +4727,7 @@ function createDirectorPrivateDirectives(
       room,
       participant: nextParticipant,
       goal,
-      target: shouldTargetUserForDirectorDirective(room, userInput, modeIntent, reason)
-        ? { targets: [{ type: "user", userId: room.userProfile.userId }] }
-        : "all",
+      target: "all",
       reason: collaborationTask ? "follow_up" : isDebateRoom(room) ? "debate_turn" : "mode_turn",
       sourceMove: move,
       maxLength: isDebateRoom(room) ? 260 : 180,
@@ -5048,13 +5025,17 @@ function createDirectorPlanText(
     return chinese ? "局面忽然多了一层麻烦，但还没有人看清全部原因。" : "The scene gains a complication, but not everyone can see why yet.";
   }
   if (move === "choice") {
-    return chinese ? `@${player} 现在可以让某个角色先行动，继续追这条线，或暂时旁观局势推进。` : `@${player} You can ask a role to act, keep following this thread, or watch the room move on.`;
+    return chinese
+      ? "用户输入保持可选；房间会优先让角色自然接上，除非当前确实需要用户选择。"
+      : "User input remains optional; the room should continue through role flow unless a hard choice is required.";
   }
   if (move === "whisper") {
     return chinese ? "有些话只在暗处传了过去，暂时没有进入公开谈话。" : "A private thread moves quietly; it does not enter the public exchange yet.";
   }
   if (move === "pause") {
-    return chinese ? `场面暂时停在这里，等 ${player} 先决定下一步。` : `The scene holds here while ${player} decides the next step.`;
+    return chinese
+      ? "场面暂时停在这里，但用户不需要被调度；只有明确分支才等待输入。"
+      : "The scene holds here without scheduling the user; only an explicit branch should wait for input.";
   }
   return chinese
     ? `当前场景：${room.director.sceneBoard.currentScene || "还没有明确场景"}。目标：${room.director.sceneBoard.goal || "等待下一步"}。公开线索：${clues}。`

@@ -13,7 +13,6 @@ mustInclude("src/core/types.ts", [
 
 mustInclude("src/core/roomScheduler.ts", [
   "buildPrivateRoleDirective",
-  "shouldTargetUserForDirectorDirective",
   "createDirectorPrivateDirectives",
   "directorPublicTextReason",
   "shouldCommitDirectorPublicText",
@@ -21,6 +20,15 @@ mustInclude("src/core/roomScheduler.ts", [
   "shouldCommitDirectorPublicText(plan)",
   "publicTextReason: \"none\"",
   "isExplicitPublicDirectorTextRequest",
+]);
+
+mustInclude("src/core/roomScheduler.ts", [
+  'target: "all"',
+]);
+
+mustNotIncludeInFunction("src/core/roomScheduler.ts", "createDirectorPrivateDirectives", [
+  'type: "user"',
+  "shouldTargetUserForDirectorDirective(",
 ]);
 
 mustInclude("src/main.ts", [
@@ -68,4 +76,29 @@ function mustNotInclude(relativePath, markers) {
       failures.push(`${relativePath} still includes retired marker: ${marker}`);
     }
   }
+}
+
+function mustNotIncludeInFunction(relativePath, functionName, markers) {
+  const filePath = path.join(root, relativePath);
+  const source = fs.readFileSync(filePath, "utf8");
+  const fn = sliceFunction(source, functionName);
+  for (const marker of markers) {
+    if (fn.includes(marker)) {
+      failures.push(`${relativePath} ${functionName} still includes retired marker: ${marker}`);
+    }
+  }
+}
+
+function sliceFunction(source, name) {
+  const match = new RegExp(`(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*\\(`).exec(source);
+  const start = match?.index ?? -1;
+  if (start < 0) {
+    failures.push(`missing function ${name}`);
+    return "";
+  }
+  const candidates = ["\nfunction ", "\nexport function ", "\nasync function ", "\ninterface "]
+    .map((marker) => source.indexOf(marker, start + 1))
+    .filter((index) => index >= 0);
+  const next = candidates.length ? Math.min(...candidates) : -1;
+  return next < 0 ? source.slice(start) : source.slice(start, next);
 }

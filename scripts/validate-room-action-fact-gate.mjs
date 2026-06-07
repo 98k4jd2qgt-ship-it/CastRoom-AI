@@ -8,6 +8,22 @@ const failures = [];
 const scheduler = await loadScheduler();
 
 const room = createRoomFixture();
+const casualActionQuestion = roleMessage("Do you usually try to do something productive or just let it slide?");
+const casualQuestionCheck = scheduler.evaluateRoomAction({
+  room,
+  message: casualActionQuestion,
+  userInput: casualActionQuestion.text,
+});
+expect(casualQuestionCheck.result === "allowed", "Casual questions containing 'try to' should not require Director judgement.");
+
+const concreteActionAttempt = userMessage("I try to unlock the door.");
+const concreteActionCheck = scheduler.evaluateRoomAction({
+  room,
+  message: concreteActionAttempt,
+  userInput: concreteActionAttempt.text,
+});
+expect(concreteActionCheck.result !== "allowed", "Concrete first-person action attempts should still require Director judgement.");
+
 const chineseLockClaim = userMessage("\u6211\u6253\u5f00\u4e86\u9501");
 const chineseCheck = scheduler.evaluateRoomAction({
   room,
@@ -273,6 +289,21 @@ function userMessage(text) {
     kind: "user",
     speakerType: "user",
     speakerId: "local-user",
+    target: "all",
+    channelId: "public",
+    visibility: "public",
+  };
+}
+
+function roleMessage(text) {
+  return {
+    id: `role-msg-${text}`,
+    at: "01:00",
+    speaker: "New Character 4",
+    text,
+    kind: "room",
+    speakerType: "role",
+    speakerId: "archive",
     target: "all",
     channelId: "public",
     visibility: "public",

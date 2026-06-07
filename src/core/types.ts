@@ -30,12 +30,18 @@ export type PetWindowInteractionState = PetWindowMode;
 
 export type RoomRoleMemoryScope = `room:${string}:role:${string}`;
 export type RoomPrivateMemoryScope = `room:${string}:private:${string}`;
+export type RoomFactionMemoryScope = `room:${string}:faction:${string}`;
+export type RoomObserverMemoryScope = `room:${string}:observer:${string}`;
+export type RoomSystemMemoryScope = `room:${string}:system`;
 
 export type MemoryScope =
   | "global"
   | `character:${string}`
   | RoomRoleMemoryScope
   | RoomPrivateMemoryScope
+  | RoomFactionMemoryScope
+  | RoomObserverMemoryScope
+  | RoomSystemMemoryScope
   | `room:${string}`
   | `session:${string}`;
 
@@ -806,8 +812,6 @@ export interface RoomChannel {
   private: boolean;
 }
 
-export type RoomFactionMemoryScope = `room:${string}:faction:${string}`;
-
 export interface RoomFaction {
   id: string;
   name: string;
@@ -1283,8 +1287,6 @@ export interface RoomSpeechIntent {
   maxLength: number;
 }
 
-export type RoomObserverMemoryScope = `room:${string}:observer:${string}`;
-
 export type RoomObservationTag =
   | "argument"
   | "stance"
@@ -1345,6 +1347,16 @@ export type RoomScheduleReason =
 export type RoomAdvancePolicy = "wait_for_instruction" | "fill_gap" | "continuous";
 
 export type RoomSpeakerPolicy = "balanced" | "round_robin" | "spotlight" | "freeform";
+
+export type RoomAutoPacePreset = "fast" | "natural" | "slow" | "custom";
+
+export interface RoomAutoPaceSettings {
+  preset: RoomAutoPacePreset;
+  minDelayMs: number;
+  maxDelayMs: number;
+  idleFillDelayMs: number;
+  randomize: boolean;
+}
 
 export interface RoomSpeakerPolicySettings {
   mode: RoomSpeakerPolicy;
@@ -1655,8 +1667,6 @@ export interface RoomMatchState {
 export type RoomDirectorMove = "cue" | "twist" | "choice" | "judge" | "recap" | "whisper" | "pause";
 
 export type RoomKnowledgeVisibility = "public" | "known_to_user" | "known_to_roles" | "hidden_from_user";
-
-export type RoomSystemMemoryScope = `room:${string}:system`;
 
 export type RoomDirectorProfileId =
   | "host"
@@ -2265,6 +2275,7 @@ export interface RoomState {
   autoSpeechPolicy: RoomAutoSpeechPolicy;
   autoSpeechState: RoomAutoSpeechState;
   advancePolicy?: RoomAdvancePolicy;
+  autoPace?: RoomAutoPaceSettings;
   speakerPolicy?: RoomSpeakerPolicySettings;
   lastContinuationAssessment?: ContinuationAssessment | null;
   lastAdvanceDecision?: RoomAdvanceDecision | null;
@@ -2525,6 +2536,9 @@ export type ConsoleAction =
   | { type: "room.setSpeed"; speed: RoomState["speed"] }
   | { type: "room.setFreedomLevel"; freedomLevel: RoomFreedomLevel }
   | { type: "room.setAdvancePolicy"; policy: RoomAdvancePolicy }
+  | { type: "room.setAutoPacePreset"; preset: RoomAutoPacePreset }
+  | { type: "room.setAutoPaceNumberField"; field: "minDelayMs" | "maxDelayMs" | "idleFillDelayMs"; value: number }
+  | { type: "room.setAutoPaceRandomize"; randomize: boolean }
   | { type: "room.setSpeakerPolicy"; policy: RoomSpeakerPolicy }
   | { type: "room.setSpeakerPolicyNumberField"; field: "maxConsecutivePairTurns" | "lurkerBoostAfterTurns"; value: number }
   | { type: "room.setSpeakerPolicyBooleanField"; field: "recentSpeakerPenalty"; value: boolean }
@@ -2698,6 +2712,60 @@ export interface MemoryRollingSummary {
   updatedAt: string | null;
 }
 
+export type SemanticMemoryObservationKind =
+  | "trait"
+  | "preference"
+  | "habit"
+  | "relationship"
+  | "trust"
+  | "stance"
+  | "goal"
+  | "event"
+  | "item"
+  | "location"
+  | "claim"
+  | "belief"
+  | "doubt"
+  | "conflict"
+  | "reliability"
+  | "scene_pressure";
+
+export type SemanticMemoryEpistemicStatus =
+  | "observed"
+  | "inferred"
+  | "claimed"
+  | "believed"
+  | "doubted"
+  | "confirmed"
+  | "disputed"
+  | "refuted";
+
+export type SemanticMemorySubjectType = "room" | "user" | "role" | "director" | "faction" | "item" | "unknown";
+export type SemanticMemoryVisibility =
+  | "public"
+  | "known_to_roles"
+  | "faction"
+  | "director_only"
+  | "private_character"
+  | "global";
+
+export interface SemanticMemoryObservation {
+  id: string;
+  scope: MemoryScope;
+  subjectId?: string;
+  subjectType: SemanticMemorySubjectType;
+  subjectName?: string;
+  kind: SemanticMemoryObservationKind;
+  text: string;
+  epistemicStatus: SemanticMemoryEpistemicStatus;
+  confidence: number;
+  evidenceCount: number;
+  sourceMessageIds: string[];
+  visibility: SemanticMemoryVisibility;
+  createdAt: string;
+  lastUpdatedAt: string;
+}
+
 export interface MemoryCompressionJob {
   id: string;
   scope: MemoryScope;
@@ -2731,6 +2799,8 @@ export type MemoryEvent =
       input: {
         scope: `room:${string}`;
         speaker: string;
+        speakerId?: string;
+        speakerType?: ConsoleMessage["speakerType"];
         text: string;
         source: "user" | "room";
         now: Date;
@@ -2767,6 +2837,8 @@ export interface RoomMemoryMessage {
   id: string;
   scope: `room:${string}`;
   speaker: string;
+  speakerId?: string;
+  speakerType?: ConsoleMessage["speakerType"];
   source: "user" | "room";
   text: string;
   at: string;
