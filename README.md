@@ -24,7 +24,7 @@ AI service notes: [Support page](https://98k4jd2qgt-ship-it.github.io/castroom-a
 | Plain group chat | Public, private, faction, and Director channels have separate visibility boundaries. |
 | Flat memory list | Multi-perspective memory with confidence, claims, beliefs, conflicts, and confirmed facts. |
 | Manual scenario notes | A room-and-mode scoped Director Script can track hidden facts, public threads, planned beats, and continuity. |
-| Hosted character service | Local-first desktop app; users configure their own external AI endpoint when needed. |
+| Hosted character service | Windows desktop app; users configure their own external AI endpoint when needed. |
 
 | 常见形态 | CastRoom AI 的重点 |
 | --- | --- |
@@ -33,7 +33,7 @@ AI service notes: [Support page](https://98k4jd2qgt-ship-it.github.io/castroom-a
 | 普通群聊 | 公开、私聊、阵营和 Director 频道有独立可见性边界。 |
 | 扁平记忆列表 | 多视角记忆：区分置信度、说法、信念、冲突和确认事实。 |
 | 手写场景备注 | Director Script 绑定房间和模式，记录隐藏事实、公开线索、计划节拍和连续性。 |
-| 托管角色服务 | 本地优先桌面应用；外部 AI endpoint 由用户自行配置。 |
+| 托管角色服务 | Windows 桌面应用；外部 AI endpoint 由用户自行配置。 |
 
 ## What You Can Try
 
