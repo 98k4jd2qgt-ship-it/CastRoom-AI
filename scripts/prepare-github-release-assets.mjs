@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.2";
-const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-07";
+const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.3";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-09";
 const appVersion = version.replace(/^v/i, "");
 const outDir = path.join(root, "artifacts", "github-release", version);
 const portableStageDir = path.join(outDir, "portable-stage");
@@ -179,7 +179,7 @@ const releaseNotes = `# CastRoom AI ${version} - ${assetStamp}
 
 This is an early Windows test build.
 
-这是一个早期 Windows 测试构建。
+这是一个早期 Windows 测试版本。
 
 ## Download
 
@@ -191,17 +191,15 @@ ${alternativeSection}
 ## Important notes / 重要说明
 
 - The portable zip is the easiest option for testers: extract it, open the CastRoom AI folder, then run CastRoom AI.exe.
-  便携 zip 最适合测试：解压后打开 CastRoom AI 文件夹，运行 CastRoom AI.exe。
-- This build does not include a hosted AI service. Users must configure their own AI provider or local AI assets.
-  此版本不提供托管 AI 服务。用户需要自行配置外部 AI 服务，或使用本地 AI 资源。
-- Local model and runner assets are included in the portable zip and desktop installers for basic local AI chat.
-  portable zip 和安装包包含基础本地 AI 聊天所需的模型与 runner 资源。
-- Runtime data, character memory data, logs, API keys, .env files, and user data are not included in the release assets or source repository.
-  Release 资产和源码仓库不包含运行数据、角色记忆、日志、API key、.env 文件或用户数据。
+  portable zip 是最简单的测试方式：解压后打开 CastRoom AI 文件夹，运行 CastRoom AI.exe。
+- This build does not include a hosted AI service. Users must configure their own AI provider or use local AI assets when available.
+  这个版本不提供托管 AI 服务。用户需要自行配置外部 AI，或在资源可用时使用本地 AI。
+- Runtime data, character memory, chat logs, API keys, .env files, and user data are not included in the release assets or source repository.
+  Release 资产和源码仓库不包含运行数据、角色记忆、聊天记录、API key、.env 文件或用户数据。
 - Character pack instance folders are not included. The app starts from its built-in default state.
-  不包含角色包实例文件夹。应用会从内置默认状态启动。
-- The portable zip stores new local data under "portable-data" next to CastRoom AI.exe. Delete that folder to reset the test build.
-  portable zip 会把新产生的本地数据放在 CastRoom AI.exe 旁边的 portable-data 文件夹里。删除该文件夹即可重置测试构建。
+  Character pack instance folders are not included。应用会从内置默认状态启动。
+- The portable zip stores new local data under portable-data next to CastRoom AI.exe. Delete that folder to reset the test build.
+  portable zip 会把新产生的本地数据放在 CastRoom AI.exe 旁边的 portable-data 文件夹里。删除该文件夹即可重置测试包。
 - The included portable-data folders contain only empty .gitkeep placeholders.
   包内 portable-data 目录只包含空的 .gitkeep 占位文件。
 - This is a test/demo-oriented build, not a final public product release.
@@ -209,58 +207,100 @@ ${alternativeSection}
 
 ## Development log / 开发日志
 
-This update is focused on making Room sessions easier to reset, easier to read, and safer to test from a fresh download.
+This update is larger than the previous build. It focuses on safer visibility boundaries, more reliable automatic room flow, clearer memory behavior, lower token use, and a cleaner first-run package.
 
-本次更新重点是让 Room 更容易重置、更容易阅读，也让新下载的测试包更安全。
+这次更新比上个版本覆盖更多内容，重点是私密信息防泄漏、自动推演稳定性、记忆行为、token 降耗，以及更干净的首次启动包。
 
-### Room reset and memory isolation / 房间重置与记忆隔离
+### Room flow and scheduling / 房间推演与调度
 
-- New Rooms no longer reuse the old deterministic \`new-room\` scope after a deleted room is recreated.
-  删除房间后再新建房间，不再复用旧的固定 \`new-room\` 记忆 scope。
-- Deleting a Room now persists deletion for every related memory and graph scope the MemoryStore actually cleared.
-  删除房间时，会把 MemoryStore 实际清理过的相关记忆和图谱 scope 一并持久化删除。
-- Semantic observations are included in Room memory scope cleanup.
-  Room 语义观察也纳入房间记忆清理范围。
-- Public Room memory, private/faction memory, Director-only memory, and role perspectives remain separated.
-  公开房间记忆、私聊/阵营记忆、Director-only 记忆和角色视角继续保持隔离。
+- Continuous Room Flow now treats user silence, ordinary questions, weak repetition, and no obvious speaker as soft conditions. It should keep going unless a hard blocker occurs.
+  Continuous 自动推演现在会把用户沉默、普通问句、轻微重复和没有明显发言人视为软状态；除硬阻塞外应继续推进。
+- Added a timer watchdog so queued or cooling-down states can recover when the browser timer is missing, overdue, or interrupted by runtime work.
+  增加自动推演 timer 自愈逻辑，避免 UI 显示已排队但实际不派发下一轮。
+- Casual rooms can pick a role to introduce a fresh topic according to Room Rules instead of stopping because the current topic is quiet.
+  日常房间在话题接不下去时，会按 Room Rules 选择角色开新角度，而不是因为冷场停住。
+- Fill gap remains one-shot: it fills one missing beat and then observes. Continuous is the mode for ongoing autonomous flow.
+  Fill gap 仍然只补一拍；持续自动推进由 Continuous 负责。
 
-### Room UI cleanup / 房间界面精简
+### Director behavior / Director 行为
 
-- Removed the "How this room works" information card from the Room rules panel.
-  移除了 Room 规则面板里的 “How this room works / 这个房间的工作方式” 说明卡片。
-- Simplified the visible Room controls so users see controls and prompt editing first, not explanatory policy text.
-  精简可见的 Room 控制区域，让用户优先看到控制项和提示词入口，而不是解释性策略文案。
+- Director no longer treats ordinary input, short noise, debate setup text, or watcher comments as action rulings.
+  Director 不再把普通输入、乱码短句、辩论配置或观战发言误判为行动裁定。
+- Public Director output is limited to narration, hosting, phase transitions, clear action results, and necessary summaries.
+  Director 的公开发言限制为旁白、主持、阶段切换、明确行动结果和必要总结。
+- Backstage Director notes are compressed and kept in the Director channel instead of leaking scheduling text into public chat.
+  Director 后台记录会压缩并留在 Director 频道，不把调度字段刷到公开聊天。
+- Director Script is a developer tool scoped to room and mode. It is not injected into ordinary role prompts.
+  Director Script 是绑定 room + mode 的开发者工具，不会注入普通角色 prompt。
 
-### Director and room flow / Director 与房间推演
+### Privacy and visibility / 隐私与可见性
 
-- Director no longer schedules \`@You\` as the next actor during automatic Room flow.
-  自动推演时，Director 不再把 \`@You\` 安排成下一位行动者。
-- Director backstage notes are cleaned so user-instruction text does not leak into scheduling output.
-  Director 后台记录会清理用户调度式文本，避免这类内容泄漏进调度输出。
-- Continuous Room flow, fill-gap behavior, and speaker distribution remain available for multi-character testing.
-  连续推演、补空档和发言分配策略仍可用于多角色测试。
+- Added source-aware Director Script safety. Private, faction, director-only, and Director-channel content cannot become public foreshadowing, public narration, public status text, public graph, or ordinary role prompt content by default.
+  增加 Director Script 来源可见性防线。私聊、阵营、Director-only 和 Director 频道内容默认不能变成公开伏笔、公开旁白、公开状态栏、公开图谱或普通角色 prompt 内容。
+- Public status panels are sanitized so private or faction snippets do not appear in the normal room sidebar.
+  公开状态栏会做可见性清洗，避免私聊或阵营片段出现在普通房间右侧栏。
+- User @Director messages are routed to the hidden Director channel. Ordinary roles do not see them.
+  用户 @Director 消息会进入隐藏 Director 频道，普通角色不可见。
+- Public @Role mentions are visible room mentions and create a one-shot forced reply from the mentioned role.
+  公开 @角色 是可见点名，并触发一次性指定回复：被点名角色下一轮回答用户。
+- AI role output is cleaned so roles do not create accidental public scheduling or leakage through @ mentions.
+  AI 角色正文中的 @ 会被清洗，避免角色自己制造调度或泄漏。
 
-### Memory and graph behavior / 记忆与图谱行为
+### Debate mode / 辩论模式
 
-- Memory confidence and perspective graph validation remain part of the release check.
-  记忆置信度和多视角图谱验证仍然是发布检查的一部分。
-- Claimed, believed, confirmed, disputed, and hidden-scope memory boundaries continue to be checked before release.
-  说法、信念、确认事实、冲突和隐藏 scope 的边界会继续在发布前验证。
-- Public chat is routed to Room public memory; private, faction, and Director-only content stays scoped.
-  公开聊天会进入 Room public memory；私聊、阵营和 Director-only 内容继续保持各自作用域。
+- Debate setup messages containing verdict or judge terms are parsed as setup, not as immediate final rulings.
+  包含裁判、点评等词的辩论配置会按赛制配置处理，不再误触发即时裁判。
+- Strict debate flow can use structured steps so speaker policy and casual fallback do not override the scheduled debater.
+  严格辩论流程可以使用结构化步骤，避免发言分配策略或日常兜底绕过当前辩手。
+- Director hosts, transitions phases, summarizes clashes, and judges at the final step. It does not argue for either side.
+  Director 负责主持、阶段切换、争点总结和最终裁判，不替任一方辩论。
+
+### Memory and graph / 记忆与图谱
+
+- Public room memory, role perspective memory, faction memory, and Director-only memory remain separated by scope and viewer.
+  公开房间记忆、角色视角记忆、阵营记忆和 Director-only 记忆继续按 scope 与 viewer 隔离。
+- Semantic observations can appear in the Memory list and graph without being automatically promoted to confirmed facts.
+  语义观察可以显示在记忆列表和图谱中，但不会自动升级为确认事实。
+- Perspective graph display can group semantic observations by scope, subject, and category, so large memory sets do not appear as one pile of nodes.
+  视角图谱会按 scope、主体和类别分组语义观察，避免大量记忆节点堆成一团。
+- Room deletion cleanup was strengthened so recreated rooms do not inherit deleted room memory.
+  加强删除房间后的记忆清理，避免新建同名房间继承已删除房间的旧记忆。
+- Duplicate memory handling and dashboard dedup checks remain part of validation.
+  重复记忆处理和记忆面板去重仍属于发布校验范围。
+
+### Token and prompt budget / Token 与 prompt 预算
+
+- Casual room turns prefer compact speaker prompts and local scheduling instead of calling the full Director or planner every round.
+  日常房间回合优先使用 compact speaker prompt 和本地调度，不再每轮都调用完整 Director 或 planner。
+- Director and planner calls are gated to cases such as action ruling, visibility risk, strict phase control, story transition, debate ruling, or local scheduler failure.
+  Director 和 planner 调用收紧到行动裁定、可见性风险、严格阶段控制、剧情转场、辩论裁决或本地调度失败等场景。
+- Token audit records purpose and usage estimates, not full prompts, keys, or hidden script text.
+  Token 审计只记录用途和用量估算，不记录完整 prompt、key 或隐藏剧本文本。
+
+### UI stability / UI 稳定性
+
+- Room UI updates are coalesced to reduce flicker from role state changes, status refreshes, timer updates, and incoming messages.
+  房间 UI 更新做了批处理，减少角色状态、状态栏、timer 和消息同时刷新造成的闪动。
+- Input handling is safer during focus, deletion, and Chinese IME composition.
+  输入框在聚焦、删字和中文输入法组合输入时更稳定。
+- The room sidebar is simplified so ordinary users see room status and controls instead of internal diagnostics.
+  右侧房间栏更简洁，普通用户优先看到房间状态和控制项，而不是内部诊断字段。
+
+### Release safety / 发布安全
+
+- The source export and release asset checks reject API keys, .env files, runtime memory, chat logs, local data, character instance folders, build caches, and installer output in the wrong place.
+  源码导出和 Release 资产校验会拒绝 API key、.env、运行期记忆、聊天日志、本地数据、角色实例目录、构建缓存和错误位置的安装包产物。
+- The portable zip includes empty portable-data placeholders only. New user data is created after launch.
+  portable zip 只包含空的 portable-data 占位目录；新的用户数据只会在启动后生成。
 
 ## Checksums
 
-\`\`\`text
 ${checksumLines.join("\n")}
-\`\`\`
 
 ## Asset sizes
 
 ${copied.map((asset) => `- ${asset.fileName}: ${formatBytes(asset.size)}`).join("\n")}
-`;
-
-fs.writeFileSync(path.join(outDir, "RELEASE_NOTES.md"), releaseNotes, "utf8");
+`;fs.writeFileSync(path.join(outDir, "RELEASE_NOTES.md"), releaseNotes, "utf8");
 
 console.log(`GitHub release assets prepared: ${outDir}`);
 for (const asset of copied) {

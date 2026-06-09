@@ -1,4 +1,5 @@
 import type { ConsoleTurnController, ConsoleTurnStage } from "./chatTurnEngine";
+import type { AiTokenUsage } from "./types";
 
 export type AiRequestAuditScope = "console" | "room" | "config";
 export type AiRequestPurpose =
@@ -22,6 +23,7 @@ export interface AiRequestAuditEntry {
   outcome: AiRequestAuditOutcome;
   errorCode?: string;
   responseShape?: string;
+  usage?: AiTokenUsage;
 }
 
 export interface AiRequestAuditHandle {
@@ -144,6 +146,17 @@ export class AiRequestAuditLog {
     if (typeof details.responseShape === "string") {
       entry.responseShape = details.responseShape;
     }
+    if (isAiTokenUsage(details.usage)) {
+      entry.usage = details.usage;
+    }
     return entry;
   }
+}
+
+function isAiTokenUsage(value: unknown): value is AiTokenUsage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const usage = value as Partial<AiTokenUsage>;
+  return typeof usage.promptChars === "number" && typeof usage.completionChars === "number";
 }

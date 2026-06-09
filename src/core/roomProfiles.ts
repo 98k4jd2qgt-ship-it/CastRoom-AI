@@ -5,7 +5,6 @@ import type {
   RoomPromptProfileId,
   RoomRecipe,
   RoomRecipeId,
-  RoomScheduleReason,
   RoomState,
 } from "./types";
 
@@ -24,7 +23,7 @@ export const roomPromptProfiles: RoomPromptProfile[] = [
       "Reply in the user's current primary language.",
     ],
     systemPrompt:
-      "Static Room Rules layer: casual conversation mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use only visible context, respect @mentions and channel visibility, keep replies concise and distinct, allow roles to speak, stay silent, observe, wait, or re-enter after long silence with a distinct angle, avoid repeating setup text, avoid treating passing comments as long-term facts, and reply in the user's current primary language.",
+      "Static Room Rules layer: casual conversation mode for a multi-character Room, not a one-on-one chat box. Runtime identity, visible memory, collaboration state, and private directives are injected separately. Use only visible context, respect @mentions and channel visibility, keep replies concise and distinct, allow roles to speak, stay silent, observe, wait, re-enter after long silence with a distinct angle, or revive quiet/repetitive casual chat with one fresh topic within Room Rules, avoid repeating setup text, avoid treating passing comments as long-term facts, and reply in the user's current primary language.",
   },
   {
     id: "study",
@@ -328,8 +327,10 @@ export function getRoomDelayMs(room: RoomState): number {
   return room.autoSpeechPolicy.speedDelaysMs[room.speed];
 }
 
-export function getRoomAutoTimerDelayMs(room: RoomState, reason: RoomScheduleReason): number {
-  if (reason === "idle_auto" && room.autoPace?.idleFillDelayMs) {
+export type RoomAutoTimerDelayMode = "base" | "idle_gap";
+
+export function getRoomAutoTimerDelayMs(room: RoomState, delayMode: RoomAutoTimerDelayMode = "base"): number {
+  if (delayMode === "idle_gap" && room.autoPace?.idleFillDelayMs) {
     return clampDelayMs(room.autoPace.idleFillDelayMs, 1_000, 180_000, 12_000);
   }
   return getRoomDelayMs(room);

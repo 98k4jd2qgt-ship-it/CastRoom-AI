@@ -5,7 +5,7 @@ import {
 } from "./ai";
 import type { AiRequestAuditHandle, AiRequestAuditOutcome, AiRequestPurpose, AiRequestAuditScope } from "./aiRequestAudit";
 import { runOneOnOneTurn, type PipelineTurnFailure, type PipelineTurnResult, type RunPipelineInput } from "./pipeline";
-import type { AiProvider, AiProviderError } from "./types";
+import type { AiProvider, AiProviderError, AiProviderResult } from "./types";
 
 export type CloudTurnResult = PipelineTurnResult | PipelineTurnFailure;
 
@@ -141,7 +141,7 @@ async function runAuditedProviderRequest<T>(input: {
 
   try {
     const result = await input.run(withAiRequestAuditMetadata(input.config, audit));
-    input.audit.finish(audit, "success");
+    input.audit.finish(audit, "success", usageAuditDetails(result));
     return result;
   } catch (error) {
     const normalized = normalizeAiProviderError(error);
@@ -151,6 +151,11 @@ async function runAuditedProviderRequest<T>(input: {
     });
     throw normalized;
   }
+}
+
+function usageAuditDetails(result: unknown): Record<string, unknown> | undefined {
+  const usage = (result as Partial<AiProviderResult> | null | undefined)?.usage;
+  return usage ? { usage } : undefined;
 }
 
 function providerErrorResponseShape(error: AiProviderError): string | undefined {

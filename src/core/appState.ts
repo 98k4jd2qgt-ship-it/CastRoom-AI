@@ -38,8 +38,11 @@ import type {
   EditableCharacterDraft,
   DirectorScriptBoard,
   DirectorScriptItem,
+  DirectorScriptItemVisibility,
   DirectorScriptPatch,
+  DirectorScriptPublicSafety,
   DirectorScriptRevision,
+  DirectorSourceVisibility,
   PromptCenterMode,
   PromptCenterState,
   PromptCenterPromptType,
@@ -61,6 +64,7 @@ import type {
   RoomDirectorApiProfile,
   RoomDirectorState,
   RoomConstraint,
+  RoomContextBudget,
   RoomContextPanelMode,
   DirectorOverrideLogEntry,
   DeferredRequirement,
@@ -86,6 +90,7 @@ import type {
   RoomRecipeId,
   RoomRoleMemoryScope,
   RoomSceneBoard,
+  ScopedDirectorScript,
   RoomSpeakerPolicy,
   RoomSpeakerPolicySettings,
   RoomState,
@@ -134,6 +139,7 @@ export const defaultRoomAutoSpeechPolicy: RoomAutoSpeechPolicy = {
 };
 
 export const defaultRoomAdvancePolicy: RoomAdvancePolicy = "fill_gap";
+export const defaultRoomContextBudget: RoomContextBudget = "balanced";
 
 export const defaultRoomAutoPaceSettings: RoomAutoPaceSettings = {
   preset: "natural",
@@ -152,6 +158,7 @@ export const defaultRoomSpeakerPolicy: RoomSpeakerPolicySettings = {
 
 const roomSpeakerPolicyValues = new Set<RoomSpeakerPolicy>(["balanced", "round_robin", "spotlight", "freeform"]);
 const roomAutoPacePresetValues = new Set<RoomAutoPacePreset>(["fast", "natural", "slow", "custom"]);
+const roomContextBudgetValues = new Set<RoomContextBudget>(["compact", "balanced", "full"]);
 
 const roomAutoPacePresetSettings: Record<Exclude<RoomAutoPacePreset, "custom">, RoomAutoPaceSettings> = {
   fast: {
@@ -173,8 +180,10 @@ const roomAutoPacePresetSettings: Record<Exclude<RoomAutoPacePreset, "custom">, 
 
 function normalizeRoomAutoPaceSettings(settings: Partial<RoomAutoPaceSettings> | undefined): RoomAutoPaceSettings {
   const preset = settings?.preset && roomAutoPacePresetValues.has(settings.preset) ? settings.preset : defaultRoomAutoPaceSettings.preset;
-  const presetDefaults =
-    preset === "custom" ? { ...defaultRoomAutoPaceSettings, preset: "custom" as const } : roomAutoPacePresetSettings[preset];
+  if (preset !== "custom") {
+    return { ...roomAutoPacePresetSettings[preset] };
+  }
+  const presetDefaults = { ...defaultRoomAutoPaceSettings, preset: "custom" as const };
   const minDelayMs = clampNumber(settings?.minDelayMs ?? presetDefaults.minDelayMs, 500, 60_000, presetDefaults.minDelayMs);
   const maxDelayMs = clampNumber(
     settings?.maxDelayMs ?? presetDefaults.maxDelayMs,
@@ -189,6 +198,10 @@ function normalizeRoomAutoPaceSettings(settings: Partial<RoomAutoPaceSettings> |
     idleFillDelayMs: clampNumber(settings?.idleFillDelayMs ?? presetDefaults.idleFillDelayMs, 1_000, 180_000, presetDefaults.idleFillDelayMs),
     randomize: settings?.randomize ?? presetDefaults.randomize,
   };
+}
+
+function normalizeRoomContextBudget(value: RoomContextBudget | undefined): RoomContextBudget {
+  return value && roomContextBudgetValues.has(value) ? value : defaultRoomContextBudget;
 }
 
 function normalizeRoomSpeakerPolicy(policy: Partial<RoomSpeakerPolicySettings> | undefined): RoomSpeakerPolicySettings {
@@ -461,6 +474,7 @@ const defaultRoomMatchState = (): ConsoleAppState["room"]["match"] => ({
   spokenRoleIdsByRound: {},
   skippedRoleIdsByRound: {},
   deferredRequirements: [],
+  debateFlow: undefined,
   scoreboard: [],
   winCondition: "Keep the room moving with clear turns and useful progress.",
   judgeNotes: [],
@@ -940,12 +954,37 @@ const defaultSceneBoard: RoomSceneBoard = {
   updatedAt: null,
 };
 
-function createDirectorScriptItem(text: string, now: string, createdBy: DirectorScriptItem["createdBy"] = "director"): DirectorScriptItem {
+function isDirectorScriptItemVisibility(value: unknown): value is DirectorScriptItemVisibility {
+  return value === "public" || value === "director_only" || value === "known_to_roles" || value === "faction";
+}
+
+function isDirectorSourceVisibility(value: unknown): value is DirectorSourceVisibility {
+  return value === "public" ||
+    value === "private_thread" ||
+    value === "private_ai" ||
+    value === "faction_huddle" ||
+    value === "director_channel" ||
+    value === "director_only";
+}
+
+function isDirectorScriptPublicSafety(value: unknown): value is DirectorScriptPublicSafety {
+  return value === "public_safe" || value === "private_blocked" || value === "developer_revealed";
+}
+
+function createDirectorScriptItem(
+  text: string,
+  now: string,
+  createdBy: DirectorScriptItem["createdBy"] = "director",
+  options: Partial<Pick<DirectorScriptItem, "visibility" | "sourceVisibility" | "sourceMessageIds" | "publicSafety">> = {},
+): DirectorScriptItem {
   return {
     id: `script-${crypto.randomUUID()}`,
     text,
     status: "planned",
-    visibility: "director_only",
+    visibility: options.visibility ?? "director_only",
+    sourceVisibility: options.sourceVisibility,
+    sourceMessageIds: options.sourceMessageIds,
+    publicSafety: options.publicSafety,
     createdBy,
     updatedAt: now,
   };
@@ -958,14 +997,32 @@ function createDefaultDirectorScriptBoard(recipeId: RoomRecipeId = "casual", top
     premise,
     currentPhase: recipeId === "casual" ? "open conversation" : "setup",
     hiddenFacts: [],
-    openThreads: premise ? [createDirectorScriptItem(`Keep the room centered on: ${premise}`, now)] : [],
+    openThreads: premise
+      ? [
+          createDirectorScriptItem(`Keep the room centered on: ${premise}`, now, "director", {
+            visibility: "public",
+            sourceVisibility: "public",
+            publicSafety: "public_safe",
+          }),
+        ]
+      : [],
     plannedBeats: [],
     pressureSources: [],
     environmentAnchors: isSceneMode
-      ? [createDirectorScriptItem("Establish what the room can currently see, hear, or notice before forcing a plot beat.", now)]
+      ? [
+          createDirectorScriptItem("Establish what the room can currently see, hear, or notice before forcing a plot beat.", now, "director", {
+            visibility: "public",
+            sourceVisibility: "public",
+            publicSafety: "public_safe",
+          }),
+        ]
       : [],
     forbiddenReveals: [
-      createDirectorScriptItem("Do not expose director-only plans, private channel knowledge, faction knowledge, or hidden facts in public narration.", now),
+      createDirectorScriptItem("Do not expose director-only plans, private channel knowledge, faction knowledge, or hidden facts in public narration.", now, "director", {
+        visibility: "director_only",
+        sourceVisibility: "director_only",
+        publicSafety: "private_blocked",
+      }),
     ],
     continuityNotes: [],
     revisionLog: [],
@@ -988,7 +1045,16 @@ function normalizeDirectorScriptItem(raw: Partial<DirectorScriptItem> | undefine
     id: typeof raw?.id === "string" && raw.id.trim() ? raw.id : `script-item-${index + 1}`,
     text,
     status,
-    visibility: "director_only",
+    visibility: isDirectorScriptItemVisibility(raw?.visibility) ? raw.visibility : "director_only",
+    sourceVisibility: isDirectorSourceVisibility(raw?.sourceVisibility) ? raw.sourceVisibility : undefined,
+    sourceMessageIds: Array.isArray(raw?.sourceMessageIds)
+      ? raw.sourceMessageIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())).slice(-8)
+      : undefined,
+    publicSafety: isDirectorScriptPublicSafety(raw?.publicSafety)
+      ? raw.publicSafety
+      : raw?.createdBy === "developer"
+        ? "developer_revealed"
+        : undefined,
     createdBy: raw?.createdBy === "developer" ? "developer" : "director",
     updatedAt: typeof raw?.updatedAt === "string" && raw.updatedAt.trim() ? raw.updatedAt : now,
   };
@@ -1055,13 +1121,109 @@ function normalizeDirectorScriptBoard(
   };
 }
 
-function applyDirectorScriptPatch(board: DirectorScriptBoard, patch: DirectorScriptPatch, topic: string): DirectorScriptBoard {
-  const normalizedPatch = normalizeDirectorScriptBoard({ ...board, ...patch }, "casual", topic);
+function applyDirectorScriptPatch(board: DirectorScriptBoard, patch: DirectorScriptPatch, topic: string, recipeId: RoomRecipeId): DirectorScriptBoard {
+  const normalizedPatch = normalizeDirectorScriptBoard({ ...board, ...patch }, recipeId, topic);
   const revisionLog = patch.revision ? [patch.revision, ...board.revisionLog].slice(0, 30) : normalizedPatch.revisionLog;
   return {
     ...board,
     ...normalizedPatch,
     revisionLog,
+  };
+}
+
+const directorScriptModes: RoomRecipeId[] = ["casual", "story", "mystery", "study", "debate", "planning"];
+
+function normalizeDirectorScriptMode(value: unknown): RoomRecipeId {
+  return typeof value === "string" && directorScriptModes.includes(value as RoomRecipeId) ? (value as RoomRecipeId) : "casual";
+}
+
+function createScopedDirectorScript(
+  roomId: string,
+  mode: RoomRecipeId,
+  topic: string,
+  plotDirection?: Partial<PlotArcState>,
+  scriptBoard?: Partial<DirectorScriptBoard>,
+  updatedAt = new Date().toISOString(),
+): ScopedDirectorScript {
+  return {
+    scope: { roomId, mode },
+    plotDirection: normalizeRoomPlotArcState(plotDirection, topic),
+    scriptBoard: normalizeDirectorScriptBoard(scriptBoard, mode, topic),
+    updatedAt,
+  };
+}
+
+function normalizeScopedDirectorScript(
+  script: Partial<ScopedDirectorScript> | undefined,
+  roomId: string,
+  mode: RoomRecipeId,
+  topic: string,
+): ScopedDirectorScript {
+  return createScopedDirectorScript(roomId, mode, topic, script?.plotDirection, script?.scriptBoard, script?.updatedAt);
+}
+
+function normalizeDirectorScriptsByMode(
+  scripts: RoomState["directorScriptsByMode"] | undefined,
+  roomId: string,
+  activeMode: RoomRecipeId,
+  topic: string,
+  currentPlot?: Partial<PlotArcState>,
+  currentScriptBoard?: Partial<DirectorScriptBoard>,
+): Partial<Record<RoomRecipeId, ScopedDirectorScript>> {
+  const normalized: Partial<Record<RoomRecipeId, ScopedDirectorScript>> = {};
+  const source = scripts && typeof scripts === "object" ? scripts : {};
+  for (const mode of directorScriptModes) {
+    const script = source[mode];
+    if (script) {
+      normalized[mode] = normalizeScopedDirectorScript(script, roomId, mode, topic);
+    }
+  }
+  if (!normalized[activeMode]) {
+    normalized[activeMode] = createScopedDirectorScript(roomId, activeMode, topic, currentPlot, currentScriptBoard);
+  }
+  return normalized;
+}
+
+function activeDirectorScriptMode(room: RoomState): RoomRecipeId {
+  return normalizeDirectorScriptMode(room.director?.recipeId);
+}
+
+function saveActiveDirectorScript(room: RoomState, updatedAt = new Date().toISOString()): RoomState {
+  const mode = activeDirectorScriptMode(room);
+  const scripts = normalizeDirectorScriptsByMode(
+    room.directorScriptsByMode,
+    room.id,
+    mode,
+    room.topic || "Daily chat",
+    room.plot,
+    room.director.scriptBoard,
+  );
+  scripts[mode] = createScopedDirectorScript(room.id, mode, room.topic || "Daily chat", room.plot, room.director.scriptBoard, updatedAt);
+  return {
+    ...room,
+    directorScriptsByMode: scripts,
+  };
+}
+
+function applyDirectorScriptMode(room: RoomState, mode: RoomRecipeId): RoomState {
+  const saved = saveActiveDirectorScript(room);
+  const scripts = normalizeDirectorScriptsByMode(
+    saved.directorScriptsByMode,
+    saved.id,
+    mode,
+    saved.topic || "Daily chat",
+  );
+  const nextScript = scripts[mode] ?? createScopedDirectorScript(saved.id, mode, saved.topic || "Daily chat");
+  scripts[mode] = nextScript;
+  return {
+    ...saved,
+    plot: nextScript.plotDirection,
+    directorScriptsByMode: scripts,
+    director: {
+      ...saved.director,
+      recipeId: mode,
+      scriptBoard: nextScript.scriptBoard,
+    },
   };
 }
 
@@ -1139,6 +1301,9 @@ function createDefaultRoomState(
     simulationObjective,
     simulation: defaultRoomSimulationState(simulationObjective),
     plot: defaultRoomPlotArcState(options.topic ?? "Daily chat"),
+    directorScriptsByMode: {
+      [recipe.id]: createScopedDirectorScript(roomId, recipe.id, options.topic ?? "Daily chat"),
+    },
     frame: defaultRoomFrameState(),
     match: defaultRoomMatchState(),
     topic: options.topic ?? "Daily chat",
@@ -1157,6 +1322,7 @@ function createDefaultRoomState(
     autoSpeechPolicy: { ...defaultRoomAutoSpeechPolicy, speedDelaysMs: { ...defaultRoomAutoSpeechPolicy.speedDelaysMs } },
     autoSpeechState: { ...defaultRoomAutoSpeechState },
     advancePolicy: defaultRoomAdvancePolicy,
+    contextBudget: defaultRoomContextBudget,
     autoPace: { ...defaultRoomAutoPaceSettings },
     speakerPolicy: { ...defaultRoomSpeakerPolicy },
     lastContinuationAssessment: null,
@@ -1570,7 +1736,7 @@ export function reduceConsoleState(state: ConsoleAppState, action: ConsoleAction
   }
 
   if (action.type === "room.duplicate") {
-    return duplicateRoomInState(normalized, action.roomId ?? normalized.activeRoomId, action.title);
+    return duplicateRoomInState(normalized, action.roomId ?? normalized.activeRoomId, action.title, action.copyDirectorScript ?? true);
   }
 
   if (action.type === "room.delete") {
@@ -3081,7 +3247,7 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
           simulation: {
             ...state.room.simulation,
             enabled: !state.room.autoChat,
-            stopReason: state.room.autoChat ? "waiting_user" : undefined,
+            stopReason: state.room.autoChat ? undefined : state.room.simulation.stopReason,
             currentFocus: state.room.autoChat ? "Room Flow paused." : state.room.simulation.currentFocus,
           },
           autoSpeechState: {
@@ -3462,10 +3628,10 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
     case "room.setPlotArc":
       return {
         ...state,
-        room: {
+        room: saveActiveDirectorScript({
           ...state.room,
           plot: normalizeRoomPlotArcState(action.plot, state.room.topic),
-        },
+        }),
       };
     case "room.setFrameState":
       return {
@@ -3489,30 +3655,27 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
     case "room.setDirectorRecipe": {
       const recipe = roomRecipeConfig(action.recipeId);
       const identityMode = promptProfileIdentityMode(recipe.promptProfileId, state.room.activeChannelId);
+      const modeRoom = applyDirectorScriptMode(state.room, recipe.id);
       return {
         ...state,
         room: syncDebateSpeakerAssignments({
-          ...state.room,
+          ...modeRoom,
           autoChat: recipe.autoChat,
           flowMode: recipe.autoChat ? "auto_simulation" : "player_reactive",
           simulationObjective: simulationObjectiveForRecipe(recipe.id),
           promptProfileId: recipe.promptProfileId,
           privateWhispers: recipe.privateWhispers,
-          participants: state.room.participants.map((participant) => ({
+          participants: modeRoom.participants.map((participant) => ({
             ...participant,
             identityCard: normalizeIdentityCard(participant.identityCard, identityMode),
           })),
           director: {
-            ...state.room.director,
+            ...modeRoom.director,
             enabled: true,
             recipeId: recipe.id,
             profileId: recipe.directorProfileId,
-            scriptBoard: {
-              ...state.room.director.scriptBoard,
-              currentPhase: recipe.id === "casual" ? "open conversation" : "setup",
-            },
             sceneBoard: {
-              ...state.room.director.sceneBoard,
+              ...modeRoom.director.sceneBoard,
               title: recipe.name,
               mood: recipe.defaultMood,
               updatedAt: new Date().toISOString(),
@@ -3535,13 +3698,13 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
     case "room.updateDirectorScript":
       return {
         ...state,
-        room: {
+        room: saveActiveDirectorScript({
           ...state.room,
           director: {
             ...state.room.director,
-            scriptBoard: applyDirectorScriptPatch(state.room.director.scriptBoard, action.patch, state.room.topic),
+            scriptBoard: applyDirectorScriptPatch(state.room.director.scriptBoard, action.patch, state.room.topic, activeDirectorScriptMode(state.room)),
           },
-        },
+        }),
       };
     case "room.setDirectorConstraints":
       return {
@@ -3759,6 +3922,14 @@ function reduceConsoleStateInner(state: ConsoleAppState, action: ConsoleAction):
         room: {
           ...state.room,
           advancePolicy: action.policy,
+        },
+      };
+    case "room.setContextBudget":
+      return {
+        ...state,
+        room: {
+          ...state.room,
+          contextBudget: normalizeRoomContextBudget(action.budget),
         },
       };
     case "room.setAutoPacePreset": {
@@ -4577,7 +4748,18 @@ function renameRoomInState(state: ConsoleAppState, roomId: string, title: string
   }));
 }
 
-function duplicateRoomInState(state: ConsoleAppState, roomId: string, title?: string): ConsoleAppState {
+function cloneDirectorScriptsForRoom(
+  scripts: RoomState["directorScriptsByMode"] | undefined,
+  roomId: string,
+  activeMode: RoomRecipeId,
+  topic: string,
+  currentPlot?: Partial<PlotArcState>,
+  currentScriptBoard?: Partial<DirectorScriptBoard>,
+): Partial<Record<RoomRecipeId, ScopedDirectorScript>> {
+  return normalizeDirectorScriptsByMode(scripts, roomId, activeMode, topic, currentPlot, currentScriptBoard);
+}
+
+function duplicateRoomInState(state: ConsoleAppState, roomId: string, title?: string, copyDirectorScript = true): ConsoleAppState {
   const normalized = syncActiveRoom(state);
   const source = normalized.rooms.find((room) => room.id === roomId);
   if (!source) {
@@ -4585,6 +4767,13 @@ function duplicateRoomInState(state: ConsoleAppState, roomId: string, title?: st
   }
   const nextTitle = uniqueRoomTitle(normalized.rooms, title, `${source.title} Copy`);
   const nextId = uniqueRoomId(normalized.rooms, nextTitle);
+  const sourceMode = activeDirectorScriptMode(source);
+  const directorScriptsByMode = copyDirectorScript
+    ? cloneDirectorScriptsForRoom(source.directorScriptsByMode, nextId, sourceMode, source.topic, source.plot, source.director.scriptBoard)
+    : {
+        [sourceMode]: createScopedDirectorScript(nextId, sourceMode, source.topic),
+      };
+  const activeScript = directorScriptsByMode[sourceMode] ?? createScopedDirectorScript(nextId, sourceMode, source.topic);
   const room: RoomState = {
     ...source,
     id: nextId,
@@ -4598,6 +4787,8 @@ function duplicateRoomInState(state: ConsoleAppState, roomId: string, title?: st
     },
     activeDiscussionPlan: null,
     collaborationPlan: null,
+    plot: activeScript.plotDirection,
+    directorScriptsByMode,
     floorOwner: { type: "none" },
     turnPhase: "wait",
     lastTerminationReason: null,
@@ -4621,6 +4812,7 @@ function duplicateRoomInState(state: ConsoleAppState, roomId: string, title?: st
     director: {
       ...source.director,
       memoryScope: `room:${nextId}:system`,
+      scriptBoard: activeScript.scriptBoard,
       sceneBoard: {
         ...source.director.sceneBoard,
         title: nextTitle,
@@ -4930,11 +5122,21 @@ function withPromptPresetError(state: ConsoleAppState, error: string): ConsoleAp
 
 function normalizeRoomForRuntime(room: RoomState, packs: CharacterPackSummary[]): RoomState {
   const title = normalizeRoomTitle(room.title, room.topic || "Room");
-  const id = room.id || "demo-room";
+  const id = room.id || `${slugifyRoomId(title || room.topic || "room")}-${crypto.randomUUID().slice(0, 8)}`;
   const activeChannelId = normalizeActiveChannelId(room, room.activeChannelId ?? "public");
   const simulationObjective = room.simulationObjective ?? simulationObjectiveForPrompt(room.promptProfileId, activeChannelId);
   const simulation = room.simulation ?? defaultRoomSimulationState(simulationObjective);
   const topic = room.topic || "Daily chat";
+  const activeScriptMode = normalizeDirectorScriptMode(room.director?.recipeId);
+  const directorScriptsByMode = normalizeDirectorScriptsByMode(
+    room.directorScriptsByMode,
+    id,
+    activeScriptMode,
+    topic,
+    room.plot,
+    room.director.scriptBoard,
+  );
+  const activeDirectorScript = directorScriptsByMode[activeScriptMode] ?? createScopedDirectorScript(id, activeScriptMode, topic, room.plot, room.director.scriptBoard);
   const normalizedRoom: RoomState = {
     ...room,
     id,
@@ -4952,13 +5154,15 @@ function normalizeRoomForRuntime(room: RoomState, packs: CharacterPackSummary[])
       uncertaintyProfile: simulation.uncertaintyProfile ?? "balanced",
       openHooks: simulation.openHooks ?? [],
     },
-    plot: normalizeRoomPlotArcState(room.plot, topic),
+    plot: activeDirectorScript.plotDirection,
+    directorScriptsByMode,
     frame: normalizeRoomFrameState(room.frame),
     match: {
       ...defaultRoomMatchState(),
       ...(room.match ?? {}),
     },
     channelReadState: room.channelReadState ?? {},
+    contextBudget: normalizeRoomContextBudget(room.contextBudget),
     autoPace: normalizeRoomAutoPaceSettings(room.autoPace),
     speakerPolicy: normalizeRoomSpeakerPolicy(room.speakerPolicy),
     privateThreads: normalizeRoomPrivateThreads(room, id),
@@ -4977,7 +5181,8 @@ function normalizeRoomForRuntime(room: RoomState, packs: CharacterPackSummary[])
     director: {
       ...room.director,
       memoryScope: `room:${id}:system`,
-      scriptBoard: normalizeDirectorScriptBoard(room.director.scriptBoard, room.director.recipeId ?? "casual", topic),
+      recipeId: activeScriptMode,
+      scriptBoard: activeDirectorScript.scriptBoard,
     },
     messages: (room.messages ?? []).map((message) => ({
       target: "all" as const,

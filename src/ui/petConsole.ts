@@ -3469,7 +3469,11 @@ function renderMemoryGraphPanel(
       },
       expandedNodeIds: graphState.expandedNodeIds,
     };
-    return mergeMemoryGraphViews(graphScopes().map((scope) => memoryStore.getGraphView({ ...contextBase, scope })));
+    const claimViews = graphScopes().map((scope) => memoryStore.getGraphView({ ...contextBase, scope }));
+    const semanticView = selectedScope
+      ? buildSemanticObservationGraphView(selectedScope, graphState, language)
+      : emptyMemoryGraphView({ mode: graphState.mode });
+    return mergeMemoryGraphViews([...claimViews, semanticView]);
   };
   const queryGraphView = async (): Promise<MemoryGraphViewModel> => {
     if (graphScopes().length > 1) {
@@ -3523,7 +3527,7 @@ function renderMemoryGraphPanel(
       syncGraphDataset();
       void draw();
     }, (nodeId) => {
-      if (nodeId.startsWith("group:")) {
+      if (nodeId.startsWith("group:") || nodeId.startsWith("semantic-group:")) {
         const expanded = new Set(graphState.expandedNodeIds);
         if (expanded.has(nodeId)) {
           expanded.delete(nodeId);
@@ -3566,17 +3570,22 @@ function shouldUseFallbackMemoryGraphView(
   );
 }
 
+function emptyMemoryGraphView(input: { mode?: MemoryGraphGovernanceMode } = {}): MemoryGraphViewModel {
+  return {
+    nodes: [],
+    edges: [],
+    filters: {},
+    mode: input.mode,
+    hiddenPrivateCount: 0,
+    visibleClaimCount: 0,
+    modeClaimCount: 0,
+    pendingReviewCount: 0,
+  };
+}
+
 function mergeMemoryGraphViews(views: MemoryGraphViewModel[]): MemoryGraphViewModel {
   if (views.length === 0) {
-    return {
-      nodes: [],
-      edges: [],
-      filters: {},
-      hiddenPrivateCount: 0,
-      visibleClaimCount: 0,
-      modeClaimCount: 0,
-      pendingReviewCount: 0,
-    };
+    return emptyMemoryGraphView();
   }
   if (views.length === 1) {
     return views[0];
@@ -3610,6 +3619,491 @@ function mergeMemoryGraphViews(views: MemoryGraphViewModel[]): MemoryGraphViewMo
     modeClaimCount: views.reduce((sum, view) => sum + (view.modeClaimCount ?? 0), 0),
     pendingReviewCount: views.reduce((sum, view) => sum + (view.pendingReviewCount ?? 0), 0),
   };
+}
+
+function buildSemanticObservationGraphView(
+  scope: MemoryDashboardScope,
+  graphState: MemoryGraphUiState,
+  language: ConsoleAppState["language"],
+): MemoryGraphViewModel {
+  const scopeNodeId = `scope:${scope.scope}`;
+  const expanded = new Set(graphState.expandedNodeIds);
+  const nodes = new Map<string, MemoryGraphViewNode>();
+  const edges = new Map<string, MemoryGraphViewEdge>();
+  const grouped = new Map<string, {
+    subject: MemoryGraphViewNode;
+    group: MemoryGraphViewNode;
+    observations: SemanticMemoryObservation[];
+  }>();
+
+  const modeEligibleObservations = scope.semanticObservations.filter((observation) => (
+    semanticObservationMatchesGraphFilters(observation, scope, graphState, false)
+  ));
+  const visibleObservations = modeEligibleObservations.filter((observation) => (
+    semanticObservationMatchesGraphFilters(observation, scope, graphState, true)
+  ));
+
+  if (visibleObservations.length === 0) {
+    return emptyMemoryGraphView({ mode: graphState.mode });
+  }
+
+  const scopeNode: MemoryGraphViewNode = {
+    id: scopeNodeId,
+    kind: "scope",
+    label: scope.title,
+    subtitle: scope.visibilityHint || scope.subtitle,
+    scope: scope.scope,
+    graphSyncState: "unsynced",
+  };
+  nodes.set(scopeNode.id, scopeNode);
+
+  for (const observation of visibleObservations) {
+    const subjectKey = semanticObservationSubjectKey(observation, scope);
+    const subjectId = `semantic-subject:${memoryGraphIdPart(scope.scope)}:${memoryGraphIdPart(subjectKey)}`;
+    const subjectLabel = semanticObservationSubjectLabel(observation, scope, language);
+    const subjectNode: MemoryGraphViewNode = {
+      id: subjectId,
+      kind: "entity",
+      label: subjectLabel,
+      subtitle: semanticObservationSubjectSubtitle(observation, language),
+      scope: scope.scope,
+      entityRole: "subject",
+      nodeKind: semanticObservationSubjectNodeKind(observation),
+      visibility: semanticObservationVisibility(observation),
+      graphSyncState: "unsynced",
+    };
+    if (!nodes.has(subjectId)) {
+      nodes.set(subjectId, subjectNode);
+      edges.set(`semantic-edge:${scopeNodeId}:${subjectId}`, {
+        id: `semantic-edge:${scopeNodeId}:${subjectId}`,
+        from: scopeNodeId,
+        to: subjectId,
+        type: "ABOUT",
+        label: "ABOUT",
+        visibility: semanticObservationVisibility(observation),
+        dashed: semanticObservationVisibility(observation) !== "public" && semanticObservationVisibility(observation) !== "global",
+      });
+    }
+
+    const groupKey = `${subjectKey}:${observation.kind}`;
+    const groupId = `semantic-group:${memoryGraphIdPart(scope.scope)}:${memoryGraphIdPart(subjectKey)}:${memoryGraphIdPart(observation.kind)}`;
+    const existing = grouped.get(groupKey);
+    if (existing) {
+      existing.observations.push(observation);
+      continue;
+    }
+    const groupNode: MemoryGraphViewNode = {
+      id: groupId,
+      kind: "group",
+      label: semanticObservationKindLabel(observation.kind, language),
+      subtitle: semanticObservationGroupSubtitle(observation.kind, 1, language),
+      scope: scope.scope,
+      groupKind: semanticObservationGroupKind(observation),
+      groupCount: 1,
+      semanticKind: observation.kind,
+      categoryGroup: semanticObservationCategoryGroup(observation.kind),
+      visibility: semanticObservationVisibility(observation),
+      graphSyncState: "unsynced",
+      text: observation.text,
+      sourceClaimIds: [observation.id],
+    };
+    grouped.set(groupKey, {
+      subject: subjectNode,
+      group: groupNode,
+      observations: [observation],
+    });
+    nodes.set(groupNode.id, groupNode);
+    edges.set(`semantic-edge:${subjectId}:${groupId}`, {
+      id: `semantic-edge:${subjectId}:${groupId}`,
+      from: subjectId,
+      to: groupId,
+      type: "ABOUT",
+      label: "ABOUT",
+      visibility: semanticObservationVisibility(observation),
+      dashed: semanticObservationVisibility(observation) !== "public" && semanticObservationVisibility(observation) !== "global",
+    });
+  }
+
+  let truncated = false;
+  for (const entry of grouped.values()) {
+    const observations = entry.observations.sort((left, right) => right.lastUpdatedAt.localeCompare(left.lastUpdatedAt));
+    const groupNode = nodes.get(entry.group.id);
+    if (groupNode) {
+      groupNode.groupCount = observations.length;
+      groupNode.subtitle = semanticObservationGroupSubtitle(observations[0]?.kind ?? "claim", observations.length, language);
+      groupNode.text = observations.slice(0, 5).map((observation) => observation.text).join("\n");
+      groupNode.sourceClaimIds = observations.map((observation) => observation.id);
+    }
+    if (!expanded.has(entry.group.id)) {
+      continue;
+    }
+    const expandedObservations = observations.slice(0, MEMORY_GRAPH_GROUP_EXPANDED_LIMIT);
+    truncated = truncated || observations.length > expandedObservations.length;
+    for (const observation of expandedObservations) {
+      const observationNodeId = `semantic-observation:${memoryGraphIdPart(observation.id)}`;
+      const claimKind = semanticObservationClaimKind(observation.kind);
+      const status = semanticObservationClaimStatus(observation.epistemicStatus);
+      const graphEpistemicStatus = semanticObservationGraphEpistemicStatus(observation.epistemicStatus);
+      const visibility = semanticObservationVisibility(observation);
+      const observationNode: MemoryGraphViewNode = {
+        id: observationNodeId,
+        kind: "claim",
+        label: memoryGraphShortCaption(observation.text, 42),
+        subtitle: `${observation.kind} · ${observation.epistemicStatus} · ${Math.round(observation.confidence * 100)}%`,
+        scope: scope.scope,
+        claimKind,
+        status,
+        epistemicStatus: graphEpistemicStatus,
+        promptUse: semanticObservationPromptUse(observation.epistemicStatus),
+        visibility,
+        authority: "system",
+        confidence: observation.confidence,
+        evidenceCount: observation.evidenceCount,
+        text: observation.text,
+        sourceClaimId: observation.id,
+        semanticKind: observation.kind,
+        categoryGroup: semanticObservationCategoryGroup(observation.kind),
+        relationshipType: semanticObservationRelationshipType(observation),
+        relationCategory: semanticObservationRelationCategory(observation.kind),
+        graphSyncState: "unsynced",
+        reasonChain: observation.sourceMessageIds.length > 0
+          ? [{ type: "observation", text: `sources: ${observation.sourceMessageIds.length}` }]
+          : undefined,
+      };
+      nodes.set(observationNode.id, observationNode);
+      edges.set(`semantic-edge:${entry.group.id}:${observationNode.id}`, {
+        id: `semantic-edge:${entry.group.id}:${observationNode.id}`,
+        from: entry.group.id,
+        to: observationNode.id,
+        type: semanticObservationEdgeType(observation),
+        label: semanticObservationEdgeType(observation),
+        visibility,
+        dashed: visibility !== "public" && visibility !== "global",
+      });
+    }
+  }
+
+  return {
+    nodes: Array.from(nodes.values()),
+    edges: Array.from(edges.values()),
+    filters: {},
+    mode: graphState.mode,
+    truncated,
+    hiddenPrivateCount: visibleObservations.filter((observation) => {
+      const visibility = semanticObservationVisibility(observation);
+      return visibility !== "public" && visibility !== "global";
+    }).length,
+    visibleClaimCount: visibleObservations.length,
+    modeClaimCount: modeEligibleObservations.length,
+    pendingReviewCount: visibleObservations.filter((observation) => semanticObservationClaimStatus(observation.epistemicStatus) === "needs_review").length,
+  };
+}
+
+function semanticObservationMatchesGraphFilters(
+  observation: SemanticMemoryObservation,
+  scope: MemoryDashboardScope,
+  graphState: MemoryGraphUiState,
+  includeMode: boolean,
+): boolean {
+  const claimKind = semanticObservationClaimKind(observation.kind);
+  const status = semanticObservationClaimStatus(observation.epistemicStatus);
+  const epistemicStatus = semanticObservationGraphEpistemicStatus(observation.epistemicStatus);
+  const visibility = semanticObservationVisibility(observation);
+  if (graphState.kind !== "all" && graphState.kind !== claimKind) {
+    return false;
+  }
+  if (graphState.status !== "all" && graphState.status !== status) {
+    return false;
+  }
+  if (graphState.epistemic !== "all" && graphState.epistemic !== epistemicStatus) {
+    return false;
+  }
+  if (graphState.visibility !== "all" && graphState.visibility !== visibility) {
+    return false;
+  }
+  if (graphState.search.trim()) {
+    const needle = graphState.search.trim().toLowerCase();
+    const haystack = [
+      observation.text,
+      observation.kind,
+      observation.epistemicStatus,
+      observation.visibility,
+      observation.subjectName,
+      observation.subjectId,
+      scope.title,
+      scope.subtitle,
+    ].filter(Boolean).join(" ").toLowerCase();
+    if (!haystack.includes(needle)) {
+      return false;
+    }
+  }
+  if (!includeMode || graphState.mode === "browse") {
+    return true;
+  }
+  if (graphState.mode === "conflicts") {
+    return observation.kind === "conflict" || observation.epistemicStatus === "disputed" || observation.epistemicStatus === "refuted";
+  }
+  if (graphState.mode === "visibility") {
+    return visibility !== "public" && visibility !== "global";
+  }
+  if (graphState.mode === "quality") {
+    return observation.confidence < 0.45 || observation.epistemicStatus === "refuted";
+  }
+  if (graphState.mode === "duplicates") {
+    return false;
+  }
+  return true;
+}
+
+function semanticObservationSubjectKey(observation: SemanticMemoryObservation, scope: MemoryDashboardScope): string {
+  return `${observation.subjectType}:${observation.subjectId || observation.subjectName || scope.scope}`;
+}
+
+function semanticObservationSubjectLabel(
+  observation: SemanticMemoryObservation,
+  scope: MemoryDashboardScope,
+  language: ConsoleAppState["language"],
+): string {
+  if (observation.subjectName?.trim()) {
+    return observation.subjectName.trim();
+  }
+  if (observation.subjectId?.trim()) {
+    return observation.subjectId.trim();
+  }
+  if (observation.subjectType === "room") {
+    return scope.title;
+  }
+  const labels: Record<SemanticMemoryObservation["subjectType"], [string, string]> = {
+    room: ["Room", "房间"],
+    user: ["User", "用户"],
+    role: ["Role", "角色"],
+    director: ["Director", "导演"],
+    faction: ["Faction", "阵营"],
+    item: ["Item", "物品"],
+    unknown: ["Unknown", "未知"],
+  };
+  return memoryGraphText(language, `semanticSubject${capitalizeMemoryGraphKey(observation.subjectType)}`, labels[observation.subjectType][0]);
+}
+
+function semanticObservationSubjectSubtitle(
+  observation: SemanticMemoryObservation,
+  language: ConsoleAppState["language"],
+): string {
+  const label = memoryGraphText(language, "semanticSubject", "semantic subject");
+  return `${label} · ${observation.subjectType}`;
+}
+
+function semanticObservationSubjectNodeKind(observation: SemanticMemoryObservation): MemoryGraphNodeKind {
+  if (observation.subjectType === "role") {
+    return "room_participant";
+  }
+  if (observation.subjectType === "director") {
+    return "director";
+  }
+  if (observation.subjectType === "faction") {
+    return "faction";
+  }
+  if (observation.subjectType === "item") {
+    return "item";
+  }
+  if (observation.subjectType === "user") {
+    return "user";
+  }
+  return "room";
+}
+
+function semanticObservationClaimKind(kind: SemanticMemoryObservation["kind"]): MemoryGraphClaimKind {
+  if (kind === "trait" || kind === "habit" || kind === "reliability") {
+    return "identity";
+  }
+  if (kind === "preference") {
+    return "preference";
+  }
+  if (kind === "relationship" || kind === "trust") {
+    return "relationship";
+  }
+  if (kind === "stance" || kind === "claim" || kind === "belief" || kind === "doubt") {
+    return "stance";
+  }
+  if (kind === "goal") {
+    return "goal";
+  }
+  if (kind === "event" || kind === "location" || kind === "scene_pressure") {
+    return "scene";
+  }
+  if (kind === "item") {
+    return "item";
+  }
+  if (kind === "conflict") {
+    return "conflict";
+  }
+  return "fact";
+}
+
+function semanticObservationClaimStatus(status: SemanticMemoryEpistemicStatus): MemoryGraphClaimStatus {
+  if (status === "confirmed") {
+    return "active";
+  }
+  if (status === "disputed") {
+    return "disputed";
+  }
+  if (status === "refuted") {
+    return "rejected";
+  }
+  return "needs_review";
+}
+
+function semanticObservationGraphEpistemicStatus(status: SemanticMemoryEpistemicStatus): MemoryGraphEpistemicStatus {
+  return status === "inferred" ? "observed" : status as MemoryGraphEpistemicStatus;
+}
+
+function semanticObservationVisibility(observation: SemanticMemoryObservation): MemoryGraphVisibility {
+  return observation.visibility as MemoryGraphVisibility;
+}
+
+function semanticObservationPromptUse(status: SemanticMemoryEpistemicStatus) {
+  if (status === "confirmed") {
+    return "fact" as const;
+  }
+  if (status === "refuted" || status === "disputed") {
+    return "none" as const;
+  }
+  return "belief" as const;
+}
+
+function semanticObservationRelationCategory(kind: SemanticMemoryObservation["kind"]): MemoryGraphRelationCategory {
+  if (kind === "claim" || kind === "belief" || kind === "doubt" || kind === "reliability") {
+    return "cognition";
+  }
+  if (kind === "trait" || kind === "habit" || kind === "preference" || kind === "stance") {
+    return "attitude";
+  }
+  if (kind === "relationship" || kind === "trust") {
+    return "social";
+  }
+  if (kind === "goal") {
+    return "goal";
+  }
+  if (kind === "event" || kind === "item" || kind === "location" || kind === "scene_pressure") {
+    return "world";
+  }
+  return "observation";
+}
+
+function semanticObservationRelationshipType(observation: SemanticMemoryObservation): string {
+  if (observation.epistemicStatus === "claimed" || observation.kind === "claim") {
+    return "claims";
+  }
+  if (observation.epistemicStatus === "believed" || observation.kind === "belief") {
+    return "believes";
+  }
+  if (observation.epistemicStatus === "doubted" || observation.kind === "doubt") {
+    return "doubts";
+  }
+  if (observation.epistemicStatus === "confirmed") {
+    return "knows";
+  }
+  if (observation.epistemicStatus === "refuted") {
+    return "refutes";
+  }
+  return observation.kind;
+}
+
+function semanticObservationEdgeType(observation: SemanticMemoryObservation): MemoryGraphViewEdge["type"] {
+  if (observation.epistemicStatus === "claimed" || observation.kind === "claim") {
+    return "CLAIMS";
+  }
+  if (observation.epistemicStatus === "believed" || observation.kind === "belief") {
+    return "BELIEVES";
+  }
+  if (observation.epistemicStatus === "doubted" || observation.kind === "doubt") {
+    return "DOUBTS";
+  }
+  if (observation.epistemicStatus === "confirmed") {
+    return "KNOWS";
+  }
+  if (observation.epistemicStatus === "refuted") {
+    return "REFUTES";
+  }
+  return "ABOUT";
+}
+
+function semanticObservationGroupKind(observation: SemanticMemoryObservation): MemoryGraphViewNode["groupKind"] {
+  if (observation.kind === "conflict" || observation.epistemicStatus === "disputed") {
+    return "conflict";
+  }
+  if (observation.epistemicStatus === "refuted" || observation.confidence < 0.45) {
+    return "quality";
+  }
+  if (observation.visibility === "director_only" || observation.visibility === "known_to_roles" || observation.visibility === "private_character") {
+    return "hidden";
+  }
+  if (observation.visibility === "faction" || observation.kind === "goal") {
+    return "faction_strategy";
+  }
+  if (observation.kind === "event" || observation.kind === "item" || observation.kind === "location" || observation.kind === "scene_pressure") {
+    return "continuity";
+  }
+  return "fact";
+}
+
+function semanticObservationCategoryGroup(kind: SemanticMemoryObservation["kind"]): string {
+  if (kind === "trait" || kind === "habit" || kind === "preference" || kind === "reliability") {
+    return "profile";
+  }
+  if (kind === "claim" || kind === "belief" || kind === "doubt" || kind === "stance") {
+    return "cognition";
+  }
+  if (kind === "relationship" || kind === "trust") {
+    return "relationship";
+  }
+  if (kind === "event" || kind === "item" || kind === "location" || kind === "scene_pressure") {
+    return "world";
+  }
+  return kind;
+}
+
+function semanticObservationKindLabel(kind: SemanticMemoryObservation["kind"], language: ConsoleAppState["language"]): string {
+  const labels: Record<SemanticMemoryObservation["kind"], [string, string]> = {
+    trait: ["Traits", "特征"],
+    preference: ["Preferences", "偏好"],
+    habit: ["Habits", "习惯"],
+    relationship: ["Relationships", "关系"],
+    trust: ["Trust", "信任"],
+    stance: ["Stances", "立场"],
+    goal: ["Goals", "目标"],
+    event: ["Events", "事件"],
+    item: ["Items", "物品"],
+    location: ["Locations", "地点"],
+    claim: ["Claims", "说法"],
+    belief: ["Beliefs", "信念"],
+    doubt: ["Doubts", "怀疑"],
+    conflict: ["Conflicts", "冲突"],
+    reliability: ["Reliability", "可信度"],
+    scene_pressure: ["Scene Pressure", "场景压力"],
+  };
+  return memoryGraphText(language, `semanticKind${capitalizeMemoryGraphKey(kind)}`, labels[kind][0]);
+}
+
+function semanticObservationGroupSubtitle(
+  kind: SemanticMemoryObservation["kind"],
+  count: number,
+  language: ConsoleAppState["language"],
+): string {
+  const noun = memoryGraphText(language, "semanticObservations", "observations");
+  return `${semanticObservationKindLabel(kind, language)} · ${count} ${noun}`;
+}
+
+function memoryGraphIdPart(value: string): string {
+  return encodeURIComponent(value).replace(/%/g, "_");
+}
+
+function capitalizeMemoryGraphKey(value: string): string {
+  return value
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
 }
 
 function memoryGraphViewerLabel(
@@ -3700,6 +4194,9 @@ function buildMemoryGraphPerspectiveRenderView(
 }
 
 function shouldGroupMemoryGraphClaims(view: MemoryGraphViewModel, viewerKey: string): boolean {
+  if (view.nodes.some((node) => node.id.startsWith("semantic-group:"))) {
+    return false;
+  }
   const claimCount = view.nodes.filter((node) => node.kind === "claim").length;
   if (claimCount >= MEMORY_GRAPH_GROUP_THRESHOLD) {
     return true;
@@ -5923,14 +6420,38 @@ function dedupeMemoryGraphClaims(claims: MemoryGraphClaim[]): MemoryGraphClaim[]
 }
 
 function dedupeSemanticObservations(observations: SemanticMemoryObservation[]): SemanticMemoryObservation[] {
-  const seen = new Set<string>();
-  return observations.filter((observation) => {
-    if (seen.has(observation.id)) {
-      return false;
-    }
-    seen.add(observation.id);
-    return true;
-  });
+  const byKey = new Map<string, SemanticMemoryObservation>();
+  for (const observation of observations) {
+    const key = semanticObservationDashboardDedupeKey(observation);
+    const current = byKey.get(key);
+    byKey.set(key, current ? preferredSemanticObservation(current, observation) : observation);
+  }
+  const selectedIds = new Set([...byKey.values()].map((observation) => observation.id));
+  return observations.filter((observation) => selectedIds.has(observation.id));
+}
+
+function semanticObservationDashboardDedupeKey(observation: SemanticMemoryObservation): string {
+  const sourceKey = observation.sourceMessageIds
+    .filter(Boolean)
+    .sort()
+    .join("|");
+  const subjectKey = observation.subjectId ?? observation.subjectName ?? observation.subjectType;
+  if (sourceKey) {
+    return `${observation.subjectType}:${subjectKey}:${observation.kind}:${observation.epistemicStatus}:source:${sourceKey}`;
+  }
+  return `${observation.subjectType}:${subjectKey}:${observation.kind}:${observation.epistemicStatus}:text:${memoryDashboardFactDedupeKey(observation.text)}`;
+}
+
+function preferredSemanticObservation(left: SemanticMemoryObservation, right: SemanticMemoryObservation): SemanticMemoryObservation {
+  const leftRoleScoped = left.scope.includes(":role:");
+  const rightRoleScoped = right.scope.includes(":role:");
+  if (leftRoleScoped !== rightRoleScoped) {
+    return rightRoleScoped ? right : left;
+  }
+  if (right.evidenceCount !== left.evidenceCount) {
+    return right.evidenceCount > left.evidenceCount ? right : left;
+  }
+  return new Date(right.lastUpdatedAt).getTime() > new Date(left.lastUpdatedAt).getTime() ? right : left;
 }
 
 function createRoomRoleMemoryScope(
@@ -5944,7 +6465,7 @@ function createRoomRoleMemoryScope(
   const factionSnapshot = participant.factionId && participant.factionId !== "neutral"
     ? memoryStore.getFactionMemorySnapshot(roomScope, participant.factionId)
     : undefined;
-  const graphScopes = uniqueMemoryScopes([participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope]);
+  const graphScopes = uniqueMemoryScopes([roomScope, participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope]);
   const viewer = roomRoleGraphViewer(room, participant);
   return createMemoryDashboardScope({
     scope: participant.memoryScope,
@@ -6841,6 +7362,7 @@ function labelledField(labelText: string, control: HTMLElement): HTMLElement {
 function buildMemoryDashboardFacts(scope: MemoryDashboardScope): MemoryDashboardFact[] {
   const facts: MemoryDashboardFact[] = [];
   const persistentDedupeKeys = new Set<string>();
+  const semanticSourceMessageIds = new Set<string>();
   for (const memory of scope.longTerm) {
     const key = memoryDashboardFactDedupeKey(memory.text);
     if (key && persistentDedupeKeys.has(key)) {
@@ -6964,6 +7486,9 @@ function buildMemoryDashboardFacts(scope: MemoryDashboardScope): MemoryDashboard
     if (key) {
       persistentDedupeKeys.add(key);
     }
+    for (const sourceMessageId of observation.sourceMessageIds) {
+      semanticSourceMessageIds.add(sourceMessageId);
+    }
     facts.push({
       id: observation.id,
       group: observation.epistemicStatus === "disputed" || observation.epistemicStatus === "refuted" ? "review" : "short",
@@ -6983,6 +7508,12 @@ function buildMemoryDashboardFacts(scope: MemoryDashboardScope): MemoryDashboard
     const key = memoryDashboardFactDedupeKey(mention.normalizedText);
     if (key && persistentDedupeKeys.has(key)) {
       continue;
+    }
+    if (mention.sourceMessageIds.some((sourceMessageId) => semanticSourceMessageIds.has(sourceMessageId))) {
+      continue;
+    }
+    if (key) {
+      persistentDedupeKeys.add(key);
     }
     facts.push({
       id: mention.id,

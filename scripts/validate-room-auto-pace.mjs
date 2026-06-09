@@ -23,6 +23,8 @@ mustInclude(appState, "minDelayMs: 3_000", "natural min delay");
 mustInclude(appState, "maxDelayMs: 8_000", "natural max delay");
 mustInclude(appState, "idleFillDelayMs: 12_000", "natural idle fill delay");
 mustInclude(appState, "normalizeRoomAutoPaceSettings", "auto pace normalization");
+mustInclude(appState, 'if (preset !== "custom")', "non-custom auto pace presets ignore stale custom timing values");
+mustInclude(appState, "return { ...roomAutoPacePresetSettings[preset] }", "preset auto pace normalization returns preset timings");
 mustInclude(appState, "autoPace: { ...defaultRoomAutoPaceSettings }", "new room stores default auto pace");
 mustInclude(appState, "autoPace: normalizeRoomAutoPaceSettings(room.autoPace)", "runtime normalizes old rooms");
 mustInclude(appState, 'case "room.setAutoPacePreset"', "auto pace preset reducer");
@@ -33,7 +35,8 @@ mustInclude(persistence, "autoPace: persistedRoom.autoPace ?? base.room.autoPace
 mustInclude(persistence, "autoPace: room.autoPace ?? baseRoom.autoPace", "room collection restore keeps auto pace");
 
 mustInclude(roomProfiles, "export function getRoomAutoTimerDelayMs", "auto timer delay helper");
-mustInclude(roomProfiles, 'reason === "idle_auto"', "idle auto uses idle fill delay");
+mustInclude(roomProfiles, 'export type RoomAutoTimerDelayMode = "base" | "idle_gap"', "auto timer delay mode is explicit");
+mustInclude(roomProfiles, 'delayMode === "idle_gap"', "idle gap uses idle fill delay only when requested");
 mustInclude(roomProfiles, "pace.randomize === false", "randomize false uses fixed min delay");
 mustInclude(roomProfiles, "randomDelayMs", "randomized delay helper");
 
@@ -41,14 +44,25 @@ mustInclude(main, "getRoomAutoTimerDelayMs", "main imports auto timer delay");
 mustInclude(main, 'action.type === "room.setAutoPacePreset"', "auto pace change reprimes timer");
 mustInclude(main, 'action.type === "room.setAutoPaceNumberField"', "auto pace numeric change reprimes timer");
 mustInclude(main, 'action.type === "room.setAutoPaceRandomize"', "auto pace randomize change reprimes timer");
-mustInclude(main, "getRoomAutoTimerDelayMs(consoleState.room, reason)", "prime timer uses auto pace reason delay");
-mustInclude(main, 'delayMode?: "reason" | "base"', "prime timer supports base delay override");
+mustInclude(main, 'delayMode?: "base" | "idle_gap"', "prime timer supports explicit delay modes");
 mustInclude(main, 'delayMode: "base"', "auto pace change reprimes next tick with base delay");
-mustInclude(main, "options.delayMode === \"base\" ? getRoomDelayMs(consoleState.room) : getRoomAutoTimerDelayMs(consoleState.room, reason)", "base delay override bypasses idle fill delay");
+mustInclude(main, 'getRoomAutoTimerDelayMs(consoleState.room, options.delayMode ?? "base")', "prime timer defaults to base delay");
 mustInclude(main, "shouldScheduleContinuousRoomFlowAfterVisibleTurn", "continuous room flow reprimes after visible speaker turns");
 mustInclude(main, 'primeRoomAutoTimer(result.reason, false, undefined, { delayMode: "base" })', "continuous room flow delay starts after message commit");
+mustInclude(main, 'primeRoomAutoTimer("idle_auto", true, undefined, { delayMode: "base" })', "starting Room Flow uses base delay");
+mustInclude(main, 'primeRoomAutoTimer("director_followup", false, pending, { delayMode: "base" })', "runtime pending followups use base delay");
+mustInclude(main, 'fallback.intent === "single_reply"', "ordinary single replies skip cloud planner");
+mustInclude(main, 'fallback.intent === "auto_simulation" && mode === "casual"', "casual auto simulation skips cloud planner");
+mustInclude(main, 'fallback.intent === "group_opinion" && mode === "casual"', "casual group opinion skips cloud planner");
 mustInclude(main, 'consoleTurnEngine.activeTurn?.status === "pending"', "active turn overlap guard");
 mustInclude(main, 'requestRender("room_auto_turn_busy"', "busy auto tick is visible status, not waiting_user");
+mustInclude(main, "function ensureRoomAutoProgress", "continuous room flow has timer watchdog");
+mustInclude(main, 'autoSpeechState.status !== "cooling_down"', "timer watchdog only repairs queued auto turns");
+mustInclude(main, 'autoSpeechState.nextTurnAt <= Date.now()', "timer watchdog repairs stale next-turn timestamps");
+mustInclude(main, 'roomAutoTimer = 0;', "auto timer callback clears stale timer handle");
+mustNotInclude(main, 'ensureRoomAutoProgress("room_render")', "room render should not re-enter auto watchdog");
+mustNotInclude(main, 'ensureRoomAutoProgress("room_surface_update")', "room message local updates should not re-enter auto watchdog");
+mustNotInclude(main, 'ensureRoomAutoProgress("room_inspector_update")', "room inspector local updates should not re-enter auto watchdog");
 
 mustInclude(surface, "renderRoomAutoPaceControl", "auto pace UI");
 mustInclude(surface, "ROOM_AUTO_PACE_PRESETS", "auto pace UI presets");
@@ -74,6 +88,8 @@ for (const key of [
 ]) {
   mustInclude(copy, key, `copy key ${key}`);
 }
+mustInclude(copy, 'autoWaitingNextTurn: "Next auto turn is queued"', "English cooling text says queued, not waiting");
+mustInclude(copy, 'autoWaitingNextTurn: "下一轮自动推演已排队"', "Chinese cooling text says queued, not blocked");
 
 if (failures.length) {
   console.error(`Room auto pace validation failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);

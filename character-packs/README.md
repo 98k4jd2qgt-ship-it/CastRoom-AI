@@ -1,39 +1,59 @@
-# 角色包图片准备说明
+# Character Packs
 
-角色图片由你自行准备。自然状态和情绪图片都支持 `png`、`jpg`、`jpeg`、`gif`：
+This directory is for local CastRoom AI character pack instances.
 
-- `idle/*.{png,jpg,jpeg,gif}`：自然状态图片，推荐 1024 x 1024，最小 512 x 512。
-- `emotions/<mood>/*.{png,jpg,jpeg,gif}`：情绪图片，推荐 1024 x 1024，最小 512 x 512。
-- `icons/avatar.{png,jpg,jpeg,gif}`：512 x 512，可选。
-- `preview.{png,jpg,jpeg,gif}`：1280 x 720，可选。
+The public repository and release packages do not include user character packs. Add your own packs locally after installing or extracting the app.
 
-格式建议：
-
-- PNG：推荐用于透明背景角色图。
-- JPG/JPEG：可以直接使用，但没有透明通道，可能带背景。
-- GIF：可以用于自然状态或情绪动画；性能不足时会降级为首帧或文本占位。
-
-目录示例：
+Typical pack layout:
 
 ```text
 character-packs/<pack-id>/
+  manifest.toml
+  prompt/
+    character.md
+    room.md
+  voice/
+  subtitles/
   idle/
-    001.jpg
   emotions/
     happy/
-      001.jpg
     sad/
-      001.png
-    surprised/
-      001.gif
+    thinking/
+  icons/
+    avatar.png
+  preview.png
 ```
 
-运行时会自动扫描角色包目录内实际存在的 `png/jpg/jpeg/gif` 文件，不要求固定命名为 `001.png`。
+`manifest.toml` should describe the pack id, prompt paths, optional voice and subtitle paths, and the memory namespace used by the character.
 
-加载规则：
+Image assets may use `png`, `jpg`, `jpeg`, or `gif`:
 
-- 当前情绪目录检索到图片：随机选择其中一张加载。
-- 当前情绪目录没有图片：回退到 `idle` 目录。
-- `idle` 也没有图片：不加载图片，显示文本占位。
+- `idle/*`: neutral room image.
+- `emotions/<mood>/*`: mood-specific images.
+- `icons/avatar.*`: optional small avatar.
+- `preview.*`: optional pack preview image.
 
-完整尺寸规范见 `docs/asset-size-guide.md`。
+If a room character does not have complete image assets, CastRoom AI falls back to the text/avatar placeholder.
+
+Do not put API keys, chat logs, memory files, private notes, or `.env` files in character packs.
+
+## 中文说明
+
+这个目录用于本地 CastRoom AI 角色包实例。
+
+公开源码仓库和 Release 包不会包含用户角色包。安装或解压应用后，可以在本地添加自己的角色包。
+
+角色包通常包含：
+
+- `manifest.toml`：角色包 id、prompt 路径、可选 voice/subtitle 路径、memory namespace。
+- `prompt/`：角色长期提示词和房间覆盖提示词。
+- `idle/`：默认状态图片。
+- `emotions/<mood>/`：不同情绪的图片。
+- `icons/avatar.*`：可选头像。
+- `preview.*`：可选预览图。
+
+图片支持 `png`、`jpg`、`jpeg`、`gif`。
+
+如果房间角色缺少完整图片资源，CastRoom AI 会回退到文字或头像占位显示。
+
+不要把 API key、聊天记录、记忆文件、私密备注或 `.env` 文件放进角色包。

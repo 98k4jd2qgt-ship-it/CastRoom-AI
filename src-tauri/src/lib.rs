@@ -1109,6 +1109,31 @@ fn save_memory_scope(app: AppHandle, scope: String, data: serde_json::Value) -> 
 }
 
 #[tauri::command]
+fn delete_memory_scope(app: AppHandle, scope: String) -> Result<(), String> {
+    let path = memory_scope_file_path(&app, &scope, false)?;
+    remove_file_if_exists(&path)
+}
+
+#[tauri::command]
+fn delete_room_memory_files(app: AppHandle, room_id: String) -> Result<(), String> {
+    delete_project_room_memory_files(&app, &room_id)?;
+    delete_character_pack_room_memory_files(&app, &room_id)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn prune_orphan_room_memory(app: AppHandle, live_room_ids: Vec<String>) -> Result<(), String> {
+    let live_room_ids = live_room_ids
+        .into_iter()
+        .map(|room_id| safe_pack_id(&room_id))
+        .filter(|room_id| !room_id.is_empty())
+        .collect::<std::collections::HashSet<_>>();
+    prune_project_room_memory_files(&app, &live_room_ids)?;
+    prune_character_pack_room_memory_files(&app, &live_room_ids)?;
+    Ok(())
+}
+
+#[tauri::command]
 fn memory_graph_migrate(app: AppHandle) -> Result<(), String> {
     let connection = open_memory_graph_connection(&app)?;
     migrate_memory_graph(&connection)
@@ -2754,6 +2779,17 @@ fn assert_path_inside_root(path: &Path, root: &Path) -> Result<PathBuf, String> 
     Ok(candidate)
 }
 
+fn assert_dir_inside_root(path: &Path, root: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(path).map_err(|error| error.to_string())?;
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    let candidate = path.canonicalize().map_err(|error| error.to_string())?;
+    if !candidate.starts_with(&root) {
+        return Err("Path is outside the allowed application data directory.".to_string());
+    }
+    Ok(candidate)
+}
+
 fn canonicalize_existing_directory(value: &str, label: &str) -> Result<PathBuf, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -3357,6 +3393,107 @@ fn memory_room_scope_file_path(root: &Path, rest: &str) -> Result<PathBuf, Strin
             .join(format!("{}.json", safe_pack_id(parts[2]))));
     }
     Err("Unsupported room memory scope.".to_string())
+}
+
+fn project_room_memory_dir(app: &AppHandle, room_id: &str) -> Result<PathBuf, String> {
+    let root = project_runtime_data_dir(app)?.join("memory").join("rooms");
+    let room_id = safe_pack_id(room_id);
+    if room_id.is_empty() {
+        return Err("Room memory id is missing.".to_string());
+    }
+    assert_dir_inside_root(&root.join(room_id), &root)
+}
+
+fn delete_project_room_memory_files(app: &AppHandle, room_id: &str) -> Result<(), String> {
+    let dir = project_room_memory_dir(app, room_id)?;
+    remove_dir_if_exists(&dir)
+}
+
+fn prune_project_room_memory_files(
+    app: &AppHandle,
+    live_room_ids: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let root = project_runtime_data_dir(app)?.join("memory").join("rooms");
+    if !root.exists() {
+        return Ok(());
+    }
+    let root = assert_dir_inside_root(&root, &project_runtime_data_dir(app)?.join("memory"))?;
+    for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(room_id) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !live_room_ids.contains(room_id) {
+            remove_dir_if_exists(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn delete_character_pack_room_memory_files(app: &AppHandle, room_id: &str) -> Result<(), String> {
+    let room_id = safe_pack_id(room_id);
+    if room_id.is_empty() {
+        return Err("Room memory id is missing.".to_string());
+    }
+    let pack_root = imported_pack_dir(app)?;
+    if !pack_root.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&pack_root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let pack_dir = entry.path();
+        if !pack_dir.is_dir() {
+            continue;
+        }
+        let memory_root = pack_dir.join("memory");
+        let room_dir = memory_root.join("rooms").join(&room_id);
+        if room_dir.exists() {
+            let room_dir = assert_dir_inside_root(&room_dir, &memory_root)?;
+            remove_dir_if_exists(&room_dir)?;
+        }
+    }
+    Ok(())
+}
+
+fn prune_character_pack_room_memory_files(
+    app: &AppHandle,
+    live_room_ids: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let pack_root = imported_pack_dir(app)?;
+    if !pack_root.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&pack_root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let pack_dir = entry.path();
+        if !pack_dir.is_dir() {
+            continue;
+        }
+        let memory_root = pack_dir.join("memory");
+        let rooms_root = memory_root.join("rooms");
+        if !rooms_root.exists() {
+            continue;
+        }
+        let rooms_root = assert_dir_inside_root(&rooms_root, &memory_root)?;
+        for room_entry in fs::read_dir(&rooms_root).map_err(|error| error.to_string())? {
+            let room_entry = room_entry.map_err(|error| error.to_string())?;
+            let room_dir = room_entry.path();
+            if !room_dir.is_dir() {
+                continue;
+            }
+            let Some(room_id) = room_dir.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !live_room_ids.contains(room_id) {
+                remove_dir_if_exists(&room_dir)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn memory_graph_file_path(app: &AppHandle, create: bool) -> Result<PathBuf, String> {
@@ -6411,6 +6548,9 @@ pub fn run() {
             rewrite_direct_room_history,
             load_memory_scope,
             save_memory_scope,
+            delete_memory_scope,
+            delete_room_memory_files,
+            prune_orphan_room_memory,
             memory_graph_migrate,
             memory_graph_upsert_node,
             memory_graph_merge_claim,

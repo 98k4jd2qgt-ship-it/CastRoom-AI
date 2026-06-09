@@ -10,7 +10,7 @@ const appState = read("src/core/appState.ts");
 
 mustInclude(types, "environmentAnchors: DirectorScriptItem[]", "script board should expose environment anchors");
 mustInclude(appState, "environmentAnchors:", "default and normalized script board should preserve environment anchors");
-mustInclude(scheduler, "activeDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)", "Director tick should read environment anchors");
+mustInclude(scheduler, "activePublicDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)", "Director tick should read public-safe environment anchors");
 mustInclude(scheduler, 'return "environment_change"', "Director tick should trigger environment change narration");
 mustInclude(scheduler, 'case "environment_change"', "Director tick should render environment change narration");
 

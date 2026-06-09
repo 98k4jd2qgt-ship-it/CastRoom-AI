@@ -20,10 +20,16 @@ mustInclude(planText, "User input remains optional", "Director choice copy shoul
 
 const channelMessage = sliceFunction(main, "createDirectorChannelMessage");
 mustInclude(channelMessage, "neutralizeDirectorUserInstruction", "Director channel should neutralize user scheduling text");
+mustInclude(channelMessage, "neutralizeDirectorUserInstruction(directive.task)", "Director channel should neutralize user scheduling inside private directive summaries");
+mustInclude(channelMessage, "neutralizeDirectorUserInstruction(focus)", "Director channel should neutralize user scheduling inside focus summaries");
 mustNotInclude(channelMessage, "Backstage text blocked from public: ${trimRoomPromptLine(publicText, 220)}", "Director channel should not echo raw user scheduling text");
 
 const waitFn = sliceFunction(main, "shouldWaitForUserAfterDirector");
 mustNotInclude(waitFn, 'result.move === "pause"', "Director pause should not automatically wait for the user");
+
+const userInstruction = sliceFunction(main, "isDirectorUserInstructionText");
+mustInclude(userInstruction, "You\\s+can\\s+ask", "Director channel should detect English user scheduling text");
+mustInclude(userInstruction, "用户.{0,16}(?:可以|现在可以)", "Director channel should detect Chinese user scheduling text");
 
 if (failures.length) {
   console.error(`validate-director-user-not-scheduled failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);

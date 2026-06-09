@@ -37,7 +37,7 @@ mustInclude(ai, [
   "canUseTauriCloudBridge",
   'Return only a JSON object: {"text":"character line","emotion":"idle|happy|sad|angry|surprised|curious|calm|thinking"}.',
   "The text field must contain only the character reply, with no labels, metadata, Markdown, or code fences.",
-  'requestChatCompletion(\n      config,\n      "chat",',
+  'requestChatCompletionResult(\n      config,\n      "chat",',
   "signal,\n      true,",
   "canUseTauriCloudBridge() && Boolean(config.secretRef?.trim())",
   "function extractCompletionContent",

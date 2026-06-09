@@ -3,167 +3,194 @@
 ![CastRoom AI banner](docs/screenshots/castroom-ai-banner.png)
 
 [![Latest release](https://img.shields.io/github/v/release/98k4jd2qgt-ship-it/CastRoom-AI?label=latest%20build)](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest)
-[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-7cc7ff)](#requirements--开发环境)
+[![Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-7cc7ff)](#requirements)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0--only-7bdba9)](LICENSE)
-[![Early access](https://img.shields.io/badge/status-early%20access-f0c674)](#status--当前状态)
+[![Early access](https://img.shields.io/badge/status-early%20access-f0c674)](#status)
 
-A Windows desktop app for automated multi-character scene simulation, built around visibility, pacing, and memory governance.
+CastRoom AI is a Windows desktop app for Director-driven AI room simulation: multiple characters share a room, the scene can keep moving automatically, and memory is tracked as claims, beliefs, confidence, conflicts, and confirmed facts.
 
-一个用于自动化多角色剧情推演的 Windows 桌面应用，核心是可见性、节奏控制和记忆治理。
+CastRoom AI 是一个用于自动化 AI 房间推演的 Windows 桌面应用：多个角色共享一个房间，场景可以自动继续推进，记忆会按说法、信念、置信度、冲突和确认事实来治理。
 
-Download: [Latest test build](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest) · Feedback: [Report an issue](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/issues) · AI services: [Support notes](https://98k4jd2qgt-ship-it.github.io/castroom-ai-support/#ai-services)
+Download: [Latest release](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest)  
+Feedback: [GitHub Issues](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/issues)  
+AI service notes: [Support page](https://98k4jd2qgt-ship-it.github.io/castroom-ai-support/#ai-services)
 
-CastRoom AI is not just a room with several bots replying in turn. It is trying to make a scene keep moving: who can see what, who chooses to speak, when the Director should step in, and which memories can be trusted later.
+## What Makes It Different
 
-CastRoom AI 不只是把几个 AI 放进同一个聊天室里轮流回复。它更关心一个场景如何持续运转：谁能看到什么、谁选择发言、Director 什么时候介入，以及哪些记忆会在之后被信任。
-
-## Why CastRoom AI / 为什么是 CastRoom AI
-
-| Common pattern | CastRoom AI focus |
+| Common tool shape | CastRoom AI focuses on |
 | --- | --- |
-| One-on-one character chat | A room where several characters can share a scene without losing one-on-one scope. |
-| Simple group chat | Speaker flow, backstage Director control, and scene pressure instead of endless turn-taking. |
-| Static background notes | Reviewable memory, confidence signals, claims, beliefs, conflicts, and confirmed facts. |
-| Hosted character app | Local-first Windows desktop app with user-configured AI endpoints. |
+| Multi-character chat | Automated room flow with speaker selection, pacing, and optional Director intervention. |
+| Turn-by-turn bot replies | Characters can speak, wait, listen, argue, or be pulled in by room flow. |
+| Plain group chat | Public, private, faction, and Director channels have separate visibility boundaries. |
+| Flat memory list | Multi-perspective memory with confidence, claims, beliefs, conflicts, and confirmed facts. |
+| Manual scenario notes | A room-and-mode scoped Director Script can track hidden facts, public threads, planned beats, and continuity. |
+| Hosted character service | Local-first desktop app; users configure their own external AI endpoint when needed. |
 
 | 常见形态 | CastRoom AI 的重点 |
 | --- | --- |
-| 单角色聊天 | 多个角色共享一个场景，同时保留需要时的一对一作用域。 |
-| 简单群聊 | 不只是轮流回复，而是有发言流、后台 Director 和场景压力。 |
-| 静态背景资料 | 记忆可以被审核，也会区分置信度、说法、信念、冲突和确认事实。 |
-| 托管角色应用 | 本地优先的 Windows 桌面应用，AI endpoint 由用户自己配置。 |
+| 多角色聊天 | 自动房间推演：选择发言者、控制节奏，并在需要时让 Director 介入。 |
+| 轮流回复 | 角色可以说话、等待、旁听、争论，也可以被房间节奏拉入。 |
+| 普通群聊 | 公开、私聊、阵营和 Director 频道有独立可见性边界。 |
+| 扁平记忆列表 | 多视角记忆：区分置信度、说法、信念、冲突和确认事实。 |
+| 手写场景备注 | Director Script 绑定房间和模式，记录隐藏事实、公开线索、计划节拍和连续性。 |
+| 托管角色服务 | 本地优先桌面应用；外部 AI endpoint 由用户自行配置。 |
 
-## Core Experience / 核心体验
+## What You Can Try
 
-- Create rooms where characters can talk, listen, argue, cooperate, or stay quiet.
-- Let the room continue with automatic speaker flow and optional Director pacing.
-- Use public, private, and faction channels to control who knows what.
-- Edit Room, Director, and character rules from Prompt Center.
-- Review memory candidates, confidence signals, and relationship graph facts before they become trusted context.
-- Configure your own external AI endpoint, or use bundled local assets for basic local chat when they are included.
+- Run a room where several AI characters talk in the same public scene.
+- Turn on Room Flow and let characters continue without manually prompting every line.
+- Use private and faction channels for information that not everyone should know.
+- Ask a specific role publicly with `@Role`; that role answers the user next.
+- Send `@Director` messages to the hidden Director channel instead of the public room.
+- Edit Room rules, Role notes, Director rules, and mode presets in Prompt Center.
+- Review memory as observations, relationship graph nodes, claims, beliefs, confidence, and conflicts.
+- Use strict debate mode for scheduled debate flows, or casual mode for looser room chat.
 
-- 创建房间，让多个角色在同一个场景里说话、旁听、争论、协作或沉默。
-- 通过自动发言流和可选 Director 节奏控制，让房间继续往下走。
-- 用公开、私密和阵营频道控制不同角色能知道什么。
-- 在 Prompt Center 里直接编辑房间、Director 和角色规则。
-- 在记忆进入可信上下文前，先查看候选、置信度和关系图谱。
-- 配置自己的外部 AI endpoint；如果发布包带了本地资源，也可以跑基础本地聊天。
+- 在同一个公开房间里运行多个 AI 角色。
+- 开启自动推演，让角色不需要每句都由用户手动推动。
+- 用私聊和阵营频道保存不该公开的信息。
+- 在公开频道用 `@角色` 点名；被点名角色下一轮回答用户。
+- 用 `@Director` 把消息送进隐藏 Director 频道，而不是公开房间。
+- 在 Prompt Center 修改房间规则、角色备注、Director 规则和模式模板。
+- 在记忆模块查看语义观察、关系图谱、说法、信念、置信度和冲突。
+- 用严格辩论模式跑结构化辩论流程，也可以用日常房间做松散聊天。
 
-## How It Works / 它是怎么运作的
+## Screenshots
 
-CastRoom AI is built around visibility, pacing, and memory governance.
-
-CastRoom AI 的核心是可见性、节奏控制和记忆治理。
-
-Rooms
-Characters share a public scene, while private threads, faction talk, and Director notes stay separate. A character can only act on information it is allowed to see.
-
-房间
-角色共享公开场景，但私聊、阵营讨论和 Director 记录是分开的。角色只能基于自己能看到的信息行动。
-
-Director
-The Director usually stays backstage. When needed, it can add narration, judge action results, recover a stuck scene, or push the next beat.
-
-Director
-Director 通常待在后台。需要的时候，它会写旁白、裁定行动结果、救回卡住的场景，或者把剧情推到下一拍。
-
-Speaker flow
-Characters are not forced to speak every round. The room tries to keep the scene alive without letting the same two characters dominate forever.
-
-发言流程
-角色不需要每轮都发言。房间会尽量让场景继续动起来，同时避免永远只有两个人主导对话。
-
-Memory
-Public chat belongs to the room. Private and faction information stays hidden from characters who should not know it.
-
-记忆
-公开聊天属于房间；私聊和阵营信息不会直接暴露给不该知道的角色。
-
-Memory confidence
-A character saying something is not the same as that thing being true. Memory can stay as a claim, a belief, a conflict, or a confirmed fact.
-
-记忆置信度
-角色说了什么，不等于那件事就是真的。记忆可以只是说法、信念、冲突，也可以是确认后的事实。
-
-## Screenshots / 界面预览
-
-| Room workspace | Prompt Center | Memory view |
+| Room workspace | Prompt Center | Memory graph |
 | --- | --- | --- |
-| ![Room workspace](docs/screenshots/room-workspace.png) | ![Prompt Center](docs/screenshots/prompt-center.png) | ![Memory view](docs/screenshots/memory-view.png) |
+| ![Room workspace](docs/screenshots/room-workspace.png) | ![Prompt Center](docs/screenshots/prompt-center.png) | ![Memory graph](docs/screenshots/memory-view.png) |
 
-## Status / 当前状态
+## Core Ideas
 
-CastRoom AI is in early access. It can be used to test rooms, characters, prompts, memory, and AI setup, but the project is still changing quickly.
+### Room Flow
 
-CastRoom AI 仍处于早期版本，可以用来测试房间、角色、提示词、记忆和 AI 配置，但项目还在快速变化。
+Room Flow controls how far the room should keep going:
 
-Testing across Windows versions, hardware, drivers, AI providers, and local model setups is still limited. Bug reports and usability feedback are welcome. :)
+- `Wait`: the room waits for user direction.
+- `Fill gap`: the room fills a short silence or one missing reply, then stops.
+- `Continuous`: the room keeps advancing until a real hard blocker appears.
 
-不同 Windows 版本、硬件、驱动、AI provider 和本地模型配置下的测试覆盖仍然有限，欢迎反馈 bug 和可用性问题。:)
+The speaker policy controls who gets called next. Balanced mode tries to keep the conversation natural while avoiding the same two roles taking over forever.
 
-## Current Limitations / 当前限制
+### Director
 
-- Local model assets may not be included in every release package.
-- External AI requires separate provider configuration.
-- Room flow, Director behavior, memory, voice, and local AI are still being refined.
-- Feedback is especially useful for setup friction, crashes, provider compatibility, confusing room flow, and memory behavior.
+The Director is not a normal character. It can stay backstage, write private directives, publish public narration, judge action results, advance strict flows, or recover a stuck scene. Ordinary role scheduling and private notes belong in the Director channel, not in public chat.
 
-- 并非每个发布包都会包含本地模型资源。
-- 外部 AI 需要单独配置 provider。
-- 房间流程、Director 行为、记忆、语音和本地 AI 仍在打磨。
-- 安装阻碍、崩溃、provider 兼容、房间流程困惑和记忆行为反馈尤其有价值。
+Director 不是普通角色。它可以在后台调度、写私密指令、发布公开旁白、裁定行动结果、推进严格流程或恢复卡住的场景。调度语和私密信息应该留在 Director 频道，不进入公开聊天。
 
-## Highlights / 功能亮点
+### Visibility
 
-| Area | What it does |
-| --- | --- |
-| Rooms | Multi-character scenes with shared context, role state, and separate channels. |
-| Director | Backstage pacing, narration, action judgement, and stuck-scene recovery. |
-| Speaker flow | Automatic turn choice with participation balancing, without forcing everyone to speak. |
-| Channels | Public chat, private threads, and faction channels for hidden knowledge or strategy. |
-| Prompt Center | Editable Room, Director, and character rules with presets and preview flow. |
-| Memory Graph | Reviewable memory candidates, confidence signals, scoped facts, and relationship graph inspection. |
-| AI Setup | Basic local chat when local assets are available; external AI requires user configuration. |
+Public chat is visible to everyone in the room. Private threads, faction channels, and Director-only notes stay scoped. Public `@Role` is a visible point-at in the room; it is not private chat. `@Director` is routed to the hidden Director channel.
 
-| 模块 | 能力 |
-| --- | --- |
-| Rooms | 多角色场景，带共享上下文、角色状态和独立频道。 |
-| Director | 后台节奏控制、旁白、行动裁定和卡场恢复。 |
-| Speaker flow | 自动选择发言者并平衡参与度，但不强制所有角色每轮发言。 |
-| Channels | 公开聊天、私密线程和阵营频道，用于隐藏信息或策略讨论。 |
-| Prompt Center | 可编辑 Room、Director 和角色规则，并支持 preset 与预览流程。 |
-| Memory Graph | 待审核记忆候选、置信度信号、分作用域事实和关系图谱查看。 |
-| AI Setup | 本地资源可用时提供基础本地聊天；外部 AI 需要用户自己配置。 |
+公开聊天对房间成员可见。私聊、阵营频道和 Director-only 记录会保持作用域隔离。公开 `@角色` 是公开点名，不是私聊。`@Director` 会进入隐藏 Director 频道。
 
-## Repository Scope / 仓库范围
+### Memory Confidence
 
-The public source repository does not include large local models, runner binaries, build output, installer packages, logs, runtime data, API keys, or user data.
+CastRoom AI does not treat every sentence as a fact. A character may claim something, another role may believe it, a third role may doubt it, and the Director or developer may later confirm or refute it.
 
-公开源码仓库不包含大型本地模型、runner 二进制、构建产物、安装包、日志、运行数据、API key 或用户数据。
+CastRoom AI 不会把每句话都当成事实。一个角色可以声称某事，另一个角色可以相信它，第三个角色可以怀疑它，之后再由 Director 或开发者确认、反驳或保留冲突。
 
-Excluded assets are distributed separately through GitHub Releases when available.
+### Perspective Graph
 
-被排除的离线资源会在可用时通过 GitHub Releases 单独提供。
+The graph is meant to show how the room understands relationships, not just store chat history. It can group observations by room, character, category, visibility, and truth status.
 
-## Download Builds / 下载测试版
+图谱不是聊天记录仓库，而是用于展示房间关系和角色认知。它会按房间、角色、类别、可见性和真值状态组织观察。
 
-Windows builds are distributed through GitHub Releases, not committed to the source repository. The portable zip is the simplest no-install option.
+## Download Builds
 
-Windows 构建通过 GitHub Releases 分发，不直接提交到源码仓库。portable zip 是最简单的免安装选择。
+Windows builds are distributed through GitHub Releases. The source repository does not contain installer output or portable binaries.
 
-Download the latest build from [GitHub Releases](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest). Use the newest portable zip for no-install testing, or the newest installer if you prefer an installed build.
+Download the latest build from [GitHub Releases](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest).
 
-Portable run path: portable zip -> extract -> open the `CastRoom AI` folder -> run `CastRoom AI.exe`.
+Recommended test path:
 
-从 [GitHub 最新 Release](https://github.com/98k4jd2qgt-ship-it/CastRoom-AI/releases/latest) 下载最新测试版。免安装测试优先选择最新 portable zip；如果想安装到系统里，再选择最新 installer。
+1. Download the newest portable zip.
+2. Extract it.
+3. Open the `CastRoom AI` folder.
+4. Run `CastRoom AI.exe`.
 
-Portable 运行路径：portable zip -> 解压 -> 打开 `CastRoom AI` 文件夹 -> 运行 `CastRoom AI.exe`。
+The portable build stores new local data under `portable-data` next to `CastRoom AI.exe`. Delete that folder to reset the portable test build.
 
-Before running a downloaded build, verify its SHA256 value against the `SHA256SUMS.txt` file attached to the same release.
+Windows 构建通过 GitHub Releases 分发，源码仓库不提交安装包或 portable 二进制。
 
-运行下载的测试包前，建议用同一个 Release 附带的 `SHA256SUMS.txt` 校验 SHA256。
+建议测试路径：
 
-## Requirements / 开发环境
+1. 下载最新 portable zip。
+2. 解压。
+3. 打开 `CastRoom AI` 文件夹。
+4. 运行 `CastRoom AI.exe`。
+
+portable 版本会把新产生的本地数据放在 `CastRoom AI.exe` 旁边的 `portable-data` 目录里。删除该目录即可重置 portable 测试包。
+
+## Status
+
+CastRoom AI is still early access. Room scheduling, Director behavior, strict debate flow, memory extraction, local AI, voice, and provider compatibility are still being refined.
+
+Feedback is especially useful for:
+
+- launch or packaging problems;
+- provider configuration friction;
+- automatic room flow getting stuck or moving too aggressively;
+- private/faction/Director information showing in the wrong place;
+- memory confidence, graph layout, and duplicate memory behavior;
+- prompt templates that make roles feel too stiff or too noisy.
+
+CastRoom AI 仍处于早期版本。房间调度、Director 行为、严格辩论流程、记忆提取、本地 AI、语音和 provider 兼容性仍在调整。
+
+尤其欢迎反馈：
+
+- 启动和打包问题；
+- provider 配置门槛；
+- 自动推演卡住或推进过猛；
+- 私聊、阵营、Director 信息出现在错误位置；
+- 记忆置信度、图谱布局和重复记忆问题；
+- 角色提示词过僵或过吵的问题。
+
+## AI Configuration
+
+CastRoom AI does not provide a hosted AI service. Users configure their own cloud provider credentials or optional local model assets.
+
+Typical configuration areas:
+
+- cloud chat provider and model;
+- optional local chat model;
+- optional vision model;
+- optional speech or voice tools;
+- per-room generation settings;
+- per-role or Director overrides.
+
+CastRoom AI 不提供托管 AI 服务。云端模型需要用户自行配置 provider；本地模型资源是可选资源。
+
+## Repository Scope
+
+The public source repository does not include:
+
+- API keys or `.env` files;
+- runtime memory data;
+- chat history;
+- logs or diagnostics containing user content;
+- local screenshots or temporary files;
+- installer output and staging artifacts;
+- local model and runner binaries;
+- character pack instance folders.
+
+Release assets are separately validated so the portable zip starts from a clean default state. It may include resources required for local AI testing, but it must not include user data, keys, memory, logs, or runtime state.
+
+公开源码仓库不包含：
+
+- API key 或 `.env` 文件；
+- 运行期记忆数据；
+- 聊天记录；
+- 包含用户内容的日志或诊断数据；
+- 本地截图或临时文件；
+- 安装包产物和 staging 目录；
+- 本地模型与 runner 二进制；
+- 角色包实例目录。
+
+Release 资产会单独校验，确保 portable zip 从干净默认状态启动。它可以包含本地 AI 测试所需资源，但不能包含用户数据、key、记忆、日志或运行状态。
+
+## Requirements
 
 - Windows 10/11
 - Node.js 20 or newer
@@ -171,13 +198,7 @@ Before running a downloaded build, verify its SHA256 value against the `SHA256SU
 - Rust stable toolchain
 - Microsoft WebView2 Runtime
 
-## For Developers / 开发者说明
-
-The source repository keeps development checks, desktop packaging scripts, release asset validation, and privacy-boundary checks separate from the user-facing build.
-
-源码仓库保留开发校验、桌面打包脚本、发布资源检查和隐私边界检查；这些内容与公开下载版分开管理。
-
-## Development / 本地开发
+## Development
 
 Clone the source repository:
 
@@ -212,34 +233,23 @@ Build the desktop application:
 npm.cmd run tauri -- build
 ```
 
-Desktop package readiness check:
+Prepare public source export:
 
 ```powershell
-npm.cmd run check:desktop-package
+npm.cmd run github:export
+npm.cmd run check:github-export
 ```
 
-## AI Configuration / AI 配置
+Prepare release assets:
 
-CastRoom AI does not provide a hosted AI service. Users configure their own cloud provider credentials or optional local model assets.
+```powershell
+npm.cmd run github:release-assets
+npm.cmd run check:github-release-assets
+```
 
-CastRoom AI 不提供托管 AI 服务。云端模型服务需要用户单独配置；本地模型资源是可选资源。
+## Offline Assets
 
-Typical configuration areas:
-
-- Cloud chat provider and model
-- Optional local chat model
-- Optional vision model
-- Optional speech or voice tools
-- Per-room generation settings
-- Per-role or Director overrides
-
-## Offline Assets / 离线资源
-
-Large offline assets are intentionally excluded from this source repository.
-
-大型离线资源不会进入源码仓库。
-
-Expected locations after downloading release assets:
+Large offline assets are intentionally excluded from the source repository. Expected local asset locations:
 
 ```text
 resources/models/chat/<model-id>/
@@ -247,59 +257,30 @@ resources/runners/llama.cpp/
 resources/runners/whisper.cpp/
 ```
 
-Release asset packages should include:
-
-- Model or runner files
-- SHA256 checksums
-- Third-party license files
-- Source notices where required
-
 See:
 
 - [resources/models/README.md](resources/models/README.md)
 - [resources/runners/README.md](resources/runners/README.md)
 
-## Privacy And Data Boundary / 隐私与数据边界
-
-The following must not be committed to the public repository:
-
-- API keys and `.env` files
-- Runtime memory data
-- Logs and diagnostics containing user content
-- Local screenshots or temporary files
-- Installer output and staging artifacts
-- Local model and runner binaries
-
-以下内容不得提交到公开仓库：
-
-- API key 和 `.env` 文件
-- 运行期记忆数据
-- 包含用户内容的日志和诊断数据
-- 本地截图或临时文件
-- 安装包输出和 staging 产物
-- 本地模型和 runner 二进制
-
-## Character Packs / 角色包
+## Character Packs
 
 Character packs define role metadata, prompts, optional voice settings, and optional visual or emotion assets. Room avatar images are only used when a pack has the complete required Room emotion set.
 
-角色包用于定义角色元数据、提示词、可选语音设置和可选视觉/表情资源。Room 头像只会在角色包具备完整 Room 标准表情资源时启用。
+角色包用于定义角色元数据、提示词、可选语音设置和可选视觉/表情资源。Room 头像只会在角色包具备完整 Room 表情资源时启用。
 
-## License / 许可证
+## License
 
 Project source code is licensed under GPL-3.0-only. See [LICENSE](LICENSE).
 
-项目源码使用 GPL-3.0-only 协议。详见 [LICENSE](LICENSE)。
-
 Third-party models, runners, fonts, images, and character assets are governed by their own licenses and notices. Assets distributed through GitHub Releases must include their own license and source notices.
 
-第三方模型、runner、字体、图片和角色素材遵循各自许可证。通过 GitHub Releases 分发的资源包必须单独附带对应许可证和来源说明。
+项目源码使用 GPL-3.0-only 协议。详见 [LICENSE](LICENSE)。
 
-## Contributing / 贡献
+第三方模型、runner、字体、图片和角色素材遵循各自许可。通过 GitHub Releases 分发的资源包必须附带对应许可和来源说明。
 
-Issues and pull requests are welcome for focused fixes, tests, documentation, and small improvements. Please avoid submitting private data, model binaries, runner binaries, generated installer output, or unrelated large assets.
+## Contributing
 
-欢迎提交聚焦的 issue 和 pull request，包括 bug 修复、测试、文档和小范围改进。请不要提交私人数据、模型二进制、runner 二进制、安装包产物或无关大型资源。
+Issues and pull requests are welcome for focused fixes, tests, documentation, and small improvements. Please do not submit private data, model binaries, runner binaries, generated installer output, or unrelated large assets.
 
 Before opening a pull request, run:
 

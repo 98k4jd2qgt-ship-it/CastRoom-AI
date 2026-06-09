@@ -15,7 +15,9 @@ const commitGuardBlock = sliceFunction(main, "validateRoomTimelineChannelVisibil
 mustInclude(noteBlock, 'visibility: "director_channel"', "Director backstage note should use hidden visibility");
 mustInclude(noteBlock, 'channelId: "director"', "Director backstage note should target director channel");
 mustInclude(noteBlock, "isDirectorPublicSchedulingText(publicText)", "scheduling-like public text should be detected for backstage routing");
-mustInclude(noteBlock, "Private directive:", "private directives should be summarized in director channel");
+mustInclude(noteBlock, "compactDirectorChannelNote", "Director backstage note should use compact summaries");
+mustInclude(main, "private ${directiveTargets.join", "private directives should be summarized in compact director channel notes");
+mustInclude(main, "previousDirectorNote?.text === note", "duplicate director channel notes should be deduped");
 mustInclude(main, 'commitRoomTimelineMessage(directorChannelMessage, "room_director_channel_note")', "Director turn should commit backstage notes");
 mustInclude(main, 'commitRoomTimelineMessage(message, "room_director_public_text")', "Director narration should still use public timeline commit");
 mustInclude(commitGuardBlock, 'message.channelId === "director"', "commit guard should validate director channel id");

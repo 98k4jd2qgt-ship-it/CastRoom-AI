@@ -240,7 +240,6 @@ mustInclude("src/ui/roomSurface.ts", [
   "room.selectPromptProfile",
   "room.setFreedomLevel",
   "developerFreedom",
-  "room.setSpeed",
   "room.setPrivateWhispers",
   "room.setFactionHuddles",
   "room.setActiveChannel",
@@ -451,6 +450,10 @@ async function validateSchedulerBehavior() {
   expect(groupPlan.intent === "group_opinion", "group opinion input should classify as group_opinion");
   expect(groupPlan.plan?.turns.length === 2, "group opinion should schedule two local turns");
   expect(new Set(groupPlan.plan?.turns.map((turn) => turn.speakerId)).size === 2, "group opinion should use two different speakers");
+  expect(
+    (groupPlan.plan?.turns ?? []).every((turn) => turn.target === "all"),
+    "group opinion planned turns should address All, not @You.",
+  );
 
   const mentionPlan = scheduler.createDirectorRoomPlan({
     room,
@@ -634,6 +637,10 @@ async function validateSchedulerBehavior() {
     nowIso: "2026-05-16T01:06:30.000Z",
   });
   expect(debateRoundPlan.intent === "debate_round", "Debate room ordinary input should schedule debate_round turns.");
+  expect(
+    (debateRoundPlan.plan?.turns ?? []).every((turn) => turn.target === "all"),
+    "Debate room planned turns should address All, not @You.",
+  );
   expect(
     (debateRoundPlan.plan?.turns ?? []).every((turn) => /setup wording|opening argument|rebuttal|supporting point/i.test(turn.goal)),
     "Debate role goals should speak by side and avoid repeating setup wording.",

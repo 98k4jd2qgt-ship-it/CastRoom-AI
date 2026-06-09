@@ -80,26 +80,42 @@ export function parseRoomMentions(
   };
 }
 
+export function hasRoomDirectorMention(text: string, director: RoomState["director"] | null = null): boolean {
+  const names = new Set(["director", "导演", director?.displayName ?? ""]);
+  for (const name of names) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (new RegExp(`(^|\\s)@${escapeRegExp(trimmed)}${ROOM_MENTION_BOUNDARY}`, "i").test(text)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function formatRoomTarget(
   target: RoomMessageTarget | undefined,
   userProfile: RoomUserProfile,
   participants: RoomParticipant[],
   director: RoomState["director"] | null = null,
+  options: { mentionStyle?: "at" | "plain" } = {},
 ): string {
   if (!target || target === "all" || target.targets.length === 0) {
     return "All";
   }
 
+  const prefix = options.mentionStyle === "plain" ? "" : "@";
   return target.targets
     .map((item) => {
       if (item.type === "user") {
-        return `@${userProfile.displayName}`;
+        return `${prefix}${userProfile.displayName}`;
       }
       if (item.type === "room_director") {
-        return `@${director?.displayName ?? "Director"}`;
+        return `${prefix}${director?.displayName ?? "Director"}`;
       }
       const role = participants.find((participant) => participant.id === item.roleId);
-      return `@${role?.name ?? item.roleId}`;
+      return `${prefix}${role?.name ?? item.roleId}`;
     })
     .join(" ");
 }
@@ -149,15 +165,7 @@ export function resolveRoomMessageVisibility(
     };
   }
 
-  if (room.privateWhispers !== "on" || !isAiSpeaker(message) || !isRoleOnlyTarget(message.target)) {
-    return { visibility: "public", visibleTo: undefined, privateReason: undefined };
-  }
-
-  return {
-    visibility: "private_ai",
-    visibleTo: privateVisibleTargets(message),
-    privateReason: message.speakerType === "room_system" ? "system_directed" : "ai_to_ai_mention",
-  };
+  return { visibility: "public", visibleTo: undefined, privateReason: undefined };
 }
 
 export function resolveReplyChannelDecision(input: {
@@ -489,6 +497,16 @@ export function resolveRoomInputVisibility(
   room: RoomState,
   channelId: RoomActiveChannelId,
 ): Pick<ConsoleMessage, "visibility" | "visibleTo" | "privateReason" | "channelId" | "factionId"> {
+  if (hasRoomDirectorMention(input, room.director)) {
+    return {
+      visibility: "director_channel",
+      visibleTo: [{ type: "room_director", directorId: room.director.directorId }],
+      privateReason: "director_channel",
+      channelId: "director",
+      factionId: undefined,
+    };
+  }
+
   const forcePublic = new RegExp(String.raw`(^|\s)@all${ROOM_MENTION_BOUNDARY}`, "i").test(input);
   if (forcePublic) {
     return {
@@ -758,10 +776,6 @@ function mentionCandidates(
       return true;
     })
     .sort((left, right) => right.name.length - left.name.length);
-}
-
-function isAiSpeaker(message: ConsoleMessage): boolean {
-  return message.speakerType === "role" || message.speakerType === "room_system";
 }
 
 function isRoleOnlyTarget(target: RoomMessageTarget | undefined): target is { targets: Array<{ type: "role"; roleId: string }> } {

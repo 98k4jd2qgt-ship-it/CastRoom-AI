@@ -5,11 +5,15 @@ const failures = [];
 
 const scheduleRoomTurn = sliceFunction(scheduler, "scheduleRoomTurn");
 const roleFastPath = sliceFunction(scheduler, "createAutonomousFallbackSpeechIntent");
+const topicShiftPath = sliceFunction(scheduler, "createCasualTopicShiftSpeechIntent");
 const directorPlanFastPath = sliceFunction(scheduler, "shouldUseRoleFastPathForAutoDirectorPlan");
 
 mustInclude(roleFastPath, "chooseNextParticipant(room", "role fast path chooses a visible participant");
 mustInclude(roleFastPath, "autonomous_role_fallback", "role fast path marks autonomous fallback reason");
 mustInclude(roleFastPath, 'target: "all"', "role fast path addresses the room, not @You");
+mustInclude(topicShiftPath, "chooseNextParticipant(room", "casual topic shift uses normal speaker policy selection");
+mustInclude(topicShiftPath, "casual_topic_shift", "casual topic shift marks the fallback reason");
+mustInclude(topicShiftPath, 'target: "all"', "casual topic shift addresses the room, not @You");
 
 mustInclude(directorPlanFastPath, 'turn.speakerType !== "director"', "plan fast path only applies to Director planned turns");
 mustInclude(directorPlanFastPath, 'beatType === "director_judge"', "plan fast path preserves Director judgement");
@@ -19,8 +23,10 @@ mustInclude(directorPlanFastPath, 'mode !== "story" && mode !== "mystery"', "Dir
 
 mustInclude(scheduleRoomTurn, "autoDirectorPlanRoleFastPath", "scheduler detects auto Director planned turns that should become role turns");
 mustInclude(scheduleRoomTurn, "!autoDirectorPlanRoleFastPath", "scheduler skips executing downgraded Director planned turns");
+mustInclude(scheduleRoomTurn, "createCasualTopicShiftSpeechIntent(room, input, addressing, selectedSpeechIntent.reason)", "auto ask_director intent can become casual topic shift before Director handoff");
 mustInclude(scheduleRoomTurn, "createAutonomousFallbackSpeechIntent(room, input, addressing, selectedSpeechIntent.reason)", "auto ask_director intent is downgraded to role fast path");
-mustInclude(scheduleRoomTurn, "createAutonomousFallbackSpeechIntent(room, input, addressing, \"no_speaker_intent\")", "auto no-speaker state uses role fast path");
+mustInclude(scheduleRoomTurn, "createCasualTopicShiftSpeechIntent(room, input, addressing, \"no_speaker_intent\")", "auto no-speaker state tries casual topic shift before waiting");
+mustInclude(scheduleRoomTurn, "createAutonomousFallbackSpeechIntent(room, input, addressing, \"no_speaker_intent\")", "auto no-speaker state still has role fast path fallback");
 
 mustNotInclude(scheduleRoomTurn, 'directorHandoff("waiting_user", room, nowMs + delayMs)', "auto waiting_user Director handoff");
 mustNotInclude(scheduleRoomTurn, 'directorHandoff("burst_limit", room, nowMs + delayMs)', "auto burst_limit Director handoff");

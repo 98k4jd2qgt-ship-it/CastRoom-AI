@@ -55,7 +55,7 @@ mustIncludeIn(sanitizePublicTextReason, 'value === "recap" || value === "round_t
 
 const applyEffect = sliceFunction("applyRoomRuntimeEffect");
 mustIncludeIn(applyEffect, 'effect.nextTimerAction === "schedule_once"', "RoomRuntime effect handles one-shot schedule action");
-mustIncludeIn(applyEffect, 'primeRoomAutoTimer("director_followup", false, pending)', "Schedule action primes Director followup timer with pending state");
+mustIncludeIn(applyEffect, 'primeRoomAutoTimer("director_followup", false, pending, { delayMode: "base" })', "Schedule action primes Director followup timer with pending state");
 mustIncludeIn(applyEffect, "canScheduleRoomRuntimeFollowup(effect.pendingFollowup)", "Schedule action is gated by explicit follow-up or room auto state");
 
 if (failures.length) {

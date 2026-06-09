@@ -97,6 +97,18 @@ interface ChatCompletionResponse {
     type?: string;
     code?: string | number;
   };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+  };
+}
+
+interface ChatCompletionTextResult {
+  content: string;
+  usage: AiProviderResult["usage"];
 }
 
 export interface AiConnectionTestResult {
@@ -277,12 +289,26 @@ export class OpenAiCompatibleProvider implements AiProvider {
     return requestChatCompletion(config, "chat", messages, signal, options.jsonMode ?? true);
   }
 
+  async rawChatWithConfigResult(
+    baseConfig: OpenAiCompatibleProviderConfig,
+    messages: ChatMessage[],
+    signal?: AbortSignal,
+    options: { temperature?: number; maxTokens?: number; jsonMode?: boolean } = {},
+  ): Promise<ChatCompletionTextResult> {
+    const config = {
+      ...baseConfig,
+      temperature: options.temperature ?? Math.min(baseConfig.temperature ?? 0.3, 0.4),
+      maxTokens: options.maxTokens ?? Math.min(baseConfig.maxTokens ?? 360, 360),
+    };
+    return requestChatCompletionResult(config, "chat", messages, signal, options.jsonMode ?? true);
+  }
+
   async chatWithConfig(
     config: OpenAiCompatibleProviderConfig,
     context: InteractionPipelineContext,
     signal?: AbortSignal,
   ): Promise<AiProviderResult> {
-    const content = await requestChatCompletion(
+    const completion = await requestChatCompletionResult(
       config,
       "chat",
       [
@@ -310,12 +336,13 @@ export class OpenAiCompatibleProvider implements AiProvider {
       signal,
       true,
     );
-    const result = withInferredEmotion(parseProviderContent(content, context.activeCharacter.name), context);
+    const result = withInferredEmotion(parseProviderContent(completion.content, context.activeCharacter.name), context);
 
     return {
       ...result,
       provider: "openai-compatible",
       usedContext: ["time", "foregroundApp", "imageContext", "memorySnippets", "activeCharacter", "activeRoom", "userInput"],
+      usage: completion.usage,
     };
   }
 
@@ -335,6 +362,12 @@ export class OpenAiCompatibleProvider implements AiProvider {
       ...result,
       provider: "openai-compatible",
       usedContext: ["imageContext"],
+      usage: {
+        estimatedPromptTokens: estimateTokensFromChars(block.text.length + JSON.stringify(block.attachment).length),
+        estimatedCompletionTokens: estimateTokensFromChars(content.length),
+        promptChars: block.text.length + JSON.stringify(block.attachment).length,
+        completionChars: content.length,
+      },
     };
   }
 
@@ -656,6 +689,16 @@ async function requestChatCompletion(
   signal?: AbortSignal,
   jsonMode = true,
 ): Promise<string> {
+  return (await requestChatCompletionResult(config, kind, messages, signal, jsonMode)).content;
+}
+
+async function requestChatCompletionResult(
+  config: OpenAiCompatibleProviderConfig,
+  kind: "chat" | "vision",
+  messages: ChatMessage[],
+  signal?: AbortSignal,
+  jsonMode = true,
+): Promise<ChatCompletionTextResult> {
   const apiKey = config.apiKey.trim();
   const model = (kind === "vision" ? config.visionModel : config.chatModel).trim();
   const baseUrl = normalizeBaseUrl(config.baseUrl);
@@ -722,7 +765,7 @@ async function requestChatCompletion(
   if (!ok) {
     const providerMessage = redactSecrets(payload.error?.message ?? `HTTP ${status}`, [apiKey]);
     if (jsonMode && /response_format|json_object|json schema|json mode|json/i.test(providerMessage)) {
-      return requestChatCompletion(config, kind, messages, signal, false);
+      return requestChatCompletionResult(config, kind, messages, signal, false);
     }
 
     const imageCompatibilityError = kind === "vision" && isUnsupportedImageProviderMessage(providerMessage);
@@ -744,7 +787,10 @@ async function requestChatCompletion(
     } satisfies AiProviderError & { responseShape: string };
   }
 
-  return content;
+  return {
+    content,
+    usage: tokenUsageFromCompletion(payload, messages, content),
+  };
 }
 
 function extractCompletionContent(payload: ChatCompletionResponse): string {
@@ -757,6 +803,35 @@ function extractCompletionContent(payload: ChatCompletionResponse): string {
     extractResponsesOutputText(payload.output) ||
     ""
   ).trim();
+}
+
+function tokenUsageFromCompletion(
+  payload: ChatCompletionResponse,
+  messages: ChatMessage[],
+  completion: string,
+): AiProviderResult["usage"] {
+  const promptChars = JSON.stringify(messages).length;
+  const completionChars = completion.length;
+  const promptTokens = numericUsage(payload.usage?.prompt_tokens ?? payload.usage?.input_tokens);
+  const completionTokens = numericUsage(payload.usage?.completion_tokens ?? payload.usage?.output_tokens);
+  const totalTokens = numericUsage(payload.usage?.total_tokens)
+    ?? (promptTokens !== undefined && completionTokens !== undefined ? promptTokens + completionTokens : undefined);
+
+  return {
+    ...(promptTokens !== undefined ? { promptTokens } : { estimatedPromptTokens: estimateTokensFromChars(promptChars) }),
+    ...(completionTokens !== undefined ? { completionTokens } : { estimatedCompletionTokens: estimateTokensFromChars(completionChars) }),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    promptChars,
+    completionChars,
+  };
+}
+
+function numericUsage(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : undefined;
+}
+
+function estimateTokensFromChars(chars: number): number {
+  return Math.max(1, Math.ceil(chars / 3.6));
 }
 
 function describeCompletionResponseShape(payload: ChatCompletionResponse): string {

@@ -16,6 +16,7 @@ import type {
   RoomParticipant,
   RoomAdvancePolicy,
   RoomAutoPacePreset,
+  RoomContextBudget,
   RoomSpeakerPolicy,
   RoomBlockingNeed,
   RoomAdvanceDecision,
@@ -24,6 +25,9 @@ import type {
   WindowFrameAction,
   WindowResizeDirection,
   EmotionAssetCandidate,
+  DirectorScriptBoard,
+  DirectorScriptItem,
+  DirectorScriptPatch,
 } from "../core/types";
 import {
   getMissingRoomEmotionAvatarSlots,
@@ -44,10 +48,13 @@ import {
   getActiveRoomChannel,
   getRoomDirectorProfile,
   getRoomPromptProfile,
+  hasRoomDirectorMention,
+  isTargetingDirector,
   parseRoomMentions,
   resolveRoomCollaborationMode,
   roomRecipes,
   roomPromptProfiles,
+  targetRoleIds,
 } from "../core/roomScheduler";
 import { categoryLabel, commandDescription, localizeEnum, t, uiText } from "./copy";
 import { renderExpandableText } from "./expandableText";
@@ -66,6 +73,32 @@ export interface RoomSurfaceProps {
   onAction: (action: ConsoleAction) => void;
   onWindowAction: (action: WindowFrameAction) => void;
 }
+
+type DirectorScriptItemListKey =
+  | "hiddenFacts"
+  | "openThreads"
+  | "plannedBeats"
+  | "environmentAnchors"
+  | "forbiddenReveals"
+  | "continuityNotes";
+
+interface DirectorScriptDraftState {
+  board: DirectorScriptBoard;
+  dirty: boolean;
+  open: boolean;
+  sourceStamp: string;
+}
+
+const directorScriptItemListKeys: DirectorScriptItemListKey[] = [
+  "hiddenFacts",
+  "openThreads",
+  "plannedBeats",
+  "environmentAnchors",
+  "forbiddenReveals",
+  "continuityNotes",
+];
+
+const directorScriptDrafts = new Map<string, DirectorScriptDraftState>();
 
 export function renderRoomSurface(props: RoomSurfaceProps): HTMLElement {
   const language = props.state.language;
@@ -189,12 +222,13 @@ function renderRoomCompactStatus(props: RoomSurfaceProps): HTMLElement {
 function roomTopbarSummary(props: RoomSurfaceProps): { label: string; tone: string; detail: string } {
   const language = props.state.language;
   const room = props.state.room;
+  const continuousFlowActive = room.isOpen && room.autoChat && room.advancePolicy === "continuous";
   let label = roomUiText(language, "compactRoomStatusPaused");
   let tone = "paused";
   if (!room.isOpen) {
     label = roomUiText(language, "compactRoomStatusClosed");
     tone = "closed";
-  } else if (room.autoSpeechState.status === "running" || room.autoSpeechState.status === "cooling_down") {
+  } else if (continuousFlowActive || room.autoSpeechState.status === "running" || room.autoSpeechState.status === "cooling_down") {
     label = roomUiText(language, "compactRoomStatusRunning");
     tone = "running";
   } else if (room.autoSpeechState.status === "waiting_user") {
@@ -442,6 +476,7 @@ function renderRoomMain(props: RoomSurfaceProps): HTMLElement {
       props.state.room.userProfile,
       props.state.room.participants,
       props.state.room.director,
+      { mentionStyle: "plain" },
     );
     item.innerHTML = `
       <span class="room-avatar">${escapeHtml(initials(message.speaker))}</span>
@@ -543,7 +578,14 @@ function renderRoomListRail(props: RoomSurfaceProps): HTMLElement {
   const duplicate = compactRoomAction(roomUiText(language, "duplicate"), () => {
     const title = window.prompt(roomUiText(language, "duplicateRoomName"), `${props.state.room.title} Copy`);
     if (title !== null) {
-      props.onAction({ type: "room.duplicate", title });
+      const copyDirectorScript = window.confirm(
+        roomUiText(
+          language,
+          "duplicateDirectorScriptConfirm",
+          "Copy this room's Director Script? Cancel to reset the new room's Director Script.",
+        ),
+      );
+      props.onAction({ type: "room.duplicate", title, copyDirectorScript });
     }
   });
   const remove = compactRoomAction(roomUiText(language, "delete"), () => {
@@ -895,6 +937,7 @@ function renderRoomInspectorActions(props: RoomSurfaceProps): HTMLElement {
   const freedom = renderRoomFreedomSelect(props);
   const uncertainty = renderRoomUncertaintySelect(props);
   const advancePolicy = renderRoomAdvancePolicyControl(props);
+  const contextBudget = renderRoomContextBudgetControl(props);
   const autoPace = renderRoomAutoPaceControl(props);
   const speakerPolicy = renderRoomSpeakerPolicyControl(props);
 
@@ -914,11 +957,12 @@ function renderRoomInspectorActions(props: RoomSurfaceProps): HTMLElement {
     editPrompt,
   );
 
-  section.append(recipe, freedom, uncertainty, advancePolicy, autoPace, speakerPolicy, buttons);
+  section.append(recipe, freedom, uncertainty, advancePolicy, contextBudget, autoPace, speakerPolicy, buttons);
   return section;
 }
 
 const ROOM_ADVANCE_POLICIES: RoomAdvancePolicy[] = ["wait_for_instruction", "fill_gap", "continuous"];
+const ROOM_CONTEXT_BUDGETS: RoomContextBudget[] = ["compact", "balanced", "full"];
 const ROOM_AUTO_PACE_PRESETS: RoomAutoPacePreset[] = ["fast", "natural", "slow", "custom"];
 const ROOM_SPEAKER_POLICIES: RoomSpeakerPolicy[] = ["balanced", "round_robin", "spotlight", "freeform"];
 
@@ -950,6 +994,26 @@ function renderRoomAdvancePolicyControl(props: RoomSurfaceProps): HTMLElement {
     options.append(button);
   }
   wrapper.append(label, options);
+  return wrapper;
+}
+
+function renderRoomContextBudgetControl(props: RoomSurfaceProps): HTMLElement {
+  const language = props.state.language;
+  const current = props.state.room.contextBudget ?? "balanced";
+  const wrapper = document.createElement("label");
+  wrapper.className = "room-inline-field room-context-budget";
+  wrapper.innerHTML = `<span>${escapeHtml(roomUiText(language, "contextBudget"))}</span>`;
+  const select = renderSelectControl(
+    current,
+    ROOM_CONTEXT_BUDGETS.map((budget) => ({
+      value: budget,
+      label: roomContextBudgetLabel(budget, language),
+    })),
+    (budget) => props.onAction({ type: "room.setContextBudget", budget: budget as RoomContextBudget }),
+    { ariaLabel: roomUiText(language, "contextBudget"), className: "room-prompt-select" },
+  );
+  select.title = roomUiText(language, "contextBudgetHint");
+  wrapper.append(select);
   return wrapper;
 }
 
@@ -1183,6 +1247,8 @@ function renderDirectorApiDetail(props: RoomSurfaceProps): HTMLElement {
   const language = props.state.language;
   const director = props.state.room.director;
   const profile = getRoomDirectorProfile(director.profileId);
+  const activeChannel = getActiveRoomChannel(props.state.room);
+  const canShowDirectorScript = props.state.room.freedomLevel === "developer" || activeChannel.type === "director";
   const wrap = document.createElement("section");
   wrap.className = "room-control-card room-director-api-detail";
   wrap.innerHTML = `
@@ -1193,8 +1259,438 @@ function renderDirectorApiDetail(props: RoomSurfaceProps): HTMLElement {
       </div>
     </header>
   `;
+  if (canShowDirectorScript) {
+    wrap.append(renderDirectorScriptEntry(props));
+  }
   wrap.append(renderDirectorApiControls(props));
   return wrap;
+}
+
+function renderDirectorScriptEntry(props: RoomSurfaceProps): HTMLElement {
+  const language = props.state.language;
+  const room = props.state.room;
+  const draft = getDirectorScriptDraft(props);
+  const details = document.createElement("details");
+  details.className = "room-director-script-entry";
+  details.open = draft.open;
+  details.addEventListener("toggle", () => {
+    draft.open = details.open;
+  });
+
+  const summary = document.createElement("summary");
+  summary.textContent = roomUiText(language, "directorScript", "导演剧本");
+
+  const panel = renderDirectorScriptPanel(props);
+  details.append(summary, panel);
+  return details;
+}
+
+function renderDirectorScriptPanel(props: RoomSurfaceProps): HTMLElement {
+  const language = props.state.language;
+  const room = props.state.room;
+  const mode = room.director.recipeId;
+  const script = getDirectorScriptDraft(props).board;
+  const panel = document.createElement("section");
+  panel.className = "room-director-script-panel";
+
+  const scope = document.createElement("div");
+  scope.className = "room-director-script-scope";
+  scope.innerHTML = `
+    <span>${escapeHtml(roomUiText(language, "directorScriptScope", "绑定范围"))}</span>
+    <strong>${escapeHtml(room.title)} / ${escapeHtml(recipeName(mode, language))}</strong>
+    <code>${escapeHtml(room.id)}:${escapeHtml(mode)}</code>
+  `;
+
+  panel.append(
+    scope,
+    renderDirectorScriptTextArea(
+      roomUiText(language, "directorScriptPlotDirection", "剧情走向"),
+      script.premise ?? "",
+      (value) => updateDirectorScriptDraft(props, (board) => {
+        board.premise = value;
+      }),
+    ),
+    renderDirectorScriptTextArea(
+      roomUiText(language, "directorScriptCurrentPhase", "当前阶段"),
+      script.currentPhase ?? "",
+      (value) => updateDirectorScriptDraft(props, (board) => {
+        board.currentPhase = value;
+      }),
+      2,
+    ),
+    renderDirectorScriptItemGroup(props, "hiddenFacts", roomUiText(language, "directorScriptHiddenFacts", "隐藏事实")),
+    renderDirectorScriptItemGroup(props, "openThreads", roomUiText(language, "directorScriptOpenThreads", "公开伏笔")),
+    renderDirectorScriptItemGroup(props, "plannedBeats", roomUiText(language, "directorScriptPlannedBeats", "计划节拍")),
+    renderDirectorScriptItemGroup(props, "environmentAnchors", roomUiText(language, "directorScriptEnvironmentAnchors", "环境锚点")),
+    renderDirectorScriptItemGroup(props, "forbiddenReveals", roomUiText(language, "directorScriptForbiddenReveals", "禁止泄露")),
+    renderDirectorScriptItemGroup(props, "continuityNotes", roomUiText(language, "directorScriptContinuityNotes", "连续性备注")),
+    renderDirectorScriptDraftActions(props),
+    renderDirectorScriptRevisionLog(props),
+  );
+
+  return panel;
+}
+
+function renderDirectorScriptTextArea(labelText: string, value: string, onChange: (value: string) => void, rows = 3): HTMLElement {
+  const label = document.createElement("label");
+  label.className = "room-inline-field room-director-script-field";
+  label.innerHTML = `<span>${escapeHtml(labelText)}</span>`;
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "room-director-script-textarea";
+  textarea.rows = rows;
+  textarea.value = value;
+  textarea.addEventListener("input", () => onChange(textarea.value));
+  label.append(textarea);
+  return label;
+}
+
+function renderDirectorScriptItemGroup(props: RoomSurfaceProps, key: DirectorScriptItemListKey, title: string): HTMLElement {
+  const language = props.state.language;
+  const script = getDirectorScriptDraft(props).board;
+  const items = script[key].filter((item) => item.status !== "retired");
+  const group = document.createElement("section");
+  group.className = "room-director-script-group";
+
+  const header = document.createElement("header");
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  const add = actionButton(roomUiText(language, "addDirectorScriptItem", "新增"), () => {
+    updateDirectorScriptDraft(props, (board) => {
+      board[key] = [...board[key], createDeveloperDirectorScriptItem("", key)];
+    });
+    rerenderDirectorScriptPanel(props, group);
+  });
+  header.append(heading, add);
+
+  const list = document.createElement("div");
+  list.className = "room-director-script-items";
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "room-director-script-empty";
+    empty.textContent = roomUiText(language, "noneYet", "暂无");
+    list.append(empty);
+  } else {
+    for (const item of items) {
+      list.append(renderDirectorScriptItemRow(props, key, item));
+    }
+  }
+
+  group.append(header, list);
+  return group;
+}
+
+function renderDirectorScriptItemRow(props: RoomSurfaceProps, key: DirectorScriptItemListKey, item: DirectorScriptItem): HTMLElement {
+  const language = props.state.language;
+  const row = document.createElement("div");
+  row.className = "room-director-script-item";
+
+  const text = document.createElement("textarea");
+  text.className = "room-director-script-textarea room-director-script-item-textarea";
+  text.rows = 2;
+  text.value = item.text;
+  text.placeholder = localizedRoomSystemText(roomUiText(language, "addDirectorScriptItem", "新增"), language);
+  text.addEventListener("input", () => {
+    updateDirectorScriptDraft(props, (board) => {
+      board[key] = board[key].map((entry) =>
+        entry.id === item.id ? { ...entry, text: text.value, updatedAt: new Date().toISOString() } : entry,
+      );
+    });
+  });
+
+  const meta = document.createElement("span");
+  meta.textContent = `${item.status} · ${directorScriptItemSafetyLabels(item, key).join(" · ")} · ${item.updatedAt}`;
+
+  const actions = document.createElement("div");
+  actions.className = "room-director-script-actions";
+  actions.append(
+    actionButton(roomUiText(language, "delete", "删除"), () => {
+      updateDirectorScriptDraft(props, (board) => {
+        board[key] = board[key].map((entry) =>
+          entry.id === item.id ? { ...entry, status: "retired" as const, updatedAt: new Date().toISOString() } : entry,
+        );
+      });
+      rerenderDirectorScriptPanel(props, row);
+    }),
+  );
+
+  row.append(text, meta, actions);
+  return row;
+}
+
+function renderDirectorScriptRevisionLog(props: RoomSurfaceProps): HTMLElement {
+  const language = props.state.language;
+  const revisions = props.state.room.director.scriptBoard.revisionLog.slice(0, 5);
+  const group = document.createElement("section");
+  group.className = "room-director-script-group room-director-script-revisions";
+  group.innerHTML = `<header><h4>${escapeHtml(roomUiText(language, "directorScriptRevisionLog", "修订记录"))}</h4></header>`;
+
+  const list = document.createElement("div");
+  list.className = "room-director-script-items";
+  if (revisions.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "room-director-script-empty";
+    empty.textContent = roomUiText(language, "noneYet", "暂无");
+    list.append(empty);
+  } else {
+    for (const revision of revisions) {
+      const item = document.createElement("div");
+      item.className = "room-director-script-item";
+      item.innerHTML = `
+        <p>${escapeHtml(localizedRoomSystemText(revision.summary, language))}</p>
+        <span>${escapeHtml(revision.reason)} · ${escapeHtml(revision.createdAt)}</span>
+      `;
+      list.append(item);
+    }
+  }
+
+  group.append(list);
+  return group;
+}
+
+function renderDirectorScriptDraftActions(props: RoomSurfaceProps): HTMLElement {
+  const language = props.state.language;
+  const wrap = document.createElement("footer");
+  wrap.className = "room-director-script-footer";
+
+  const status = document.createElement("span");
+  status.className = "room-director-script-status";
+  status.textContent = getDirectorScriptDraft(props).dirty ? roomUiText(language, "directorScriptUnsaved", "未保存草稿") : "";
+
+  const save = actionButton(roomUiText(language, "saveDirectorScript", "保存导演剧本"), () => {
+    const patch = createDirectorScriptDraftPatch(props);
+    if (!patch) {
+      status.textContent = roomUiText(language, "noDirectorScriptChanges", "没有可保存的变更");
+      return;
+    }
+    saveDirectorScriptDraft(props, patch);
+    status.textContent = roomUiText(language, "saveDirectorScript", "保存导演剧本");
+  });
+  const reset = actionButton(roomUiText(language, "resetDirectorScript", "重置"), () => {
+    resetDirectorScriptDraft(props);
+    rerenderDirectorScriptPanel(props, wrap);
+  });
+  wrap.append(status, save, reset);
+  return wrap;
+}
+
+function saveDirectorScriptDraft(props: RoomSurfaceProps, patch: DirectorScriptPatch): void {
+  props.onAction({
+    type: "room.updateDirectorScript",
+    patch,
+  });
+  const draft = getDirectorScriptDraft(props);
+  draft.board = cloneDirectorScriptBoard({ ...draft.board, ...patch });
+  draft.dirty = false;
+  draft.sourceStamp = directorScriptSourceStamp(draft.board);
+}
+
+function createDirectorScriptDraftPatch(props: RoomSurfaceProps): DirectorScriptPatch | null {
+  const current = props.state.room.director.scriptBoard;
+  const draft = getDirectorScriptDraft(props).board;
+  const patch: DirectorScriptPatch = {};
+  const changedKeys: string[] = [];
+  if ((current.premise ?? "") !== (draft.premise ?? "")) {
+    patch.premise = draft.premise;
+    changedKeys.push("plot direction");
+  }
+  if ((current.currentPhase ?? "") !== (draft.currentPhase ?? "")) {
+    patch.currentPhase = draft.currentPhase;
+    changedKeys.push("phase");
+  }
+  for (const key of directorScriptItemListKeys) {
+    const draftItems = cleanDirectorScriptDraftItems(current[key], draft[key]);
+    if (directorScriptItemsStamp(current[key]) !== directorScriptItemsStamp(draftItems)) {
+      patch[key] = draftItems;
+      changedKeys.push(directorScriptListLabel(key));
+    }
+  }
+  if (changedKeys.length === 0) {
+    return null;
+  }
+  patch.revision = {
+    id: `script-revision-${crypto.randomUUID()}`,
+    reason: "developer_edit",
+    summary: `Updated Director Script: ${changedKeys.join(", ")}`,
+    before: summarizeDirectorScriptBoard(current),
+    after: summarizeDirectorScriptBoard(draft),
+    createdBy: "developer",
+    createdAt: new Date().toISOString(),
+  };
+  return patch;
+}
+
+function getDirectorScriptDraft(props: RoomSurfaceProps): DirectorScriptDraftState {
+  const room = props.state.room;
+  const key = `${room.id}:${room.director.recipeId}`;
+  const sourceStamp = directorScriptSourceStamp(room.director.scriptBoard);
+  const existing = directorScriptDrafts.get(key);
+  if (existing && (existing.dirty || existing.sourceStamp === sourceStamp)) {
+    return existing;
+  }
+  const next: DirectorScriptDraftState = {
+    board: cloneDirectorScriptBoard(room.director.scriptBoard),
+    dirty: false,
+    open: existing?.open ?? getActiveRoomChannel(room).type === "director",
+    sourceStamp,
+  };
+  directorScriptDrafts.set(key, next);
+  return next;
+}
+
+function updateDirectorScriptDraft(props: RoomSurfaceProps, update: (board: DirectorScriptBoard) => void): void {
+  const draft = getDirectorScriptDraft(props);
+  update(draft.board);
+  draft.dirty = true;
+}
+
+function resetDirectorScriptDraft(props: RoomSurfaceProps): void {
+  const room = props.state.room;
+  const draft = getDirectorScriptDraft(props);
+  draft.board = cloneDirectorScriptBoard(room.director.scriptBoard);
+  draft.dirty = false;
+  draft.sourceStamp = directorScriptSourceStamp(room.director.scriptBoard);
+}
+
+function rerenderDirectorScriptPanel(props: RoomSurfaceProps, source: HTMLElement): void {
+  const entry = source.closest(".room-director-script-entry");
+  const panel = entry?.querySelector(".room-director-script-panel");
+  if (panel) {
+    panel.replaceWith(renderDirectorScriptPanel(props));
+  }
+}
+
+function cloneDirectorScriptBoard(board: DirectorScriptBoard): DirectorScriptBoard {
+  return {
+    premise: board.premise,
+    currentPhase: board.currentPhase,
+    hiddenFacts: board.hiddenFacts.map((item) => ({ ...item })),
+    openThreads: board.openThreads.map((item) => ({ ...item })),
+    plannedBeats: board.plannedBeats.map((item) => ({ ...item })),
+    pressureSources: board.pressureSources.map((item) => ({ ...item })),
+    environmentAnchors: board.environmentAnchors.map((item) => ({ ...item })),
+    forbiddenReveals: board.forbiddenReveals.map((item) => ({ ...item })),
+    continuityNotes: board.continuityNotes.map((item) => ({ ...item })),
+    revisionLog: board.revisionLog.map((revision) => ({ ...revision })),
+  };
+}
+
+function directorScriptSourceStamp(board: DirectorScriptBoard): string {
+  return JSON.stringify({
+    premise: board.premise ?? "",
+    currentPhase: board.currentPhase ?? "",
+    hiddenFacts: directorScriptItemsStamp(board.hiddenFacts),
+    openThreads: directorScriptItemsStamp(board.openThreads),
+    plannedBeats: directorScriptItemsStamp(board.plannedBeats),
+    pressureSources: directorScriptItemsStamp(board.pressureSources),
+    environmentAnchors: directorScriptItemsStamp(board.environmentAnchors),
+    forbiddenReveals: directorScriptItemsStamp(board.forbiddenReveals),
+    continuityNotes: directorScriptItemsStamp(board.continuityNotes),
+    revision: board.revisionLog[0]?.id ?? "",
+  });
+}
+
+function directorScriptItemsStamp(items: DirectorScriptItem[]): string {
+  return JSON.stringify(
+    items.map((item) => [
+      item.id,
+      item.text,
+      item.status,
+      item.updatedAt,
+      item.createdBy,
+      item.visibility,
+      item.sourceVisibility,
+      item.publicSafety,
+      item.sourceMessageIds?.join(",") ?? "",
+    ]),
+  );
+}
+
+function cleanDirectorScriptDraftItems(current: DirectorScriptItem[], draft: DirectorScriptItem[]): DirectorScriptItem[] {
+  const currentIds = new Set(current.map((item) => item.id));
+  return draft
+    .filter((item) => item.text.trim() || currentIds.has(item.id))
+    .map((item) => ({ ...item, text: item.text.trim() }));
+}
+
+function directorScriptListLabel(key: DirectorScriptItemListKey): string {
+  switch (key) {
+    case "hiddenFacts":
+      return "hidden facts";
+    case "openThreads":
+      return "open threads";
+    case "plannedBeats":
+      return "planned beats";
+    case "environmentAnchors":
+      return "environment anchors";
+    case "forbiddenReveals":
+      return "forbidden reveals";
+    case "continuityNotes":
+      return "continuity notes";
+  }
+}
+
+function summarizeDirectorScriptBoard(board: DirectorScriptBoard): string {
+  const activeCount = (items: DirectorScriptItem[]) => items.filter((item) => item.status !== "retired").length;
+  return [
+    `phase=${compactDirectorScriptSummaryText(board.currentPhase)}`,
+    `plot=${compactDirectorScriptSummaryText(board.premise)}`,
+    `hidden=${activeCount(board.hiddenFacts)}`,
+    `threads=${activeCount(board.openThreads)}`,
+    `beats=${activeCount(board.plannedBeats)}`,
+    `anchors=${activeCount(board.environmentAnchors)}`,
+  ].join("; ");
+}
+
+function compactDirectorScriptSummaryText(value: string | undefined): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return "none";
+  }
+  return trimmed.length > 48 ? `${trimmed.slice(0, 45)}...` : trimmed;
+}
+
+function isPublicDirectorScriptList(key: DirectorScriptItemListKey): boolean {
+  return key === "openThreads" || key === "plannedBeats" || key === "environmentAnchors";
+}
+
+function directorScriptItemSafetyLabels(item: DirectorScriptItem, key: DirectorScriptItemListKey): string[] {
+  const safety = item.publicSafety ?? (item.createdBy === "developer" ? "developer_revealed" : undefined);
+  if (safety === "developer_revealed") {
+    return ["DEVELOPER REVEALED"];
+  }
+  if (safety === "public_safe") {
+    return ["PUBLIC"];
+  }
+  if (safety === "private_blocked") {
+    const source = item.sourceVisibility ?? item.visibility ?? "director_only";
+    if (source === "faction_huddle" || item.visibility === "faction") {
+      return ["FACTION BLOCKED"];
+    }
+    if (source === "director_channel" || source === "director_only") {
+      return ["DIRECTOR ONLY"];
+    }
+    return ["PRIVATE BLOCKED"];
+  }
+  if (isPublicDirectorScriptList(key) && item.createdBy !== "developer") {
+    return ["PRIVATE BLOCKED"];
+  }
+  return [item.visibility === "public" ? "PUBLIC" : "DIRECTOR ONLY"];
+}
+
+function createDeveloperDirectorScriptItem(text: string, key: DirectorScriptItemListKey): DirectorScriptItem {
+  const now = new Date().toISOString();
+  const publicList = isPublicDirectorScriptList(key);
+  return {
+    id: `script-${crypto.randomUUID()}`,
+    text,
+    status: "planned",
+    visibility: publicList ? "public" : "director_only",
+    sourceVisibility: publicList ? "public" : "director_only",
+    publicSafety: publicList ? "developer_revealed" : "private_blocked",
+    createdBy: "developer",
+    updatedAt: now,
+  };
 }
 
 function renderRoomRulesDetail(props: RoomSurfaceProps): HTMLElement {
@@ -1235,7 +1731,6 @@ function renderRoomControls(props: RoomSurfaceProps): HTMLElement {
           mode: props.state.room.privateWhispers === "on" ? "off" : "on",
         }),
     ),
-    renderSpeedSelect(props),
   );
   controls.append(renderRoomGenerationControl(props));
   return controls;
@@ -1490,6 +1985,7 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
     { label: label("style"), value: simulationStyleLabel(room.simulation.style, language) },
     { label: label("uncertainty"), value: simulationUncertaintyProfileLabel(room.simulation.uncertaintyProfile, language) },
     { label: roomUiText(language, "advancePolicy"), value: roomAdvancePolicyLabel(room.advancePolicy ?? "fill_gap", language) },
+    { label: roomUiText(language, "contextBudget"), value: roomContextBudgetLabel(room.contextBudget ?? "balanced", language) },
     { label: roomUiText(language, "speakerPolicy"), value: roomSpeakerPolicyLabel(room.speakerPolicy?.mode ?? "balanced", language) },
     ...(room.lastEngagementDecision
       ? [
@@ -2641,15 +3137,6 @@ function renderRoleManagement(props: RoomSurfaceProps): HTMLElement {
   return roles;
 }
 
-function renderSpeedSelect(props: RoomSurfaceProps): HTMLElement {
-  const language = props.state.language;
-  return renderSelectField(t(language, "roomSpeed"), props.state.room.speed, [
-    ["slow", roomUiText(language, "slow")],
-    ["normal", roomUiText(language, "normal")],
-    ["fast", roomUiText(language, "fast")],
-  ], (value) => props.onAction({ type: "room.setSpeed", speed: value as ConsoleAppState["room"]["speed"] }));
-}
-
 function recipeName(recipeId: ConsoleAppState["room"]["director"]["recipeId"], language: ConsoleAppState["language"]): string {
   const recipe = roomRecipes.find((item) => item.id === recipeId);
   return localizedRoomRecipeName(recipeId, recipe?.name ?? recipeId, language);
@@ -2949,9 +3436,20 @@ function updateAddressHint(root: ParentNode, value: string, props: RoomSurfacePr
     props.state.room.userProfile,
     props.state.room.participants,
     props.state.room.director,
+    { mentionStyle: "plain" },
   );
   const channel = getActiveRoomChannel(props.state.room);
   const forcePublic = /(^|\s)@all(?=$|\s|[,.!?;:，。！？；：])/i.test(value);
+  const language = props.state.language;
+  if (hasRoomDirectorMention(value, props.state.room.director) || isTargetingDirector(addressing.target)) {
+    hint.textContent = t(language, "roomAddressDirectorBackstage");
+    return;
+  }
+  const roleTargets = targetRoleIds(addressing.target);
+  if (channel.type === "public" && roleTargets.length > 0) {
+    hint.textContent = t(language, "roomAddressPublicRoleMention", { target });
+    return;
+  }
   hint.textContent =
     channel.type === "faction" && addressing.target === "all" && !forcePublic
       ? t(props.state.language, "roomAddressChannel", { faction: displayChannelLabel(props, channel) })
@@ -3303,7 +3801,11 @@ function autoSpeechCopy(props: RoomSurfaceProps): string {
 
 function autoSpeechStatusLabel(props: RoomSurfaceProps): string {
   const language = props.state.language;
-  switch (props.state.room.autoSpeechState.status) {
+  const room = props.state.room;
+  if (room.isOpen && room.autoChat && room.advancePolicy === "continuous" && room.autoSpeechState.status === "waiting_user") {
+    return t(language, "roomAutoRunning");
+  }
+  switch (room.autoSpeechState.status) {
     case "running":
       return t(language, "roomAutoRunning");
     case "waiting_user":
@@ -3337,7 +3839,7 @@ function initialAddressHint(props: RoomSurfaceProps): string {
   if (channel.type === "private") {
     return roomUiText(props.state.language, "privateThreadInputHint", `Private chat - ${displayChannelLabel(props, channel)}`);
   }
-  return t(props.state.language, "roomAddressAll");
+  return t(props.state.language, "roomAddressPublicMentionHelp");
 }
 
 function roomPromptChannel(props: RoomSurfaceProps): string {
@@ -3422,6 +3924,10 @@ function roomAdvancePolicyLabel(policy: RoomAdvancePolicy, language: ConsoleAppS
   return roomUiText(language, `advancePolicy_${policy}`);
 }
 
+function roomContextBudgetLabel(budget: RoomContextBudget, language: ConsoleAppState["language"]): string {
+  return roomUiText(language, `contextBudget_${budget}`);
+}
+
 function roomAdvancePolicyHint(policy: RoomAdvancePolicy, language: ConsoleAppState["language"]): string {
   return roomUiText(language, `advancePolicy_${policy}_hint`);
 }
@@ -3491,6 +3997,7 @@ function roomPlanLabel(room: ConsoleAppState["room"], language: ConsoleAppState[
 
 function roomPlanDetail(room: ConsoleAppState["room"], language: ConsoleAppState["language"]): string {
   const plan = room.activeDiscussionPlan;
+  const continuousFlowActive = room.isOpen && room.autoChat && room.advancePolicy === "continuous";
   if (!plan) {
     if (room.autoChat) {
       return roomUiText(language, "autoWaitingNextTurn");
@@ -3498,6 +4005,9 @@ function roomPlanDetail(room: ConsoleAppState["room"], language: ConsoleAppState
     return room.lastTerminationReason ? terminationReasonLabel(room.lastTerminationReason, language) : roomUiText(language, "waitingInput");
   }
   if (plan.status !== "running") {
+    if (continuousFlowActive && !isHardContinuousUiStopReason(plan.lastStopReason)) {
+      return roomUiText(language, "autoWaitingNextTurn");
+    }
     return plan.lastStopReason
       ? `${roomUiText(language, "stopped")} / ${terminationReasonLabel(plan.lastStopReason, language)}`
       : roomUiText(language, "completed");
@@ -3507,6 +4017,10 @@ function roomPlanDetail(room: ConsoleAppState["room"], language: ConsoleAppState
   const currentName = current ? plannedSpeakerName(room, current.speakerId) : roomUiText(language, "unknown");
   const nextName = next ? plannedSpeakerName(room, next.speakerId) : roomUiText(language, "none");
   return `${currentName} ${plan.activeTurnIndex + 1}/${plan.turns.length} / ${roomUiText(language, "next")} ${nextName}`;
+}
+
+function isHardContinuousUiStopReason(reason: ConsoleAppState["room"]["lastTerminationReason"]): boolean {
+  return reason === "model_unavailable" || reason === "private_leak_blocked" || reason === "budget_limit";
 }
 
 function terminationReasonLabel(reason: ConsoleAppState["room"]["lastTerminationReason"], language: ConsoleAppState["language"]): string {

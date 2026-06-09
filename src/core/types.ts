@@ -792,6 +792,18 @@ export type RoomMessageTarget = "all" | { targets: RoomMentionTarget[] };
 
 export type RoomMessageVisibility = "public" | "private_ai" | "faction_huddle" | "private_thread" | "director_channel";
 
+export type DirectorSourceVisibility =
+  | "public"
+  | "private_thread"
+  | "private_ai"
+  | "faction_huddle"
+  | "director_channel"
+  | "director_only";
+
+export type DirectorScriptPublicSafety = "public_safe" | "private_blocked" | "developer_revealed";
+
+export type DirectorScriptItemVisibility = "public" | "director_only" | "known_to_roles" | "faction";
+
 export type RoomPrivateWhisperMode = "off" | "on";
 
 export type RoomFactionHuddleMode = "off" | "on";
@@ -1341,12 +1353,16 @@ export type RoomScheduleReason =
   | "room_closed"
   | "not_enough_roles"
   | "question_loop"
+  | "no_candidate"
+  | "casual_topic_shift"
   | "repetition_guard"
   | "api_unavailable";
 
 export type RoomAdvancePolicy = "wait_for_instruction" | "fill_gap" | "continuous";
 
 export type RoomSpeakerPolicy = "balanced" | "round_robin" | "spotlight" | "freeform";
+
+export type RoomContextBudget = "compact" | "balanced" | "full";
 
 export type RoomAutoPacePreset = "fast" | "natural" | "slow" | "custom";
 
@@ -1640,6 +1656,37 @@ export interface RoomDebateSpeakerAssignment {
   updatedAt?: string;
 }
 
+export type RoomDebateFlowStepType =
+  | "director_opening"
+  | "role_speech"
+  | "cross_examination"
+  | "free_debate"
+  | "director_summary"
+  | "director_verdict";
+
+export interface RoomDebateFlowStep {
+  id: string;
+  type: RoomDebateFlowStepType;
+  sideId?: string;
+  position?: RoomDebateSpeakerPosition;
+  roleId?: string;
+  publicLabel: string;
+  task: string;
+  maxWords?: number;
+  requiresDirector?: boolean;
+}
+
+export interface RoomDebateFlow {
+  format: "standard_cn" | "custom";
+  language: "zh-CN" | "en";
+  motion: string;
+  steps: RoomDebateFlowStep[];
+  currentStepIndex: number;
+  completedStepIds: string[];
+  sourceText?: string;
+  updatedAt?: string;
+}
+
 export type RoomDebateLifecyclePhase =
   | "setup_pending"
   | "round_active"
@@ -1658,6 +1705,7 @@ export interface RoomMatchState {
   spokenRoleIdsByRound?: Record<string, string[]>;
   skippedRoleIdsByRound?: Record<string, string[]>;
   deferredRequirements?: DeferredRequirement[];
+  debateFlow?: RoomDebateFlow;
   scoreboard: ScoreEntry[];
   winCondition: string;
   judgeNotes: string[];
@@ -1721,7 +1769,10 @@ export interface DirectorScriptItem {
   id: string;
   text: string;
   status: DirectorScriptItemStatus;
-  visibility: "director_only";
+  visibility: DirectorScriptItemVisibility;
+  sourceVisibility?: DirectorSourceVisibility;
+  sourceMessageIds?: string[];
+  publicSafety?: DirectorScriptPublicSafety;
   createdBy: "director" | "developer";
   updatedAt: string;
 }
@@ -1753,6 +1804,18 @@ export type DirectorScriptPatch = Partial<Omit<DirectorScriptBoard, "revisionLog
   revision?: DirectorScriptRevision;
   revisionLog?: DirectorScriptRevision[];
 };
+
+export interface DirectorScriptScope {
+  roomId: string;
+  mode: RoomRecipeId;
+}
+
+export interface ScopedDirectorScript {
+  scope: DirectorScriptScope;
+  plotDirection: PlotArcState;
+  scriptBoard: DirectorScriptBoard;
+  updatedAt: string;
+}
 
 export type RoomConstraintScope = "scene" | "role" | "user" | "item" | "knowledge" | "channel" | "director";
 export type RoomConstraintStatus = "active" | "resolved" | "suspended" | "needs_review";
@@ -1941,6 +2004,8 @@ export interface DirectorStatePatch {
     stopReason?: RoomStopReason;
     nextPressure?: string;
     lastTurnOutcome?: string | null;
+    sourceVisibility?: DirectorSourceVisibility;
+    publicSafe?: boolean;
     directorMemorySource?: "graph" | "graph+fallback" | "fallback";
     directorMemoryLoadedClaims?: number;
     directorMemoryHiddenClaims?: number;
@@ -2257,6 +2322,7 @@ export interface RoomState {
   simulationObjective: SimulationObjective;
   simulation: RoomSimulationState;
   plot: PlotArcState;
+  directorScriptsByMode?: Partial<Record<RoomRecipeId, ScopedDirectorScript>>;
   frame: RoomFrameState;
   match: RoomMatchState;
   topic: string;
@@ -2275,6 +2341,7 @@ export interface RoomState {
   autoSpeechPolicy: RoomAutoSpeechPolicy;
   autoSpeechState: RoomAutoSpeechState;
   advancePolicy?: RoomAdvancePolicy;
+  contextBudget?: RoomContextBudget;
   autoPace?: RoomAutoPaceSettings;
   speakerPolicy?: RoomSpeakerPolicySettings;
   lastContinuationAssessment?: ContinuationAssessment | null;
@@ -2472,7 +2539,7 @@ export type ConsoleAction =
   | { type: "room.create"; title?: string; recipeId?: RoomRecipeId }
   | { type: "room.switch"; roomId: string }
   | { type: "room.rename"; roomId?: string; title: string }
-  | { type: "room.duplicate"; roomId?: string; title?: string }
+  | { type: "room.duplicate"; roomId?: string; title?: string; copyDirectorScript?: boolean }
   | { type: "room.delete"; roomId?: string }
   | { type: "room.toggleOpen" }
   | { type: "room.toggleAutoChat" }
@@ -2536,6 +2603,7 @@ export type ConsoleAction =
   | { type: "room.setSpeed"; speed: RoomState["speed"] }
   | { type: "room.setFreedomLevel"; freedomLevel: RoomFreedomLevel }
   | { type: "room.setAdvancePolicy"; policy: RoomAdvancePolicy }
+  | { type: "room.setContextBudget"; budget: RoomContextBudget }
   | { type: "room.setAutoPacePreset"; preset: RoomAutoPacePreset }
   | { type: "room.setAutoPaceNumberField"; field: "minDelayMs" | "maxDelayMs" | "idleFillDelayMs"; value: number }
   | { type: "room.setAutoPaceRandomize"; randomize: boolean }
@@ -2928,9 +2996,20 @@ export interface EmotionResult {
   explicitEmotion?: boolean;
 }
 
+export interface AiTokenUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  estimatedPromptTokens?: number;
+  estimatedCompletionTokens?: number;
+  promptChars: number;
+  completionChars: number;
+}
+
 export interface AiProviderResult extends EmotionResult {
   provider: string;
   usedContext: Array<keyof InteractionPipelineContext>;
+  usage?: AiTokenUsage;
 }
 
 export type AiProviderErrorCode = "not_configured" | "timeout" | "cancelled" | "network" | "unsupported" | "unknown";

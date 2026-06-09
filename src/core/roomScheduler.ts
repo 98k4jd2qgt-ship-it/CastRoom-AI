@@ -5,6 +5,7 @@ import type {
   DirectorOverrideRequest,
   DirectorScriptItem,
   DirectorScriptPatch,
+  DirectorSourceVisibility,
   DirectorTickResult,
   DirectorStructuredOutcome,
   DirectorTurnPlan,
@@ -114,9 +115,12 @@ import {
   isDebateRoom,
   isDebateSetupRequest,
   isDebateVerdictRequest,
+  isStrictDebateFlow,
   participantDebateSide,
   requiredDebateSpeakerAssignments,
+  resolveNextDebateFlowStep,
   resolveNextDebateSpeakerAssignment,
+  strictDebateFlowTurnTask,
 } from "./debatePolicy";
 import {
   getDirectorPromptProfile,
@@ -130,6 +134,7 @@ import {
   formatRoomTarget,
   getActiveRoomChannel,
   getChannelVisibleRoleIds,
+  hasRoomDirectorMention,
   isTargetingDirector,
   isTargetingUser,
   mentionsFromTarget,
@@ -168,9 +173,12 @@ export {
   isDebateRoom,
   isDebateSetupRequest,
   isDebateVerdictRequest,
+  isStrictDebateFlow,
   orderedDebateAssignments,
   participantDebateSide,
+  resolveNextDebateFlowStep,
   resolveNextDebateSpeakerAssignment,
+  strictDebateFlowTurnTask,
 } from "./debatePolicy";
 export {
   buildDirectorIdentityCardSummary,
@@ -226,6 +234,7 @@ export {
   getActiveRoomChannel,
   getChannelVisibleRoleIds,
   getVisibleContextForParticipant,
+  hasRoomDirectorMention,
   isPrivateAiWhisper,
   isTargetingDirector,
   isTargetingUser,
@@ -276,7 +285,7 @@ interface SimulationBeatCandidate {
 }
 
 export function resolveRoomFlowMode(room: RoomState): RoomFlowMode {
-  return room.autoChat && roomAdvancePolicy(room) === "continuous" ? "auto_simulation" : "player_reactive";
+  return isContinuousRoomFlow(room) ? "auto_simulation" : "player_reactive";
 }
 
 export function resolveSimulationObjective(room: RoomState): SimulationObjective {
@@ -1184,7 +1193,7 @@ function selectPlannedSpeakerIds(
   const visibleRoleIds = new Set(getChannelVisibleRoleIds(room, room.activeChannelId));
   const directRoleIds = intents.filter((item) => item.decision === "speak" && item.priority >= 90).map((item) => item.roleId);
   if (intent === "direct_mention" && directRoleIds.length > 0) {
-    return directRoleIds.filter((roleId) => visibleRoleIds.has(roleId)).slice(0, 1);
+    return directRoleIds.filter((roleId) => visibleRoleIds.has(roleId)).slice(0, Math.min(maxTurns, 3));
   }
 
   const ranked = intents
@@ -1228,10 +1237,10 @@ function plannedTurnTarget(
   index: number,
 ): RoomMessageTarget {
   if (intent === "direct_mention") {
-    return addressing.target;
+    return { targets: [{ type: "user", userId: room.userProfile.userId }] };
   }
   if (intent === "group_opinion" || intent === "debate_round") {
-    return index === 0 ? { targets: [{ type: "user", userId: room.userProfile.userId }] } : "all";
+    return "all";
   }
   if (intent === "auto_simulation" || intent === "team_strategy") {
     return "all";
@@ -1240,11 +1249,14 @@ function plannedTurnTarget(
 }
 
 function plannedTurnGoal(intent: RoomInputIntent, participant: RoomParticipant, index: number, room: RoomState): string {
+  if (intent === "direct_mention") {
+    return `${participant.name} was publicly mentioned by the user. Answer the user's question or request first, directly and briefly, then add only one room-relevant note if useful. Do not use @mentions.`;
+  }
   if (intent === "group_opinion") {
     return createModeRoleTurnGoal(room, participant, index, intent);
   }
   if (intent === "debate_round") {
-    return createDebateTurnGoal(room, participant, index);
+    return strictDebateFlowTurnTask(room, participant, room.match.debateFlow?.language ?? "en") ?? createDebateTurnGoal(room, participant, index);
   }
   if (intent === "team_strategy") {
     return createModeRoleTurnGoal(room, participant, index, intent);
@@ -1268,7 +1280,8 @@ export function buildPrivateRoleDirective(input: {
   const goal =
     input.goal ??
     (mode === "debate"
-      ? createDebateTurnGoal(input.room, input.participant, 0)
+      ? strictDebateFlowTurnTask(input.room, input.participant, input.room.match.debateFlow?.language ?? "en") ??
+        createDebateTurnGoal(input.room, input.participant, 0)
       : createModeRoleTurnGoal(input.room, input.participant, 0, "single_reply"));
   return {
     roleId: input.participant.id,
@@ -1283,6 +1296,9 @@ export function buildPrivateRoleDirective(input: {
 }
 
 function maxTurnsForIntent(intent: RoomInputIntent, plannerMode: "rule" | "cloud"): number {
+  if (intent === "direct_mention") {
+    return 3;
+  }
   if (intent === "group_opinion" || intent === "debate_round") {
     return plannerMode === "cloud" ? 3 : 2;
   }
@@ -1899,6 +1915,87 @@ export function roomAdvancePolicy(room: Pick<RoomState, "advancePolicy">): RoomA
   return room.advancePolicy ?? "fill_gap";
 }
 
+export function isContinuousRoomFlow(room: Pick<RoomState, "isOpen" | "autoChat" | "advancePolicy">): boolean {
+  return room.isOpen && room.autoChat && roomAdvancePolicy(room) === "continuous";
+}
+
+export type RoomAutoFlowPhase =
+  | "idle"
+  | "queued"
+  | "dispatching_role"
+  | "waiting_director"
+  | "cooling_down"
+  | "hard_stopped";
+
+export type RoomHardStopReason =
+  | "manual_pause"
+  | "room_closed"
+  | "not_enough_roles"
+  | "api_unavailable"
+  | "model_unavailable"
+  | "private_leak_blocked"
+  | "provider_failure"
+  | "runtime_error";
+
+export type RoomAutoFlowCommand =
+  | { type: "dispatch_role"; roleId: string; target: "all" | RoomMessageTarget; reason: string }
+  | { type: "dispatch_director"; move: RoomDirectorMove; reason: string }
+  | { type: "schedule_retry"; reason: string; delayMs: number }
+  | { type: "hard_stop"; reason: RoomHardStopReason };
+
+export function isHardRoomAutoBlock(room: RoomState, blockingNeed: RoomBlockingNeed): boolean {
+  if (blockingNeed === "privacy_or_safety" || blockingNeed === "provider_failure") {
+    return true;
+  }
+  if (isContinuousRoomFlow(room)) {
+    return false;
+  }
+  if (blockingNeed === "irreversible_decision" || blockingNeed === "explicit_user_choice") {
+    return true;
+  }
+  return blockingNeed === "user_answer_expected" && resolveDirectorMode(room) === "study";
+}
+
+function hardStopReasonForRoom(room: RoomState, blockingNeed: RoomBlockingNeed): RoomHardStopReason | null {
+  if (!room.isOpen) {
+    return "room_closed";
+  }
+  if (room.participants.length < 1) {
+    return "not_enough_roles";
+  }
+  if (blockingNeed === "provider_failure") {
+    return "provider_failure";
+  }
+  if (blockingNeed === "privacy_or_safety") {
+    return "private_leak_blocked";
+  }
+  return null;
+}
+
+export function resolveRoomAutoFlowCommand(
+  room: RoomState,
+  input: {
+    blockingNeed?: RoomBlockingNeed;
+    reason?: RoomScheduleReason;
+    delayMs?: number;
+  } = {},
+): RoomAutoFlowCommand {
+  const blockingNeed = input.blockingNeed ?? "none";
+  const hardStop = hardStopReasonForRoom(room, blockingNeed);
+  if (hardStop || isHardRoomAutoBlock(room, blockingNeed)) {
+    return { type: "hard_stop", reason: hardStop ?? "runtime_error" };
+  }
+  const delayMs = input.delayMs ?? getRoomDelayMs(room);
+  const roleId = room.participants.find((participant) => participant.id !== room.lastSpeakerId)?.id ?? room.participants[0]?.id;
+  if (roleId) {
+    return { type: "dispatch_role", roleId, target: "all", reason: input.reason ?? "idle_auto" };
+  }
+  if (room.director.enabled) {
+    return { type: "dispatch_director", move: "cue", reason: input.reason ?? "idle_auto" };
+  }
+  return { type: "schedule_retry", reason: input.reason ?? "no_candidate", delayMs };
+}
+
 type ContinuationMode = SituationAssessment["mode"] | RoomCollaborationMode;
 type ContinuationSituation = SituationAssessment | SituationAssessmentSummary;
 
@@ -2012,9 +2109,8 @@ export function resolveContinuationAssessment(
 ): ContinuationAssessment {
   const mode = assessment?.mode ?? resolveRoomCollaborationMode(room);
   const blockingNeed = fallbackBlockingNeed ?? blockingNeedFromPlan(room, plan, assessment);
-  const hardBlocker =
-    blockingNeed === "irreversible_decision" || blockingNeed === "privacy_or_safety" || blockingNeed === "provider_failure";
-  const explicitChoice = blockingNeed === "explicit_user_choice";
+  const hardBlocker = isHardRoomAutoBlock(room, blockingNeed);
+  const explicitChoice = !isContinuousRoomFlow(room) && blockingNeed === "explicit_user_choice";
   return {
     blockingNeed,
     canContinueWithoutUser: blockingNeed === "none" || (!hardBlocker && !explicitChoice),
@@ -2027,18 +2123,14 @@ export function resolveContinuationAssessment(
 export function resolveAdvanceDecision(room: RoomState, continuation: ContinuationAssessment): RoomAdvanceDecision {
   const policy = roomAdvancePolicy(room);
   let action: RoomAdvanceDecision["action"] = "continue";
-  if (
-    continuation.blockingNeed === "privacy_or_safety" ||
-    continuation.blockingNeed === "provider_failure" ||
-    continuation.blockingNeed === "irreversible_decision"
-  ) {
+  if (isHardRoomAutoBlock(room, continuation.blockingNeed)) {
     action = "pause";
   } else if (continuation.blockingNeed === "none") {
     action = "continue";
   } else if (policy === "wait_for_instruction") {
     action = "pause";
   } else if (policy === "fill_gap") {
-    action = continuation.blockingNeed === "explicit_user_choice" ? "pause" : "fill_gap";
+    action = "fill_gap";
   } else if (policy === "continuous") {
     action = "continue";
   } else {
@@ -2417,7 +2509,7 @@ function waitDecisionFor(
 }
 
 function shouldContinueRoomAutoAfterBeat(room: RoomState): boolean {
-  return room.autoChat && roomAdvancePolicy(room) === "continuous";
+  return isContinuousRoomFlow(room);
 }
 
 function createPolicyPendingFollowup(
@@ -2463,13 +2555,26 @@ function policyBlockedAutoResult(
   blockingNeed: RoomBlockingNeed,
   nowMs: number,
   delayMs: number,
+  input?: ScheduleRoomTurnInput,
+  addressing?: RoomAddressing,
 ): RoomScheduleResult {
   const { continuationAssessment, advanceDecision } = waitDecisionFor(room, blockingNeed);
-  if (advanceDecision.action === "pause") {
+  const continuousSoftBlock = isContinuousRoomFlow(room) && !isHardRoomAutoBlock(room, blockingNeed);
+  const effectiveDecision: RoomAdvanceDecision = continuousSoftBlock
+    ? {
+        ...advanceDecision,
+        action: "continue",
+        canContinueWithoutUser: true,
+        reason: advanceDecision.defaultAssumption ?? "continuous_soft_block",
+        safeNextMove: advanceDecision.safeNextMove === "pause" ? "role_turn" : advanceDecision.safeNextMove,
+        waitReason: undefined,
+      }
+    : advanceDecision;
+  if (advanceDecision.action === "pause" && !continuousSoftBlock) {
     return withContinuationDecision(stop("waiting_user", "waiting_user", room, null), continuationAssessment, advanceDecision);
   }
-  if (advanceDecision.action === "fill_gap") {
-    const pendingFollowup = createPolicyPendingFollowup(room, advanceDecision, reason, nowMs);
+  if (effectiveDecision.action === "fill_gap" || effectiveDecision.action === "continue") {
+    const pendingFollowup = createPolicyPendingFollowup(room, effectiveDecision, reason, nowMs);
     if (pendingFollowup) {
       return withContinuationDecision(
         {
@@ -2483,11 +2588,41 @@ function policyBlockedAutoResult(
           },
         },
         continuationAssessment,
-        advanceDecision,
+        effectiveDecision,
       );
     }
   }
-  return withContinuationDecision(directorHandoff(reason, room, nowMs + delayMs), continuationAssessment, advanceDecision);
+  if (effectiveDecision.action === "continue" && input && addressing) {
+    const speechIntent =
+      createCasualTopicShiftSpeechIntent(room, input, addressing, reason) ??
+      createAutonomousFallbackSpeechIntent(room, input, addressing, reason);
+    if (speechIntent?.decision === "speak") {
+      return withContinuationDecision(
+        {
+          type: "turn",
+          reason: speechIntent.reason.startsWith("casual_topic_shift") ? "casual_topic_shift" : reason,
+          status: "cooling_down",
+          nextTurnAt: nowMs + delayMs,
+          consecutiveAutoTurns: room.autoSpeechState.consecutiveAutoTurns + 1,
+          userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
+          speechIntent,
+          participant: room.participants.find((item) => item.id === speechIntent.roleId),
+          intent: speechIntent.reason,
+          target: "all",
+          observerRoleIds: [],
+        },
+        continuationAssessment,
+        effectiveDecision,
+      );
+    }
+    if (shouldContinueRoomAutoAfterBeat(room)) {
+      return withContinuationDecision(stop(reason, "cooling_down", room, nowMs + delayMs), continuationAssessment, effectiveDecision);
+    }
+  }
+  if (continuousSoftBlock) {
+    return withContinuationDecision(stop(reason, "cooling_down", room, nowMs + delayMs), continuationAssessment, effectiveDecision);
+  }
+  return withContinuationDecision(directorHandoff(reason, room, nowMs + delayMs), continuationAssessment, effectiveDecision);
 }
 
 function createPendingFollowupSpeechIntent(
@@ -2562,6 +2697,50 @@ function createAutonomousFallbackSpeechIntent(
     reason: `autonomous_role_fallback ${reason}`,
     emotionHint: "idle",
     maxLength: isDebateRoom(room) ? 420 : 320,
+  };
+}
+
+function shouldUseCasualTopicShift(room: RoomState, trigger: RoomTurnTrigger): boolean {
+  return trigger === "auto" && room.autoChat && resolveDirectorMode(room) === "casual";
+}
+
+function createCasualTopicShiftSpeechIntent(
+  room: RoomState,
+  input: ScheduleRoomTurnInput,
+  addressing: RoomAddressing,
+  reason: string,
+): RoomSpeechIntent | null {
+  if (!shouldUseCasualTopicShift(room, input.trigger)) {
+    return null;
+  }
+
+  const participant = chooseNextParticipant(room, input.userInput ?? "", addressing, input.trigger);
+  const eligibility = validateNextSpeakerEligibility(room, {
+    roleId: participant.id,
+    priority: 90,
+    reason: `casual_topic_shift ${reason}`,
+  });
+  const fallbackParticipant = eligibility.ok
+    ? participant
+    : room.participants.find((candidate) => validateNextSpeakerEligibility(room, {
+        roleId: candidate.id,
+        priority: 90,
+        reason: `casual_topic_shift ${reason}`,
+      }).ok);
+
+  if (!fallbackParticipant) {
+    return null;
+  }
+
+  return {
+    roleId: fallbackParticipant.id,
+    decision: "speak",
+    target: "all",
+    delayMs: 0,
+    priority: 90,
+    reason: `casual_topic_shift ${reason}`,
+    emotionHint: "curious",
+    maxLength: 260,
   };
 }
 
@@ -2659,11 +2838,27 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
     }
 
     if (!pendingFollowup && hasQuestionLoop(room)) {
-      return finalizeScheduleResult(policyBlockedAutoResult(room, "question_loop", "user_answer_expected", nowMs, delayMs));
+      const topicShiftIntent = createCasualTopicShiftSpeechIntent(room, input, addressing, "question_loop");
+      if (topicShiftIntent) {
+        return finalizeScheduleResult({
+          type: "turn",
+          reason: "casual_topic_shift",
+          status: shouldContinueRoomAutoAfterBeat(room) ? "cooling_down" : "paused",
+          nextTurnAt: shouldContinueRoomAutoAfterBeat(room) ? nowMs + delayMs : null,
+          consecutiveAutoTurns: room.autoSpeechState.consecutiveAutoTurns + 1,
+          userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
+          speechIntent: topicShiftIntent,
+          participant: room.participants.find((item) => item.id === topicShiftIntent.roleId),
+          intent: topicShiftIntent.reason,
+          target: "all",
+          observerRoleIds: [],
+        });
+      }
+      return finalizeScheduleResult(policyBlockedAutoResult(room, "question_loop", "user_answer_expected", nowMs, delayMs, input, addressing));
     }
 
     if (!pendingFollowup && room.simulation?.playerIntervention !== "watch" && lastMessageTargetsUserQuestion(room)) {
-      return finalizeScheduleResult(policyBlockedAutoResult(room, "waiting_user", "user_answer_expected", nowMs, delayMs));
+      return finalizeScheduleResult(policyBlockedAutoResult(room, "waiting_user", "user_answer_expected", nowMs, delayMs, input, addressing));
     }
   }
 
@@ -2692,9 +2887,28 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   if (!pendingFollowup && plannedTurn && !staleDebatePlan && !staleSpeakerPlan && !autoDirectorPlanRoleFastPath) {
     const plannedResult = executeRoomPlannedTurn(plannedTurn, room, input, reason);
     if (plannedResult.type === "turn" && plannedResult.message && isRepetition(room, plannedResult.message.text)) {
-      if (trigger === "auto" && room.autoChat && room.director.enabled) {
+      const topicShiftIntent = createCasualTopicShiftSpeechIntent(room, input, addressing, "repetition_guard");
+      if (topicShiftIntent) {
         return finalizeScheduleResult({
-          ...policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs),
+          type: "turn",
+          reason: "casual_topic_shift",
+          status: shouldContinueRoomAutoAfterBeat(room) ? "cooling_down" : "paused",
+          nextTurnAt: shouldContinueRoomAutoAfterBeat(room) ? nowMs + delayMs : null,
+          consecutiveAutoTurns: room.autoSpeechState.consecutiveAutoTurns + 1,
+          userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
+          speechIntent: topicShiftIntent,
+          participant: room.participants.find((item) => item.id === topicShiftIntent.roleId),
+          intent: topicShiftIntent.reason,
+          target: "all",
+          plannerResult,
+          discussionPlan: terminateRoomPlan(discussionPlan, "repeated") ?? undefined,
+          plannedTurn,
+          observerRoleIds: [],
+        });
+      }
+      if (trigger === "auto" && room.autoChat) {
+        return finalizeScheduleResult({
+          ...policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs, input, addressing),
           plannerResult,
           discussionPlan: terminateRoomPlan(discussionPlan, "repeated") ?? undefined,
           plannedTurn,
@@ -2720,10 +2934,13 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   const selectedSpeechIntent = pendingSpeechIntent ?? selectRoomSpeechTurn(intents, room);
   const speechIntent =
     selectedSpeechIntent?.decision === "ask_director" && trigger === "auto"
-      ? createAutonomousFallbackSpeechIntent(room, input, addressing, selectedSpeechIntent.reason) ?? selectedSpeechIntent
+      ? createCasualTopicShiftSpeechIntent(room, input, addressing, selectedSpeechIntent.reason) ??
+        createAutonomousFallbackSpeechIntent(room, input, addressing, selectedSpeechIntent.reason) ??
+        selectedSpeechIntent
       : selectedSpeechIntent ?? (
           trigger === "auto" && room.autoChat
-            ? createAutonomousFallbackSpeechIntent(room, input, addressing, "no_speaker_intent")
+            ? createCasualTopicShiftSpeechIntent(room, input, addressing, "no_speaker_intent") ??
+              createAutonomousFallbackSpeechIntent(room, input, addressing, "no_speaker_intent")
             : null
         );
   if (speechIntent?.decision === "start_huddle") {
@@ -2758,11 +2975,38 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   }
 
   if (!speechIntent || speechIntent.decision !== "speak") {
+    if (trigger === "auto" && shouldContinueRoomAutoAfterBeat(room)) {
+      const fallbackIntent =
+        createCasualTopicShiftSpeechIntent(room, input, addressing, speechIntent?.reason ?? "no_candidate") ??
+        createAutonomousFallbackSpeechIntent(room, input, addressing, speechIntent?.reason ?? "no_candidate");
+      if (fallbackIntent?.decision === "speak") {
+        return finalizeScheduleResult({
+          type: "turn",
+          reason: fallbackIntent.reason.startsWith("casual_topic_shift") ? "casual_topic_shift" : "no_candidate",
+          status: "cooling_down",
+          nextTurnAt: nowMs + delayMs,
+          consecutiveAutoTurns: room.autoSpeechState.consecutiveAutoTurns + 1,
+          userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
+          speechIntent: fallbackIntent,
+          participant: room.participants.find((item) => item.id === fallbackIntent.roleId),
+          intent: fallbackIntent.reason,
+          target: "all",
+          discussionPlan: stalePlanResult,
+          observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
+        });
+      }
+      return finalizeScheduleResult({
+        ...stop("no_candidate", "cooling_down", room, nowMs + delayMs),
+        speechIntent: speechIntent ?? undefined,
+        discussionPlan: stalePlanResult,
+        observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
+      });
+    }
     if (trigger === "auto" && room.autoChat && room.director.enabled) {
       if (room.simulation?.playerIntervention !== "watch" && recentDirectorWaitingForUser(room)) {
         return finalizeScheduleResult(
           {
-            ...policyBlockedAutoResult(room, "waiting_user", "soft_user_preference", nowMs, delayMs),
+            ...policyBlockedAutoResult(room, "waiting_user", "soft_user_preference", nowMs, delayMs, input, addressing),
             discussionPlan: stalePlanResult,
             observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
           },
@@ -2785,7 +3029,11 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   const collaborationTask = getActiveRoomCollaborationTask(room, participant.id);
   const profile = getRoomPromptProfile(room.promptProfileId);
   const emotion = speechIntent.emotionHint || inferRoomEmotion(input.userInput ?? room.topic, profile.id);
-  const intent = collaborationTask ? `${collaborationTask.title}: ${collaborationTask.detail}` : speechIntent.reason || createIntent(reason, profile);
+  const strictDebateTask =
+    isStrictDebateFlow(room) && isDebateRoom(room)
+      ? strictDebateFlowTurnTask(room, participant, room.match.debateFlow?.language ?? "en")
+      : null;
+  const intent = strictDebateTask ?? (collaborationTask ? `${collaborationTask.title}: ${collaborationTask.detail}` : speechIntent.reason || createIntent(reason, profile));
   const target = speechIntent.target;
   const privateDirective = buildPrivateRoleDirective({
     room,
@@ -2809,11 +3057,27 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   });
 
   if (isRepetition(room, text)) {
-    if (trigger === "auto" && room.autoChat && room.director.enabled) {
+    const topicShiftIntent = createCasualTopicShiftSpeechIntent(room, input, addressing, "repetition_guard");
+    if (topicShiftIntent) {
+      return finalizeScheduleResult({
+        type: "turn",
+        reason: "casual_topic_shift",
+        status: shouldContinueRoomAutoAfterBeat(room) ? "cooling_down" : "paused",
+        nextTurnAt: shouldContinueRoomAutoAfterBeat(room) ? nowMs + delayMs : null,
+        consecutiveAutoTurns: room.autoSpeechState.consecutiveAutoTurns + 1,
+        userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
+        speechIntent: topicShiftIntent,
+        participant: room.participants.find((item) => item.id === topicShiftIntent.roleId),
+        intent: topicShiftIntent.reason,
+        target: "all",
+        observerRoleIds: [],
+      });
+    }
+    if (trigger === "auto" && room.autoChat) {
       if (room.simulation?.playerIntervention !== "watch" && recentDirectorWaitingForUser(room)) {
-        return finalizeScheduleResult(policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs));
+        return finalizeScheduleResult(policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs, input, addressing));
       }
-      return finalizeScheduleResult(policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs));
+      return finalizeScheduleResult(policyBlockedAutoResult(room, "repetition_guard", "soft_user_preference", nowMs, delayMs, input, addressing));
     }
     return finalizeScheduleResult(stop("repetition_guard", "waiting_user", room, null));
   }
@@ -3009,6 +3273,8 @@ export function planDirectorTick(input: {
               ? "stuck_recovery"
               : null;
 
+  const sourceVisibility = classifyMessageSourceVisibility(sourceMessage);
+  const publicSafe = sourceVisibility === "public";
   const narrationTrigger = directorTickNarrationTrigger(room, sourceMessage, mode, requiredIntervention);
   const publicNarration = narrationTrigger ? createDirectorTickNarration(room, sourceMessage, narrationTrigger) : null;
   const scriptPatch = createDirectorTickScriptPatch(room, sourceMessage, mode, requiredIntervention, narrationTrigger, nowLabel);
@@ -3027,13 +3293,15 @@ export function planDirectorTick(input: {
     narrationTrigger,
     directorChannelNote,
     inspectorPatch: {
-      currentFocus: focus,
-      nextPressure: narrationTrigger ? publicNarration ?? undefined : room.simulation.nextPressure,
+      currentFocus: publicSafe ? focus : undefined,
+      nextPressure: publicSafe ? (narrationTrigger ? publicNarration ?? undefined : room.simulation.nextPressure) : undefined,
       stopReason: requiredIntervention === "stuck_recovery" ? undefined : room.simulation.stopReason,
+      sourceVisibility,
+      publicSafe,
     },
     sceneStatePatch: {
-      currentFocus: focus,
-      nextPressure: narrationTrigger ? publicNarration ?? undefined : room.simulation.nextPressure,
+      currentFocus: publicSafe ? focus : room.simulation.currentFocus,
+      nextPressure: publicSafe ? (narrationTrigger ? publicNarration ?? undefined : room.simulation.nextPressure) : room.simulation.nextPressure,
       stopReason: requiredIntervention === "stuck_recovery" ? undefined : room.simulation.stopReason,
     },
     scriptPatch,
@@ -3068,7 +3336,7 @@ function directorTickNarrationTrigger(
     return "scene_opening";
   }
   if ((mode === "story" || mode === "mystery") && recentNarrations === 0) {
-    const anchor = activeDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)[0];
+    const anchor = activePublicDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)[0];
     if (anchor && room.messages.length > 2) {
       return "environment_change";
     }
@@ -3092,9 +3360,39 @@ function recentDirectorPublicNarrationCount(room: RoomState, limit: number): num
     .filter((message) => message.speakerId === room.director.directorId && message.speakerType === "room_system").length;
 }
 
-function activeDirectorScriptTexts(items: DirectorScriptItem[] | undefined): string[] {
+function classifyMessageSourceVisibility(message: Pick<ConsoleMessage, "visibility"> | null | undefined): DirectorSourceVisibility {
+  const visibility = message?.visibility ?? "public";
+  if (
+    visibility === "public" ||
+    visibility === "private_thread" ||
+    visibility === "private_ai" ||
+    visibility === "faction_huddle" ||
+    visibility === "director_channel"
+  ) {
+    return visibility;
+  }
+  return "director_only";
+}
+
+function isPublicSafeDirectorScriptItem(item: DirectorScriptItem): boolean {
+  if (item.status !== "planned" && item.status !== "active") {
+    return false;
+  }
+  if (item.publicSafety === "private_blocked") {
+    return false;
+  }
+  if (item.publicSafety === "developer_revealed") {
+    return true;
+  }
+  if (item.publicSafety === "public_safe") {
+    return (item.sourceVisibility ?? "public") === "public";
+  }
+  return item.createdBy === "developer";
+}
+
+function activePublicDirectorScriptTexts(items: DirectorScriptItem[] | undefined): string[] {
   return (items ?? [])
-    .filter((item) => item.status === "planned" || item.status === "active")
+    .filter(isPublicSafeDirectorScriptItem)
     .map((item) => item.text.trim())
     .filter(Boolean);
 }
@@ -3105,8 +3403,8 @@ function createDirectorTickNarration(
   trigger: NonNullable<DirectorTickResult["narrationTrigger"]>,
 ): string {
   const scene = trimForReply(room.director.sceneBoard.currentScene || room.topic || "The room", 120);
-  const anchor = activeDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)[0];
-  const pressure = activeDirectorScriptTexts(room.director.scriptBoard.pressureSources)[0];
+  const anchor = activePublicDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)[0];
+  const pressure = activePublicDirectorScriptTexts(room.director.scriptBoard.pressureSources)[0];
   const source = trimForReply(stripMentions(sourceMessage.text), 120);
   switch (trigger) {
     case "scene_opening":
@@ -3145,8 +3443,12 @@ function createDirectorTickScriptPatch(
   const pressureSources = board.pressureSources ?? [];
   const environmentAnchors = board.environmentAnchors ?? [];
   const forbiddenReveals = board.forbiddenReveals ?? [];
+  const hiddenFacts = board.hiddenFacts ?? [];
   const continuityNotes = board.continuityNotes ?? [];
   const nextOpenThread = trimForReply(stripMentions(sourceMessage.text), 140);
+  const sourceVisibility = classifyMessageSourceVisibility(sourceMessage);
+  const sourceMessageIds = sourceMessage.id ? [sourceMessage.id] : [];
+  const isPublicSource = sourceVisibility === "public";
   const shouldBootstrap = modeNeedsScript && (
     openThreads.length === 0 &&
     plannedBeats.length === 0 &&
@@ -3157,42 +3459,104 @@ function createDirectorTickScriptPatch(
   if (shouldBootstrap) {
     patch.premise = room.topic && !/^daily chat$/i.test(room.topic) ? room.topic : board.premise;
     patch.currentPhase = mode === "debate" ? "opening" : mode === "study" ? "explain" : mode === "planning" ? "options" : "setup";
-    patch.openThreads = [
-      ...openThreads,
-      createDirectorScriptItemFromText(`Track the visible room thread: ${nextOpenThread || room.topic}`, nowLabel),
-    ].slice(-24);
+    if (isPublicSource) {
+      patch.openThreads = [
+        ...openThreads,
+        createDirectorScriptItemFromText(`Track the visible room thread: ${nextOpenThread || room.topic}`, nowLabel, {
+          visibility: "public",
+          sourceVisibility,
+          sourceMessageIds,
+          publicSafety: "public_safe",
+        }),
+      ].slice(-24);
+    } else if (nextOpenThread) {
+      patch.hiddenFacts = [
+        ...hiddenFacts,
+        createDirectorScriptItemFromText(`Backstage-only source (${sourceVisibility}): ${nextOpenThread}`, nowLabel, {
+          visibility: "director_only",
+          sourceVisibility,
+          sourceMessageIds,
+          publicSafety: "private_blocked",
+        }),
+      ].slice(-24);
+    }
     patch.plannedBeats = [
       ...plannedBeats,
-      createDirectorScriptItemFromText("Let roles respond naturally before forcing a new beat.", nowLabel),
+      createDirectorScriptItemFromText("Let roles respond naturally before forcing a new beat.", nowLabel, {
+        visibility: "public",
+        sourceVisibility: "public",
+        publicSafety: "public_safe",
+      }),
     ].slice(-24);
     patch.environmentAnchors = environmentAnchors.length
       ? environmentAnchors
-      : [createDirectorScriptItemFromText("Describe visible environment changes only when they create a concrete response target.", nowLabel)];
+      : [
+          createDirectorScriptItemFromText("Describe visible environment changes only when they create a concrete response target.", nowLabel, {
+            visibility: "public",
+            sourceVisibility: "public",
+            publicSafety: "public_safe",
+          }),
+        ];
     patch.forbiddenReveals = forbiddenReveals.length
       ? forbiddenReveals
-      : [createDirectorScriptItemFromText("Never reveal director-only plans, private channel content, or hidden facts through public narration.", nowLabel)];
+      : [
+          createDirectorScriptItemFromText("Never reveal director-only plans, private channel content, or hidden facts through public narration.", nowLabel, {
+            visibility: "director_only",
+            sourceVisibility: "director_only",
+            publicSafety: "private_blocked",
+          }),
+        ];
   }
   if (requiredIntervention === "stuck_recovery" && nextOpenThread) {
-    patch.pressureSources = [
-      ...pressureSources,
-      createDirectorScriptItemFromText(`Recover from a stall by giving the room a visible pressure around: ${nextOpenThread}`, nowLabel),
-    ].slice(-24);
+    if (isPublicSource) {
+      patch.pressureSources = [
+        ...pressureSources,
+        createDirectorScriptItemFromText(`Recover from a stall by giving the room a visible pressure around: ${nextOpenThread}`, nowLabel, {
+          visibility: "public",
+          sourceVisibility,
+          sourceMessageIds,
+          publicSafety: "public_safe",
+        }),
+      ].slice(-24);
+    } else {
+      patch.continuityNotes = [
+        ...continuityNotes,
+        createDirectorScriptItemFromText(`Backstage recovery note (${sourceVisibility}): keep this source private unless a public-safe result appears.`, nowLabel, {
+          visibility: "director_only",
+          sourceVisibility,
+          sourceMessageIds,
+          publicSafety: "private_blocked",
+        }),
+      ].slice(-24);
+    }
   }
   if (narrationTrigger) {
     patch.continuityNotes = [
-      ...continuityNotes,
-      createDirectorScriptItemFromText(`Narration trigger ${narrationTrigger}: ${nextOpenThread || room.topic}`, nowLabel),
+      ...(patch.continuityNotes ?? continuityNotes),
+      createDirectorScriptItemFromText(`Narration trigger ${narrationTrigger}: ${isPublicSource ? nextOpenThread || room.topic : "private source blocked"}`, nowLabel, {
+        visibility: isPublicSource ? "public" : "director_only",
+        sourceVisibility,
+        sourceMessageIds,
+        publicSafety: isPublicSource ? "public_safe" : "private_blocked",
+      }),
     ].slice(-24);
   }
   return Object.keys(patch).length > 0 ? patch : null;
 }
 
-function createDirectorScriptItemFromText(text: string, nowLabel: string): DirectorScriptItem {
+function createDirectorScriptItemFromText(
+  text: string,
+  nowLabel: string,
+  options: Partial<Pick<DirectorScriptItem, "visibility" | "sourceVisibility" | "sourceMessageIds" | "publicSafety">> = {},
+): DirectorScriptItem {
   return {
     id: crypto.randomUUID(),
     text: trimForReply(text, 220),
     status: "planned",
-    visibility: "director_only",
+    visibility: options.visibility ?? "director_only",
+    sourceVisibility: options.sourceVisibility,
+    sourceMessageIds: options.sourceMessageIds,
+    publicSafety: options.publicSafety,
     createdBy: "director",
     updatedAt: nowLabel,
   };
@@ -3293,6 +3657,10 @@ function createDirectorStructuredOutcomeFromPlan(input: {
     userInput: input.userInput,
     focus,
   });
+  const directorContinuationAssessment = resolveContinuationAssessment(input.room, input.plan, situationAssessment);
+  const directorAdvanceDecision = resolveAdvanceDecision(input.room, directorContinuationAssessment);
+  const shouldMarkWaitingForUser =
+    input.plan.waitForUser && directorAdvanceDecision.action === "pause" && !isContinuousRoomFlow(input.room);
   const statePatch = mergeSituationStatePatch(
     {
       sceneDelta: input.plan.sceneDelta,
@@ -3300,12 +3668,12 @@ function createDirectorStructuredOutcomeFromPlan(input: {
         currentFocus: focus,
         lastRuling: input.plan.publicTextReason === "ruling" ? focus : input.room.simulation.lastRuling,
         nextPressure: createDirectorNextPressure(input.room, input.plan),
-        phase: input.plan.waitForUser ? "cooldown" : input.plan.move === "judge" ? "payoff" : input.room.simulation.phase,
-        stopReason: input.plan.waitForUser ? "waiting_user" : undefined,
+        phase: shouldMarkWaitingForUser ? "cooldown" : input.plan.move === "judge" ? "payoff" : input.room.simulation.phase,
+        stopReason: shouldMarkWaitingForUser ? "waiting_user" : undefined,
       },
       inspectorPatch: {
         currentFocus: focus,
-        stopReason: input.plan.waitForUser ? "waiting_user" : undefined,
+        stopReason: shouldMarkWaitingForUser ? "waiting_user" : undefined,
         lastTurnOutcome: focus,
       },
     },
@@ -4366,7 +4734,7 @@ function chooseTurnTarget(room: RoomState, trigger: RoomTurnTrigger, participant
     return { targets: [{ type: "role", roleId: nextRole.id }] };
   }
 
-  return { targets: [{ type: "user", userId: room.userProfile.userId }] };
+  return "all";
 }
 
 function inferRoomEmotion(input: string, profileId: RoomPromptProfileId): string {
@@ -4481,8 +4849,18 @@ function createDirectorTurnPlan(input: {
   const policy = getDirectorModePolicy(input.room);
   const verdictDue = isDebateFinalVerdictDue(input.room);
   const requestedMove = verdictDue ? "judge" : input.requestedMove ?? modeIntent.move;
-  const move = policy.allowedMoves.includes(requestedMove) ? requestedMove : policy.defaultMove;
-  const judgement = move === "judge" ? createJudgementCheck(input.room, publicUserInput, input.directorMemory) : undefined;
+  let move = policy.allowedMoves.includes(requestedMove) ? requestedMove : policy.defaultMove;
+  if (move === "judge" && !shouldAllowDirectorJudgement(input.room, publicUserInput, verdictDue)) {
+    move = policy.allowedMoves.includes("choice")
+      ? "choice"
+      : policy.allowedMoves.includes("cue")
+        ? "cue"
+        : policy.defaultMove;
+  }
+  const judgement =
+    move === "judge"
+      ? createJudgementCheck(input.room, extractDirectorJudgementActionText(publicUserInput), input.directorMemory)
+      : undefined;
   const sceneDelta = createSceneDelta(input.room, move, publicUserInput, judgement, modeIntent);
   const continuityWrites = createContinuityWrites(input.room, move, publicUserInput, judgement);
   const secretWrites = createSecretWrites(input.room, move, publicUserInput);
@@ -4504,6 +4882,42 @@ function createDirectorTurnPlan(input: {
     waitForUser,
     judgement,
   };
+}
+
+function shouldAllowDirectorJudgement(room: RoomState, userInput: string, verdictDue: boolean): boolean {
+  if (verdictDue) {
+    return true;
+  }
+  if (isDebateSetupRequest(room, userInput)) {
+    return false;
+  }
+  if (isDebateVerdictRequest(room, userInput) || isDebateAdvantageRequest(room, userInput)) {
+    return true;
+  }
+  return hasConcreteDirectorJudgementAction(room, userInput);
+}
+
+function extractDirectorJudgementActionText(userInput: string): string {
+  const withoutInternalChecks = userInput
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*Director check\s*:/i.test(line.trim()))
+    .join(" ");
+  return trimForReply(stripMentions(withoutInternalChecks));
+}
+
+function hasConcreteDirectorJudgementAction(room: RoomState, userInput: string): boolean {
+  const text = extractDirectorJudgementActionText(userInput);
+  if (!text || isDebateSetupRequest(room, text)) {
+    return false;
+  }
+  if (text.length < 4 && !/[\u4e00-\u9fff]/.test(text)) {
+    return false;
+  }
+  const englishAction =
+    /\b(?:i|we)\s+(?:try|attempt|tried|attempted|open|opened|unlock|unlocked|pick|picked|force|forced|steal|stole|attack|attacked|break|broke|destroy|destroyed|take|took|grab|grabbed|move|moved|enter|entered|leave|left|use|used|inspect|inspected|search|searched|investigate|investigated|persuade|persuaded|sneak|sneaked)\b/i;
+  const chineseAction =
+    /(?:我|我们).{0,8}(?:尝试|试图|要|去|撬|开锁|解锁|打开|拿|偷|攻击|破坏|摧毁|进入|离开|使用|检查|搜索|调查|说服|潜入)|(?:撬开|开锁|解锁|打开).{0,8}(?:锁|门锁|挂锁|门)|(?:锁|门锁|挂锁|门).{0,8}(?:打开|解锁)|(?:尝试|试图).{0,8}(?:打开|解锁|开锁|撬|拿|偷|进入|使用|攻击|破坏)/;
+  return englishAction.test(text) || chineseAction.test(text);
 }
 
 function inferDirectorMove(text: string, room: RoomState): RoomDirectorMove {
@@ -4593,7 +5007,7 @@ function createJudgementCheck(
   directorMemory?: RoomDirectorMemorySnapshot,
 ): JudgementCheck {
   const knownFacts = directorKnownFacts(room, directorMemory);
-  const action = trimForReply(stripMentions(userInput) || "act in the scene");
+  const action = trimForReply(extractDirectorJudgementActionText(userInput) || "unspecified action");
   const actor = detectActor(room, userInput);
   const intent = detectIntent(userInput, action);
   const difficulty = detectDifficulty(action, knownFacts, room);
@@ -4720,7 +5134,7 @@ function createDirectorPrivateDirectives(
   const goal = collaborationTask
     ? `${collaborationTask.detail} Complete your own part directly; do not describe the plan or ask another role to speak.`
     : isDebateRoom(room)
-      ? createDebateTurnGoal(room, nextParticipant, 0)
+      ? strictDebateFlowTurnTask(room, nextParticipant, room.match.debateFlow?.language ?? "en") ?? createDebateTurnGoal(room, nextParticipant, 0)
       : createModeRoleTurnGoal(room, nextParticipant, 0, "single_reply");
   return [
     buildPrivateRoleDirective({

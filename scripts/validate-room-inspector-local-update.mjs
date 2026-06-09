@@ -10,16 +10,22 @@ mustInclude(createRenderLocalUpdate, "return notifyRoomSurfaceUpdated", "message
 mustInclude(createRenderLocalUpdate, "return notifyRoomInspectorUpdated", "status/diagnostic updates use the Inspector local refresh");
 
 const inspectorUpdate = sliceFunction(main, "notifyRoomInspectorUpdated");
-mustInclude(inspectorUpdate, 'querySelector<HTMLElement>(".room-control-rail")', "Inspector update targets the right rail");
-mustInclude(inspectorUpdate, 'currentRail.replaceWith(nextRail)', "Inspector update replaces only the right rail inside main content");
-mustInclude(inspectorUpdate, '[".room-surface-topbar", ".room-role-strip"]', "Inspector update keeps topbar and role status fresh");
+const patchRoomInspectorRail = sliceFunction(main, "patchRoomInspectorRail");
+const patchElementIfChanged = sliceFunction(main, "patchElementIfChanged");
+mustInclude(inspectorUpdate, 'queueRoomSurfaceUpdate("room_inspector_update", ["inspector"])', "Inspector update targets the queued right rail patch");
+mustInclude(patchRoomInspectorRail, '".room-inspector-status"', "Inspector update patches status as a right-rail section");
+mustInclude(patchRoomInspectorRail, '".room-context-panel"', "Inspector update patches context as a right-rail section");
+mustInclude(patchRoomInspectorRail, '".room-inspector-actions"', "Inspector update patches controls as a right-rail section");
+mustInclude(patchRoomInspectorRail, '".room-inspector-details"', "Inspector update patches details as a right-rail section");
+mustInclude(patchElementIfChanged, "current.isEqualNode(next)", "Inspector update skips no-op DOM replacements");
 mustNotInclude(inspectorUpdate, '".room-surface-main"', "status updates must not replace the full Room main region");
 mustNotInclude(inspectorUpdate, "scheduleConversationScrollToBottom", "status updates must not scroll the timeline to bottom");
 mustNotInclude(inspectorUpdate, "markRenderedSurface", "status updates must not mark timeline message counts as rendered");
 
-const fullUpdate = sliceFunction(main, "notifyRoomSurfaceUpdated");
-mustInclude(fullUpdate, '".room-surface-main"', "message updates may replace the main region");
-mustInclude(fullUpdate, "scheduleConversationScrollToBottom", "message updates still scroll the timeline when appropriate");
+const flushRoomSurfaceUpdateQueue = sliceFunction(main, "flushRoomSurfaceUpdateQueue");
+mustInclude(flushRoomSurfaceUpdateQueue, 'patchRoomSurfacePart(shell, nextShell, kinds, "main"', "message updates may replace the main region");
+mustInclude(flushRoomSurfaceUpdateQueue, "resolveConversationScrollTarget", "message updates still resolve timeline follow-scroll");
+mustInclude(flushRoomSurfaceUpdateQueue, "restoreOrFollowConversationScroll", "message updates still restore or follow timeline scroll");
 
 if (failures.length) {
   console.error(`Room Inspector local-update validation failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);

@@ -400,7 +400,7 @@ function validateMemoryDashboardTreeWiring() {
   expect(ui.includes('uiText(language, "Room memory"'), "memory tree should label public room memory");
   expect(ui.includes('uiText(language, "Director memory"'), "memory tree should label Director memory");
   expect(ui.includes('uiText(language, "Role perspectives"'), "memory tree should group merged room role perspectives");
-  expect(ui.includes("graphScopes = uniqueMemoryScopes([participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope])"), "role perspective should merge public, private, and faction scopes");
+  expect(ui.includes("graphScopes = uniqueMemoryScopes([roomScope, participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope])"), "role perspective should merge public room, private, and faction scopes");
   expect(ui.includes('uiText(language, "Legacy private perspective"'), "memory tree should keep only legacy unmatched private perspective compatibility");
   expect(ui.includes('uiText(language, "Faction memory"'), "memory tree should group faction memory");
   expect(ui.includes('uiText(language, "One-to-one characters"'), "one-to-one character memory should sit outside rooms");

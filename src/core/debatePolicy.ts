@@ -1,6 +1,8 @@
 import type {
   DeferredRequirement,
   RoomDebateLifecyclePhase,
+  RoomDebateFlow,
+  RoomDebateFlowStep,
   RoomDebateSpeakerAssignment,
   RoomDebateSpeakerPosition,
   RoomDebateVerdict,
@@ -33,31 +35,74 @@ export function isDebateDeferredVerdictRequest(room: RoomState, text: string): b
   return /(\u6700\u540e|\u7ed3\u675f\u540e|\u53d1\u8a00\u7ed3\u675f\u540e|\u8d5b\u540e|after|afterward|afterwards|finally|at\s+the\s+end|when\s+.+(?:finish|ends?)).{0,32}(\u5206\u51fa\u80dc\u8d1f|\u5224\u5b9a\u80dc\u8d1f|\u8bc4\u5224|\u88c1\u5224|\u8c01\u8d62|\u54ea\u961f\u8d62|winner|verdict|who\s+won)/i.test(compact);
 }
 
+export type DebateDirectorInputClassification =
+  | "strict_setup"
+  | "immediate_verdict"
+  | "deferred_verdict"
+  | "normal_debate_message";
+
+function normalizedDirectorDebateInput(text: string): string {
+  return stripMentions(text).replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isImmediateDebateVerdictText(compact: string): boolean {
+  const verdictWords = /(\u5206\u51fa\u80dc\u8d1f|\u5224\u5b9a\u80dc\u8d1f|\u88c1\u5224|\u8bc4\u5224|\u8c01\u8d62|\u54ea\u961f\u8d62|\u80dc\u65b9|\u83b7\u80dc|verdict|who\s+won|winner|decide\s+(?:the\s+)?winner)/i;
+  const immediateWords = /(\u73b0\u5728|\u7acb\u5373|\u9a6c\u4e0a|\u5f53\u524d|\u672c\u8f6e|\u6b64\u523b|\u5148|now|right\s+now|immediately|current|this\s+round)/i;
+  return (
+    (immediateWords.test(compact) && verdictWords.test(compact)) ||
+    /(\u88c1\u5224\u4e00\u4e0b|\u8bc4\u5224\u4e00\u4e0b|\u73b0\u5728\u8c01\u8d62|\u5f53\u524d\u8c01\u8d62|\u672c\u8f6e\u8c01\u8d62|judge\s+now|verdict\s+now)/i.test(compact)
+  );
+}
+
+export function classifyDebateDirectorInput(text: string, room: RoomState): DebateDirectorInputClassification {
+  if (!isDebateRoom(room)) {
+    return "normal_debate_message";
+  }
+  const compact = normalizedDirectorDebateInput(text);
+  if (!compact) {
+    return "normal_debate_message";
+  }
+  if (isStrictDebateSetupText(text)) {
+    return "strict_setup";
+  }
+  if (isDebateDeferredVerdictRequest(room, text)) {
+    return "deferred_verdict";
+  }
+  if (isImmediateDebateVerdictText(compact)) {
+    return "immediate_verdict";
+  }
+  return "normal_debate_message";
+}
+
 export function isDebateVerdictRequest(room: RoomState, text: string): boolean {
   if (!isDebateRoom(room)) {
     return false;
   }
-  const compact = stripMentions(text).replace(/\s+/g, " ").trim().toLowerCase();
-  if (isDebateDeferredVerdictRequest(room, text)) {
+  const classification = classifyDebateDirectorInput(text, room);
+  if (classification === "strict_setup" || classification === "deferred_verdict") {
     return false;
   }
+  const compact = normalizedDirectorDebateInput(text);
   const setupWithFutureVerdict =
     /(\u7ec4\u7ec7|\u4e3e\u529e|\u5f00\u59cb|\u4e3b\u6301|\u5b89\u6392|\u5206\u4e00\u8fa9|\u4e8c\u8fa9|\u4e09\u8fa9|organize|host|start|setup)/i.test(compact) &&
     /(\u6700\u540e|\u7ed3\u675f\u540e|\u8d5b\u540e|finally|at\s+the\s+end).{0,16}(\u5206\u51fa\u80dc\u8d1f|\u5224\u5b9a\u80dc\u8d1f|winner|verdict)/i.test(compact);
   if (setupWithFutureVerdict) {
     return false;
   }
-  return /(\u5206\u51fa\u80dc\u8d1f|\u5224\u5b9a\u80dc\u8d1f|\u88c1\u5224\u7ed3\u679c|\u6700\u7ec8\u88c1\u5224|\u6700\u7ec8\u7ed3\u679c|\u8c01\u8d62|\u54ea\u961f\u8d62|\u80dc\u65b9|\u83b7\u80dc|final\s+verdict|who\s+won|winner|decide\s+(?:the\s+)?winner)/i.test(compact);
+  return classification === "immediate_verdict";
 }
 
 export function isDebateAdvantageRequest(room: RoomState, text: string): boolean {
   if (!isDebateRoom(room)) {
     return false;
   }
+  if (classifyDebateDirectorInput(text, room) === "strict_setup") {
+    return false;
+  }
   if (isDebateVerdictRequest(room, text)) {
     return false;
   }
-  const compact = stripMentions(text).replace(/\s+/g, " ").trim().toLowerCase();
+  const compact = normalizedDirectorDebateInput(text);
   return /(\u5360\u4f18|\u4f18\u52bf|\u6253\u5206|\u8bc4\u5206|\u672c\u8f6e|score|advantage|judge\s+this\s+round)/i.test(compact);
 }
 
@@ -242,6 +287,15 @@ export function debateLifecyclePhase(room: RoomState): RoomDebateLifecyclePhase 
   const allRequiredSpeakersDone =
     requiredAssignments.length > 0 &&
     stats.spokenRequiredSpeakerCount + stats.skippedRequiredSpeakerCount >= requiredAssignments.length;
+  const strictFlow = room.match.debateFlow;
+  const strictFlowDone =
+    Boolean(strictFlow?.steps.length) &&
+    strictFlow!.steps
+      .filter((step) => !step.requiresDirector)
+      .every((step) => strictFlow!.completedStepIds.includes(step.id));
+  if (strictFlowDone) {
+    return "verdict_due";
+  }
   if (hasDeferredFinalVerdict(room.match.deferredRequirements) && allRequiredSpeakersDone && stats.activeSideCount >= 2) {
     return "verdict_due";
   }
@@ -271,6 +325,35 @@ function advanceDebateMatchAfterRoundProgress(room: RoomState, nextMatch: RoomSt
     return {
       ...nextMatch,
       debatePhase: lifecyclePhase,
+      nextSpeakerRoleId: undefined,
+      nextPosition: undefined,
+    };
+  }
+
+  const strictFlowRoom: RoomState = { ...room, match: nextMatch };
+  const strictFlowStep = resolveNextDebateFlowStep(strictFlowRoom);
+  if (strictFlowStep?.roleId) {
+    const strictAssignment = nextMatch.speakerAssignments.find((assignment) => assignment.roleId === strictFlowStep.roleId);
+    return {
+      ...nextMatch,
+      debatePhase: "round_active",
+      currentSide: strictAssignment?.factionId ?? strictFlowStep.sideId ?? nextMatch.currentSide,
+      nextSpeakerRoleId: strictFlowStep.roleId,
+      nextPosition: strictAssignment?.position ?? strictFlowStep.position,
+    };
+  }
+  if (strictFlowStep?.requiresDirector) {
+    return {
+      ...nextMatch,
+      debatePhase: strictFlowStep.type === "director_verdict" ? "verdict_due" : "round_active",
+      nextSpeakerRoleId: undefined,
+      nextPosition: undefined,
+    };
+  }
+  if (nextMatch.debateFlow?.steps.length && !strictFlowStep) {
+    return {
+      ...nextMatch,
+      debatePhase: "verdict_due",
       nextSpeakerRoleId: undefined,
       nextPosition: undefined,
     };
@@ -340,6 +423,11 @@ export function resolveNextDebateSpeakerAssignment(
   room: RoomState,
   visibleRoleIds = getChannelVisibleRoleIds(room, room.activeChannelId),
 ): RoomDebateSpeakerAssignment | null {
+  const flowStep = resolveNextDebateFlowStep(room, visibleRoleIds);
+  if (flowStep?.roleId) {
+    return (room.match.speakerAssignments ?? []).find((assignment) => assignment.roleId === flowStep.roleId) ?? null;
+  }
+
   const visible = new Set(visibleRoleIds);
   const sequence = debateSpeakerSequence(room).filter((assignment) => {
     const participant = room.participants.find((candidate) => candidate.id === assignment.roleId);
@@ -361,6 +449,175 @@ export function resolveNextDebateSpeakerAssignment(
   }
 
   return null;
+}
+
+export function isStrictDebateFlow(room: RoomState): boolean {
+  const flow = room.match.debateFlow;
+  return Boolean(flow && flow.steps.length > 0 && flow.currentStepIndex >= 0);
+}
+
+export function resolveNextDebateFlowStep(
+  room: RoomState,
+  visibleRoleIds = getChannelVisibleRoleIds(room, room.activeChannelId),
+): RoomDebateFlowStep | null {
+  const flow = room.match.debateFlow;
+  if (!flow?.steps.length) {
+    return null;
+  }
+  const visible = new Set(visibleRoleIds);
+  const completed = new Set(flow.completedStepIds ?? []);
+  for (let index = Math.max(0, flow.currentStepIndex || 0); index < flow.steps.length; index += 1) {
+    const step = flow.steps[index];
+    if (completed.has(step.id)) {
+      continue;
+    }
+    if (step.requiresDirector) {
+      return step;
+    }
+    if (step.roleId && visible.has(step.roleId)) {
+      return step;
+    }
+    if (step.roleId && !visible.has(step.roleId)) {
+      return step;
+    }
+  }
+  return null;
+}
+
+export function strictDebateFlowTurnTask(room: RoomState, participant: RoomParticipant, language: "zh-CN" | string = "en"): string | null {
+  const step = resolveNextDebateFlowStep(room);
+  if (!step || step.requiresDirector || step.roleId !== participant.id) {
+    return null;
+  }
+  const assignment = getDebateSpeakerAssignment(room, participant);
+  const side = participantDebateSide(room, participant);
+  if (language === "zh-CN") {
+    return [
+      `严格辩论环节：${step.publicLabel}。`,
+      `你是${side}${assignment ? debateSpeakerPositionLabel(assignment.position, "zh-CN") : "辩手"}。`,
+      step.task,
+      "只能完成当前环节任务，不要主持比赛、安排下一位、复述赛制配置或替其他辩位总结。",
+    ].join(" ");
+  }
+  return [
+    `Strict debate step: ${step.publicLabel}.`,
+    `You are ${side} ${assignment ? debateSpeakerPositionLabel(assignment.position, "en") : "speaker"}.`,
+    step.task,
+    "Complete only this step. Do not host, schedule the next speaker, repeat the setup, or speak for another position.",
+  ].join(" ");
+}
+
+export function parseDebateFlowSetup(text: string, room: RoomState): RoomDebateFlow | null {
+  if (!isDebateRoom(room) || !isStrictDebateSetupText(text)) {
+    return null;
+  }
+  const language = prefersChinese(text) ? "zh-CN" : "en";
+  const motion = extractStrictDebateMotion(room, text);
+  const steps = buildStandardChineseDebateSteps(room, language);
+  if (!motion || steps.filter((step) => step.type === "role_speech" || step.type === "free_debate").length === 0) {
+    return null;
+  }
+  return {
+    format: language === "zh-CN" ? "standard_cn" : "custom",
+    language,
+    motion,
+    steps,
+    currentStepIndex: steps.findIndex((step) => !step.requiresDirector),
+    completedStepIds: steps.filter((step) => step.type === "director_opening").map((step) => step.id),
+    sourceText: trimForReply(text, 240),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function advanceDebateFlowAfterMessage(room: RoomState, speakerRoleId: string): RoomDebateFlow | undefined {
+  const flow = room.match.debateFlow;
+  if (!flow?.steps.length) {
+    return flow;
+  }
+  const completed = new Set(flow.completedStepIds ?? []);
+  let currentStepIndex = Math.max(0, flow.currentStepIndex || 0);
+  for (let index = currentStepIndex; index < flow.steps.length; index += 1) {
+    const step = flow.steps[index];
+    if (completed.has(step.id)) {
+      continue;
+    }
+    if (step.roleId === speakerRoleId) {
+      completed.add(step.id);
+      currentStepIndex = index + 1;
+    }
+    break;
+  }
+  while (currentStepIndex < flow.steps.length && completed.has(flow.steps[currentStepIndex].id)) {
+    currentStepIndex += 1;
+  }
+  return {
+    ...flow,
+    currentStepIndex,
+    completedStepIds: Array.from(completed),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function isStrictDebateSetupText(text: string): boolean {
+  return /(?:标准辩论赛|中文标准|严格赛制|辩论配置|论赛配置|赛制|流程|一辩|二辩|三辩|四辩|裁判|主持开场|自由辩|结辩)/i.test(text) &&
+    /(?:辩题|正方|反方|affirmative|negative|motion|流程|一辩|二辩|三辩)/i.test(text);
+}
+
+function extractStrictDebateMotion(room: RoomState, text: string): string {
+  const stripped = stripMentions(text).replace(/\s+/g, " ").trim();
+  const explicit = stripped.match(/(?:辩题|议题|主题)\s*(?:为|是|:|：)\s*(.+?)(?=(?:正方立场|反方立场|正方|反方|赛制|流程|Director|导演任务|$))/i)?.[1]?.trim();
+  if (explicit) {
+    return trimForReply(explicit.replace(/[。.!?？]+$/g, ""), 120);
+  }
+  return extractDebateMotion(room, text);
+}
+
+function buildStandardChineseDebateSteps(room: RoomState, language: "zh-CN" | "en"): RoomDebateFlowStep[] {
+  const assignments = debateSpeakerSequence(room);
+  const sides = getDebateSides(room);
+  const sideName = (sideId?: string) => sides.find((side) => side.id === sideId)?.name ?? sideId ?? "";
+  const by = (sideIndex: number, position: RoomDebateSpeakerPosition) =>
+    assignments.find((assignment) => assignment.factionId === sides[sideIndex]?.id && assignment.position === position);
+  const freeBy = (sideIndex: number) =>
+    by(sideIndex, "free_speaker") ?? by(sideIndex, "second_speaker") ?? by(sideIndex, "third_speaker") ?? by(sideIndex, "first_speaker");
+  const roleStep = (
+    id: string,
+    assignment: RoomDebateSpeakerAssignment | undefined,
+    labelZh: string,
+    labelEn: string,
+    taskZh: string,
+    taskEn: string,
+    type: RoomDebateFlowStep["type"] = "role_speech",
+  ): RoomDebateFlowStep | null => assignment ? {
+    id,
+    type,
+    sideId: assignment.factionId,
+    position: assignment.position,
+    roleId: assignment.roleId,
+    publicLabel: language === "zh-CN" ? `${sideName(assignment.factionId)}${labelZh}` : `${sideName(assignment.factionId)} ${labelEn}`,
+    task: language === "zh-CN" ? taskZh : taskEn,
+    maxWords: type === "free_debate" ? 100 : 180,
+    requiresDirector: false,
+  } : null;
+
+  return [
+    {
+      id: "director-opening",
+      type: "director_opening",
+      publicLabel: language === "zh-CN" ? "主持开场" : "Opening moderation",
+      task: language === "zh-CN" ? "简短宣布辩题、双方和发言顺序。" : "Briefly announce the motion, sides, and speaking order.",
+      maxWords: 90,
+      requiresDirector: true,
+    },
+    roleStep("pro-first", by(0, "first_speaker"), "一辩立论", "first constructive", "定义辩题，提出本方核心立场和二到三个主论点。", "Define the motion and present the side's core position with two or three main reasons."),
+    roleStep("con-first", by(1, "first_speaker"), "一辩立论", "first constructive", "定义反方判断标准，回应正方框架并提出本方核心立场。", "Set the negative standard, answer the affirmative frame, and present the side's core position."),
+    roleStep("pro-second", by(0, "second_speaker"), "二辩补充", "second constructive", "补充论据或案例，优先回应反方一辩的核心攻击。", "Add evidence or examples and answer the opponent's strongest first-speaker attack."),
+    roleStep("con-second", by(1, "second_speaker"), "二辩补充", "second constructive", "补充反方论据，拆解正方二辩或一辩留下的关键支点。", "Add negative evidence and dismantle the affirmative's key support."),
+    roleStep("pro-free", freeBy(0), "攻辩/自由辩", "cross examination/free debate", "提出一个尖锐质询或直接反驳，不要总结全场。", "Ask one pointed question or give a direct rebuttal; do not summarize the whole match.", "free_debate"),
+    roleStep("con-free", freeBy(1), "攻辩/自由辩", "cross examination/free debate", "回应上一问并反抛一个争点，保持交锋。", "Answer the last challenge and return one clash point.", "free_debate"),
+    roleStep("pro-third", by(0, "third_speaker"), "三辩总结", "third summary", "整理主要争点，压缩本方最强反驳，不要引入过多新论点。", "Organize the clash and compress the strongest rebuttal without adding many new points."),
+    roleStep("con-third", by(1, "third_speaker"), "三辩总结", "third summary", "总结反方争点，指出正方论证链最薄弱处。", "Summarize the negative clash and identify the weakest link in the affirmative case."),
+  ].filter((step): step is RoomDebateFlowStep => Boolean(step));
 }
 
 export function describeDebateAssignment(room: RoomState, assignment: RoomDebateSpeakerAssignment, language: "zh-CN" | string = "en"): string {
@@ -476,7 +733,7 @@ export function createDebateDirectorMatchPatch(room: RoomState, userInput: strin
   const position = parseDebatePositionRequest(userInput);
   const requestedParticipant = position ? findDebatePositionRequestParticipant(room, userInput) : null;
   let speakerAssignments = room.match.speakerAssignments ?? [];
-  const deferredRequirements = isDebateDeferredVerdictRequest(room, userInput)
+  const deferredRequirements = isDebateDeferredVerdictRequest(room, userInput) || isStrictDebateSetupText(userInput)
     ? addDeferredFinalVerdict(room.match.deferredRequirements, userInput)
     : room.match.deferredRequirements;
 
@@ -517,7 +774,20 @@ export function createDebateDirectorMatchPatch(room: RoomState, userInput: strin
     }
   }
 
-  const firstAssignment = speakerAssignments[0] ?? room.match.speakerAssignments?.[0];
+  const roomWithMatch: RoomState = {
+    ...room,
+    match: {
+      ...room.match,
+      motion,
+      speakerAssignments,
+    },
+  };
+  const debateFlow = parseDebateFlowSetup(userInput, roomWithMatch) ?? room.match.debateFlow;
+  const flowStep = debateFlow ? debateFlow.steps.find((step, index) => index >= debateFlow.currentStepIndex && !debateFlow.completedStepIds.includes(step.id) && step.roleId) : undefined;
+  const firstAssignment =
+    (flowStep?.roleId ? speakerAssignments.find((assignment) => assignment.roleId === flowStep.roleId) : undefined) ??
+    speakerAssignments[0] ??
+    room.match.speakerAssignments?.[0];
   return {
     motion,
     speakerAssignments,
@@ -526,6 +796,7 @@ export function createDebateDirectorMatchPatch(room: RoomState, userInput: strin
     nextPosition: room.match.nextPosition ?? firstAssignment?.position,
     debatePhase: "round_active",
     deferredRequirements,
+    debateFlow,
   };
 }
 
@@ -535,7 +806,11 @@ export function createDebateDirectorVerdictOutcome(
   nowLabel: string,
   options: { forceFinal?: boolean } = {},
 ): DirectorStructuredOutcome | null {
-  const finalVerdict = Boolean(options.forceFinal) || isDebateVerdictRequest(room, userInput);
+  const inputClassification = classifyDebateDirectorInput(userInput, room);
+  if (!options.forceFinal && inputClassification === "strict_setup") {
+    return null;
+  }
+  const finalVerdict = Boolean(options.forceFinal) || inputClassification === "immediate_verdict";
   const advantageCheck = isDebateAdvantageRequest(room, userInput);
   if (!finalVerdict && !advantageCheck) {
     return null;
@@ -775,6 +1050,7 @@ export function advanceDebateMatchAfterSpeaker(room: RoomState, speakerRoleId: s
   const matchWithSpoken: RoomState["match"] = {
     ...room.match,
     spokenRoleIdsByRound,
+    debateFlow: advanceDebateFlowAfterMessage(room, speakerRoleId),
   };
   return advanceDebateMatchAfterRoundProgress(room, matchWithSpoken);
 }

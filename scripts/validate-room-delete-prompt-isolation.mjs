@@ -81,6 +81,16 @@ requireIncludes("uniqueRoomIdForPromptIsolation", uniqueBlock, [
   "return candidate",
 ]);
 
+const normalizeRoomIndex = appState.indexOf("function normalizeRoomForRuntime");
+const normalizeRoomBlock = normalizeRoomIndex >= 0 ? appState.slice(normalizeRoomIndex, normalizeRoomIndex + 900) : "";
+requireIncludes("normalizeRoomForRuntime", normalizeRoomBlock, [
+  "crypto.randomUUID().slice(0, 8)",
+  "slugifyRoomId(title || room.topic || \"room\")",
+]);
+if (normalizeRoomBlock.includes('room.id || "demo-room"') || normalizeRoomBlock.includes("room.id || 'demo-room'")) {
+  failures.push("normalizeRoomForRuntime must not reuse the fixed demo-room id for legacy rooms without ids.");
+}
+
 const promptEntryIndex = appState.indexOf("function roomIdFromPromptEntry");
 const promptEntryBlock = promptEntryIndex >= 0 ? appState.slice(promptEntryIndex, promptEntryIndex + 800) : "";
 requireIncludes("roomIdFromPromptEntry", promptEntryBlock, [
@@ -107,7 +117,9 @@ const roomDeleteIndex = main.indexOf("const deletedRoomId = action.type === \"ro
 const roomDeleteBlock = roomDeleteIndex >= 0 ? main.slice(roomDeleteIndex, roomDeleteIndex + 900) : "";
 requireIncludes("room delete persistence", roomDeleteBlock, [
   "const deletedStoreScopes = memoryStore.deleteRoomMemory",
-  "graphScopes: Array.from(new Set([...deletedRoomMemoryScopes, ...deletedStoreScopes]))",
+  "const deletedScopes = Array.from(new Set([...deletedRoomMemoryScopes, ...deletedStoreScopes]))",
+  "clearSemanticDirtyScopes(deletedScopes)",
+  "void deletePersistentRoomMemory(deletedRoomId, deletedScopes)",
 ]);
 
 if (failures.length > 0) {

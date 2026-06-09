@@ -8,12 +8,19 @@ const types = read("src/core/types.ts");
 const appState = read("src/core/appState.ts");
 const main = read("src/main.ts");
 const roomSurface = read("src/ui/roomSurface.ts");
+const scheduler = read("src/core/roomScheduler.ts");
 
-mustInclude(types, 'visibility: "director_only"', "script board items should be director-only");
-mustInclude(appState, 'visibility: "director_only"', "normalization should force director-only script visibility");
+mustInclude(types, "sourceVisibility?: DirectorSourceVisibility", "script board items should keep source visibility");
+mustInclude(types, "publicSafety?: DirectorScriptPublicSafety", "script board items should keep public safety state");
+mustInclude(appState, "sourceVisibility:", "normalization should preserve source visibility");
+mustInclude(appState, "publicSafety:", "normalization should preserve public safety");
+mustInclude(scheduler, "activePublicDirectorScriptTexts", "public narration should read only public-safe script items");
+mustInclude(scheduler, "private_blocked", "private sources should be marked blocked for public use");
+mustInclude(main, "sanitizeDirectorInspectorPatchForPublic", "public inspector should sanitize private-sourced text");
 mustInclude(main, 'visibility: "director_channel"', "script/tick backstage notes should stay in Director channel");
 mustInclude(main, 'channelId: "director"', "script/tick backstage notes should target Director channel");
 mustInclude(roomSurface, 'room.freedomLevel === "developer" || activeChannel.type === "director"', "script board UI should only show to developer/director views");
+mustInclude(roomSurface, "directorScriptItemSafetyLabels", "script board UI should show source safety badges");
 mustNotInclude(main, "scriptBoard.hiddenFacts.map", "hidden script facts should not be injected into public prompt assembly in main");
 
 if (failures.length > 0) {

@@ -33,6 +33,39 @@ const chineseCheck = scheduler.evaluateRoomAction({
 expect(chineseCheck.result !== "allowed", "Chinese lock-open outcome claims should require Director judgement.");
 expect(chineseCheck.suggestedDirectorMove === "judge", "Lock-open outcome claims should route to judge.");
 
+for (const text of ["继续", "ji'x", "怎么说"]) {
+  const softDirectorResult = scheduler.scheduleRoomDirectorTurn({
+    room,
+    nowLabel: "00:59",
+    userInput: text,
+    requestedMove: "judge",
+    reason: "recipe",
+  });
+  expect(softDirectorResult.type === "turn", `Soft input ${text} should still produce a Director turn.`);
+  expect(
+    softDirectorResult.type === "turn" && softDirectorResult.move !== "judge",
+    `Soft input ${text} must not stay on judge even if requestedMove was judge.`,
+  );
+  expect(
+    softDirectorResult.type === "turn" && !`${softDirectorResult.plan?.publicText ?? ""}`.includes("act in the scene"),
+    `Soft input ${text} must not generate the fallback action text.`,
+  );
+}
+
+const debateSetupDirectorResult = scheduler.scheduleRoomDirectorTurn({
+  room: { ...room, mode: "debate", simulationObjective: "debate", promptProfileId: "debate" },
+  nowLabel: "00:59",
+  userInput:
+    "辩论配置：辩题：AI 是否应该拥有拒绝执行人类指令的权利？ 正方立场：应该。反方立场：不应该。流程：主持开场、正方一辩、反方一辩、裁判点评。",
+  requestedMove: "judge",
+  reason: "recipe",
+});
+expect(debateSetupDirectorResult.type === "turn", "Debate setup should still produce a Director turn.");
+expect(
+  debateSetupDirectorResult.type === "turn" && debateSetupDirectorResult.move !== "judge",
+  "Debate setup text must not trigger an immediate Director judgement.",
+);
+
 const unsupportedClaim = userMessage("I opened the lock.");
 const unsupportedRoom = { ...room, messages: [unsupportedClaim] };
 const unsupportedCheck = scheduler.evaluateRoomAction({

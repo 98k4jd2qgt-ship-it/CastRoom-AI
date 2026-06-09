@@ -101,6 +101,7 @@ import {
   getRoomDelayMs,
   getRoomPromptProfile,
   getRoomPromptProfileByInput,
+  hasRoomDirectorMention,
   isDeveloperFreedomRoom,
   isTargetingDirector,
   isTargetingUser,
@@ -126,13 +127,15 @@ import {
   resolveRoomInputVisibility,
   resolveAdvanceDecision,
   resolveContinuationAssessment,
+  isContinuousRoomFlow,
   isDirectorPublicSchedulingText,
   scheduleRoomDirectorTurn,
   scheduleRoomTurn,
   shouldCommitDirectorPublicText,
   validateNoPrivateLeakToPublic,
 } from "./core/roomScheduler";
-import { resolveNextDebateSpeakerAssignment } from "./core/debatePolicy";
+import { resolveNextDebateSpeakerAssignment, strictDebateFlowTurnTask } from "./core/debatePolicy";
+import { resolveDirectorMode } from "./core/directorModePolicy";
 import { TauriVoiceService } from "./core/voice";
 import type {
   AiProvider,
@@ -170,6 +173,7 @@ import type {
   RoleApiProfile,
   RoomApiProfile,
   RoomApiStatus,
+  RoomContextBudget,
   RoomDirectorApiProfile,
   RoomDirectorMemorySnapshot,
   RoomDirectorMove,
@@ -224,6 +228,76 @@ interface RoomDirectorTurnRequest {
   reason: RoomDirectorScheduleResult["reason"];
   directorMemory?: RoomDirectorMemorySnapshot;
   directorMemoryContext?: DirectorMemoryContext;
+}
+
+interface RoomContextBudgetLimits {
+  recentTimeline: number;
+  timelineChars: number;
+  roomMemory: number;
+  roleMemory: number;
+  directorMemory: number;
+  observerMemory: number;
+  factionMemory: number;
+  includePlotFrame: boolean;
+  includeIdentityCards: boolean;
+  includeFullDirectorContext: boolean;
+  identityCardScope: "none" | "speaker" | "all";
+  includePlotFrameMode: "never" | "complex" | "always";
+}
+
+function roomContextBudget(room: RoomState): RoomContextBudget {
+  return room.contextBudget ?? "balanced";
+}
+
+function roomContextBudgetLimits(room: RoomState): RoomContextBudgetLimits {
+  switch (roomContextBudget(room)) {
+    case "compact":
+      return {
+        recentTimeline: 4,
+        timelineChars: 120,
+        roomMemory: 2,
+        roleMemory: 1,
+        directorMemory: 1,
+        observerMemory: 1,
+        factionMemory: 1,
+        includePlotFrame: false,
+        includeIdentityCards: false,
+        includeFullDirectorContext: false,
+        identityCardScope: "none",
+        includePlotFrameMode: "never",
+      };
+    case "full":
+      return {
+        recentTimeline: 10,
+        timelineChars: 180,
+        roomMemory: 5,
+        roleMemory: 3,
+        directorMemory: 6,
+        observerMemory: 6,
+        factionMemory: 4,
+        includePlotFrame: true,
+        includeIdentityCards: true,
+        includeFullDirectorContext: true,
+        identityCardScope: "all",
+        includePlotFrameMode: "always",
+      };
+    case "balanced":
+    default:
+      return {
+        recentTimeline: 4,
+        timelineChars: 120,
+        roomMemory: 2,
+        roleMemory: 1,
+        directorMemory: 2,
+        observerMemory: 1,
+        factionMemory: 1,
+        includePlotFrame: false,
+        includeIdentityCards: true,
+        includeFullDirectorContext: false,
+        identityCardScope: "speaker",
+        includePlotFrameMode: "complex",
+      };
+  }
 }
 
 type DirectorMemorySource = "graph" | "graph+fallback" | "fallback";
@@ -324,10 +398,24 @@ let petWindowMode: PetWindowMode = "pass_through";
 let petFadeTimer = 0;
 let petIdleTimer = 0;
 let roomAutoTimer = 0;
+type RoomSurfacePatchKind = "topbar" | "roles" | "main" | "inspector";
+interface RoomSurfaceUpdateQueueState {
+  raf: number;
+  kinds: Set<RoomSurfacePatchKind>;
+  reasons: string[];
+}
+const roomSurfaceUpdateQueue: RoomSurfaceUpdateQueueState = {
+  raf: 0,
+  kinds: new Set<RoomSurfacePatchKind>(),
+  reasons: [],
+};
 let desktopContextCache: DesktopContextState = createDemoDesktopContext();
 let desktopContextKey = JSON.stringify(desktopContextCache);
 let desktopContextTimer = 0;
 let pendingInteractionScrollSnapshot: ScrollSnapshot | null = null;
+let scrollRestoreFrameToken = 0;
+let scrollToBottomFrameToken = 0;
+let roomUiRestoreFrameToken = 0;
 let lastRenderedSurface: Surface | null = null;
 let lastRenderedConsoleView: ConsoleView | null = null;
 let lastRenderedRoomChannelId: RoomActiveChannelId | null = null;
@@ -349,6 +437,8 @@ let activeOneOnOneTtsLastMessage = "none";
 let oneOnOneTtsPlaybackToken = 0;
 let renderGuardBypassDepth = 0;
 let pendingConversationInputFocus: ConversationInputFocusRequest | null = null;
+let deferredInputSensitiveRenderTimer = 0;
+let deferredInputSensitiveRender: { reason: string; options: RenderRequestOptions; workspace: RenderWorkspace } | null = null;
 let conversationInputDrafts: Record<ConversationInputTarget, ConversationInputDraft> = {
   console: { value: "", selectionStart: null, selectionEnd: null },
   room: { value: "", selectionStart: null, selectionEnd: null },
@@ -468,6 +558,7 @@ interface ConversationInputSnapshot extends ConversationInputFocusRequest {
   selectionStart: number | null;
   selectionEnd: number | null;
   wasFocused: boolean;
+  capturedAt: number;
 }
 
 interface ConsoleUiSubmitTrace {
@@ -570,6 +661,7 @@ interface MemoryGraphPersistOptions {
 const SEMANTIC_MEMORY_BATCH_THRESHOLD = 6;
 const SEMANTIC_MEMORY_IDLE_DELAY_MS = 800;
 const semanticMemoryDirtyScopes = new Set<MemoryScope>();
+const deletedRoomMemoryIds = new Set<string>();
 let semanticMemoryDirtyWrites = 0;
 let semanticMemoryTimer: number | null = null;
 
@@ -606,6 +698,10 @@ function persistWrittenMemoryScopes(scopes: MemoryScope[]) {
 
 function markSemanticMemoryDirty(scopes: MemoryScope[]) {
   for (const scope of scopes) {
+    const roomId = roomIdFromMemoryScope(scope);
+    if (roomId && deletedRoomMemoryIds.has(roomId)) {
+      continue;
+    }
     semanticMemoryDirtyScopes.add(scope);
   }
   semanticMemoryDirtyWrites += 1;
@@ -652,6 +748,38 @@ function canUseTauriCommands(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+function roomIdFromMemoryScope(scope: string): string | null {
+  if (!scope.startsWith("room:")) {
+    return null;
+  }
+  const roomId = scope.slice("room:".length).split(":", 1)[0]?.trim();
+  return roomId || null;
+}
+
+function liveRoomIdsForMemory(): Set<string> {
+  const ids = new Set<string>();
+  for (const room of consoleState.rooms) {
+    ids.add(room.id);
+  }
+  if (consoleState.room.id) {
+    ids.add(consoleState.room.id);
+  }
+  if (consoleState.activeRoomId) {
+    ids.add(consoleState.activeRoomId);
+  }
+  return ids;
+}
+
+function isLiveRoomMemoryScope(scope: string, liveRoomIds = liveRoomIdsForMemory()): boolean {
+  const roomId = roomIdFromMemoryScope(scope);
+  return !roomId || liveRoomIds.has(roomId);
+}
+
+function isDeletedOrOrphanRoomMemoryScope(scope: string, liveRoomIds = liveRoomIdsForMemory()): boolean {
+  const roomId = roomIdFromMemoryScope(scope);
+  return Boolean(roomId && (deletedRoomMemoryIds.has(roomId) || !liveRoomIds.has(roomId)));
+}
+
 function projectRuntimeMemoryScopeRecords(packs = consoleState.packs): MemoryScope[] {
   const records = new Set<MemoryScope>(["global"]);
   records.add(activeCharacter.memoryNamespace);
@@ -672,7 +800,8 @@ function projectRuntimeMemoryScopeRecords(packs = consoleState.packs): MemorySco
     }
   }
   addSerializedMemoryScopes(records, memoryStore.serialize());
-  return [...records.values()];
+  const liveRoomIds = liveRoomIdsForMemory();
+  return [...records.values()].filter((scope) => !isDeletedOrOrphanRoomMemoryScope(scope, liveRoomIds));
 }
 
 function addSerializedMemoryScopes(records: Set<MemoryScope>, data: MemoryStoreData) {
@@ -728,6 +857,87 @@ function collectDeletedRoomMemoryScopes(roomId: string): MemoryScope[] {
   for (const faction of data.roomFactionMemories ?? []) addIfRelated(faction.scope as MemoryScope);
 
   return [...scopes];
+}
+
+function collectOrphanRoomMemoryScopes(liveRoomIds = liveRoomIdsForMemory()): MemoryScope[] {
+  const scopes = new Set<MemoryScope>();
+  const addIfOrphan = (scope: MemoryScope) => {
+    if (!isLiveRoomMemoryScope(scope, liveRoomIds)) {
+      scopes.add(scope);
+    }
+  };
+  addSerializedMemoryScopes(scopes, memoryStore.serialize());
+  for (const claim of memoryStore.listGraphClaimInputs()) {
+    addIfOrphan(claim.scope);
+  }
+  return [...scopes];
+}
+
+function clearSemanticDirtyScopes(scopes: MemoryScope[]) {
+  if (scopes.length === 0) {
+    return;
+  }
+  const scopeSet = new Set(scopes);
+  for (const scope of Array.from(semanticMemoryDirtyScopes)) {
+    if (scopeSet.has(scope)) {
+      semanticMemoryDirtyScopes.delete(scope);
+    }
+  }
+  if (semanticMemoryDirtyScopes.size === 0) {
+    semanticMemoryDirtyWrites = 0;
+    if (semanticMemoryTimer !== null) {
+      window.clearTimeout(semanticMemoryTimer);
+      semanticMemoryTimer = null;
+    }
+  }
+}
+
+function pruneOrphanRoomMemoryFromRuntimeStore(liveRoomIds = liveRoomIdsForMemory()): MemoryScope[] {
+  const orphanScopes = collectOrphanRoomMemoryScopes(liveRoomIds);
+  const orphanRoomIds = new Set<string>();
+  for (const scope of orphanScopes) {
+    const roomId = roomIdFromMemoryScope(scope);
+    if (roomId) {
+      orphanRoomIds.add(roomId);
+    }
+  }
+  const deletedScopes = new Set<MemoryScope>(orphanScopes);
+  for (const roomId of orphanRoomIds) {
+    for (const scope of memoryStore.deleteRoomMemory(`room:${roomId}` as `room:${string}`)) {
+      deletedScopes.add(scope);
+    }
+  }
+  clearSemanticDirtyScopes([...deletedScopes]);
+  return [...deletedScopes];
+}
+
+async function deletePersistentRoomMemory(roomId: string, scopes: MemoryScope[]) {
+  if (!canUseTauriCommands()) {
+    return;
+  }
+  for (const scope of scopes) {
+    try {
+      await invoke("delete_memory_scope", { scope });
+    } catch (error) {
+      recordDiagnostic("warn", "Memory.projectData.deleteScope", { scope, error });
+    }
+  }
+  try {
+    await invoke("delete_room_memory_files", { roomId });
+  } catch (error) {
+    recordDiagnostic("warn", "Memory.projectData.deleteRoom", { roomId, error });
+  }
+}
+
+async function prunePersistentOrphanRoomMemory(liveRoomIds: Set<string>) {
+  if (!canUseTauriCommands()) {
+    return;
+  }
+  try {
+    await invoke("prune_orphan_room_memory", { liveRoomIds: [...liveRoomIds] });
+  } catch (error) {
+    recordDiagnostic("warn", "Memory.projectData.pruneOrphans", { error });
+  }
 }
 
 function hasMemoryScopePayload(data: Partial<MemoryStoreData> | Partial<CharacterPackMemoryFile> | null | undefined): boolean {
@@ -1091,9 +1301,24 @@ async function loadProjectRuntimeMemoryScopes(packs = consoleState.packs) {
   if (!canUseTauriCommands()) {
     return;
   }
+  const liveRoomIds = liveRoomIdsForMemory();
+  const prunedScopes = pruneOrphanRoomMemoryFromRuntimeStore(liveRoomIds);
+  if (prunedScopes.length > 0) {
+    try {
+      window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(memoryStore.serialize()));
+    } catch {
+      // Runtime cleanup still applies even if localStorage is unavailable.
+    }
+    void persistProjectRuntimeMemoryGraphScopes(prunedScopes, { replace: true });
+  }
+  void prunePersistentOrphanRoomMemory(liveRoomIds);
+
   let restored = false;
   const restoredScopes = new Set<MemoryScope>();
   for (const scope of projectRuntimeMemoryScopeRecords(packs)) {
+    if (!isLiveRoomMemoryScope(scope, liveRoomIds)) {
+      continue;
+    }
     try {
       const data = await invoke<Partial<MemoryStoreData>>("load_memory_scope", { scope });
       if (hasMemoryScopePayload(data)) {
@@ -1114,7 +1339,8 @@ async function loadProjectRuntimeMemoryScopes(packs = consoleState.packs) {
     try {
       const files = await invoke<CharacterPackMemoryFile[]>("load_character_pack_memory", { packId: pack.id });
       for (const file of files) {
-        if ((file.scope === `character:${pack.id}` || /^room:[^:]+:role:[^:]+$/.test(file.scope)) && !restoredScopes.has(file.scope)) {
+        const isLiveLegacyRoomScope = /^room:[^:]+:role:[^:]+$/.test(file.scope) && isLiveRoomMemoryScope(file.scope, liveRoomIds);
+        if ((file.scope === `character:${pack.id}` || isLiveLegacyRoomScope) && !restoredScopes.has(file.scope)) {
           memoryStore.restoreScope(file.scope, file);
           restoredScopes.add(file.scope);
           try {
@@ -1575,7 +1801,7 @@ function notifyMemoryDashboardUpdated(): boolean {
   return true;
 }
 
-function notifyRoomSurfaceUpdated(): boolean {
+function queueRoomSurfaceUpdate(reason: string, kinds: RoomSurfacePatchKind[]): boolean {
   if (activeSurface !== "room") {
     return false;
   }
@@ -1583,61 +1809,114 @@ function notifyRoomSurfaceUpdated(): boolean {
   if (!shell) {
     return false;
   }
-
-  const inputSnapshot = captureConversationInputSnapshot();
-  const scrollSnapshot = mergeScrollSnapshots(captureScrollSnapshot(), pendingInteractionScrollSnapshot);
-  const roomUiSnapshot = captureRoomSurfaceUiSnapshot(shell);
-  pendingInteractionScrollSnapshot = null;
-  const nextShell = renderRoomSurface(createRoomSurfaceRenderProps(createDesktopContext()));
-  for (const selector of [".room-surface-topbar", ".room-role-strip", ".room-surface-main"]) {
-    const current = shell.querySelector<HTMLElement>(selector);
-    const next = nextShell.querySelector<HTMLElement>(selector);
-    if (current && next) {
-      current.replaceWith(next);
-    }
+  for (const kind of kinds) {
+    roomSurfaceUpdateQueue.kinds.add(kind);
   }
-  repairRenderedMojibake(shell, consoleState.language);
-  restoreRoomSurfaceUiSnapshot(roomUiSnapshot);
-  restoreScrollSnapshot(scrollSnapshot);
-  scheduleConversationScrollToBottom(resolveConversationScrollTarget());
-  markRenderedSurface();
-  markLatestConsoleTurnRendered();
-  restoreConversationInputState(inputSnapshot);
+  roomSurfaceUpdateQueue.reasons.push(reason);
+  roomSurfaceUpdateQueue.reasons.splice(0, Math.max(0, roomSurfaceUpdateQueue.reasons.length - 8));
+  if (!roomSurfaceUpdateQueue.raf) {
+    roomSurfaceUpdateQueue.raf = window.requestAnimationFrame(flushRoomSurfaceUpdateQueue);
+  }
   return true;
 }
 
-function notifyRoomInspectorUpdated(): boolean {
-  if (activeSurface !== "room") {
-    return false;
+function flushRoomSurfaceUpdateQueue() {
+  roomSurfaceUpdateQueue.raf = 0;
+  if (activeSurface !== "room" || roomSurfaceUpdateQueue.kinds.size === 0) {
+    roomSurfaceUpdateQueue.kinds.clear();
+    roomSurfaceUpdateQueue.reasons = [];
+    return;
   }
+
   const shell = appRoot.querySelector<HTMLElement>(".room-surface");
-  const currentRail = shell?.querySelector<HTMLElement>(".room-control-rail");
-  if (!shell || !currentRail) {
-    return false;
+  if (!shell) {
+    roomSurfaceUpdateQueue.kinds.clear();
+    roomSurfaceUpdateQueue.reasons = [];
+    return;
   }
+
+  const kinds = new Set(roomSurfaceUpdateQueue.kinds);
+  roomSurfaceUpdateQueue.kinds.clear();
+  roomSurfaceUpdateQueue.reasons = [];
 
   const inputSnapshot = captureConversationInputSnapshot();
   const scrollSnapshot = mergeScrollSnapshots(captureScrollSnapshot(), pendingInteractionScrollSnapshot);
+  const conversationScrollTarget = kinds.has("main") ? resolveConversationScrollTarget() : null;
   const roomUiSnapshot = captureRoomSurfaceUiSnapshot(shell);
   pendingInteractionScrollSnapshot = null;
   const nextShell = renderRoomSurface(createRoomSurfaceRenderProps(createDesktopContext()));
-  const nextRail = nextShell.querySelector<HTMLElement>(".room-control-rail");
-  if (!nextRail) {
-    return false;
-  }
-  for (const selector of [".room-surface-topbar", ".room-role-strip"]) {
-    const current = shell.querySelector<HTMLElement>(selector);
-    const next = nextShell.querySelector<HTMLElement>(selector);
-    if (current && next) {
-      current.replaceWith(next);
-    }
-  }
-  currentRail.replaceWith(nextRail);
+  patchRoomSurfacePart(shell, nextShell, kinds, "topbar", ".room-surface-topbar");
+  patchRoomSurfacePart(shell, nextShell, kinds, "roles", ".room-role-strip");
+  patchRoomSurfacePart(shell, nextShell, kinds, "main", ".room-surface-main");
+  patchRoomSurfacePart(shell, nextShell, kinds, "inspector", ".room-control-rail");
   repairRenderedMojibake(shell, consoleState.language);
   restoreRoomSurfaceUiSnapshot(roomUiSnapshot);
-  restoreScrollSnapshot(scrollSnapshot);
+  restoreOrFollowConversationScroll(scrollSnapshot, conversationScrollTarget);
+  markRenderedSurface();
+  markLatestConsoleTurnRendered();
   restoreConversationInputState(inputSnapshot);
-  return true;
+}
+
+function patchRoomSurfacePart(
+  shell: HTMLElement,
+  nextShell: HTMLElement,
+  kinds: Set<RoomSurfacePatchKind>,
+  kind: RoomSurfacePatchKind,
+  selector: string,
+) {
+  if (!kinds.has(kind)) {
+    return;
+  }
+  const current = shell.querySelector<HTMLElement>(selector);
+  const next = nextShell.querySelector<HTMLElement>(selector);
+  if (current && next) {
+    if (kind === "inspector") {
+      patchRoomInspectorRail(current, next);
+      return;
+    }
+    patchElementIfChanged(current, next);
+  }
+}
+
+function patchElementIfChanged(current: HTMLElement, next: HTMLElement): void {
+  if (current.isEqualNode(next)) {
+    return;
+  }
+  current.replaceWith(next);
+}
+
+function patchRoomInspectorRail(currentRail: HTMLElement, nextRail: HTMLElement): void {
+  const sectionSelectors = [
+    ".room-inspector-status",
+    ".room-context-panel",
+    ".room-inspector-actions",
+    ".room-inspector-details",
+  ];
+
+  for (const selector of sectionSelectors) {
+    const current = currentRail.querySelector<HTMLElement>(selector);
+    const next = nextRail.querySelector<HTMLElement>(selector);
+    if (Boolean(current) !== Boolean(next)) {
+      patchElementIfChanged(currentRail, nextRail);
+      return;
+    }
+  }
+
+  for (const selector of sectionSelectors) {
+    const current = currentRail.querySelector<HTMLElement>(selector);
+    const next = nextRail.querySelector<HTMLElement>(selector);
+    if (current && next) {
+      patchElementIfChanged(current, next);
+    }
+  }
+}
+
+function notifyRoomSurfaceUpdated(): boolean {
+  return queueRoomSurfaceUpdate("room_surface_update", ["main", "roles", "inspector"]);
+}
+
+function notifyRoomInspectorUpdated(): boolean {
+  return queueRoomSurfaceUpdate("room_inspector_update", ["inspector"]);
 }
 
 function refreshAfterMemoryAction(reason: string) {
@@ -2725,6 +3004,7 @@ function formatLastAiTraceDiagnostics(): string {
     if (latestRequest.responseShape) {
       lines.push(`responseShape: ${latestRequest.responseShape}`);
     }
+    lines.push(`usage: ${formatAiUsageSummary(latestRequest.usage)}`);
   }
   lines.push("");
   lines.push("Recent request audits:");
@@ -2797,6 +3077,7 @@ function formatLastAiRequestDiagnostics(): string {
     if (latest.responseShape) {
       lines.push(`responseShape: ${latest.responseShape}`);
     }
+    lines.push(`usage: ${formatAiUsageSummary(latest.usage)}`);
   }
   lines.push("", "Recent request audits:", ...formatRecentAiRequestAuditLines());
 
@@ -2859,10 +3140,47 @@ function formatRecentAiRequestAuditLines(limit = 6): string[] {
   if (!entries.length) {
     return ["none"];
   }
-  return entries.map(
+  return [
+    ...formatAiRequestPurposeAverageLines(entries),
+    ...entries.map(
     (entry) =>
-      `scope=${entry.scope} purpose=${entry.purpose} provider=${entry.providerId} executor=${entry.executorId ?? "none"} request=${entry.requestId} outcome=${entry.outcome}`,
-  );
+      `scope=${entry.scope} purpose=${entry.purpose} provider=${entry.providerId} executor=${entry.executorId ?? "none"} request=${entry.requestId} outcome=${entry.outcome} usage=${formatAiUsageSummary(entry.usage)}`,
+    ),
+  ];
+}
+
+function formatAiUsageSummary(usage: ReturnType<typeof aiRequestAuditLog.snapshot>[number]["usage"] | undefined): string {
+  if (!usage) {
+    return "unknown";
+  }
+  const input = usage.promptTokens ?? usage.estimatedPromptTokens;
+  const output = usage.completionTokens ?? usage.estimatedCompletionTokens;
+  const source = usage.promptTokens !== undefined || usage.completionTokens !== undefined ? "reported" : "estimated";
+  return `${source} input=${input ?? "unknown"} output=${output ?? "unknown"} total=${usage.totalTokens ?? "unknown"} chars=${usage.promptChars}/${usage.completionChars}`;
+}
+
+function formatAiRequestPurposeAverageLines(entries: ReturnType<typeof aiRequestAuditLog.snapshot>): string[] {
+  const groups = new Map<string, { count: number; input: number; output: number }>();
+  for (const entry of entries) {
+    const input = entry.usage?.promptTokens ?? entry.usage?.estimatedPromptTokens;
+    const output = entry.usage?.completionTokens ?? entry.usage?.estimatedCompletionTokens;
+    if (input === undefined && output === undefined) {
+      continue;
+    }
+    const current = groups.get(entry.purpose) ?? { count: 0, input: 0, output: 0 };
+    current.count += 1;
+    current.input += input ?? 0;
+    current.output += output ?? 0;
+    groups.set(entry.purpose, current);
+  }
+  if (groups.size === 0) {
+    return [];
+  }
+  return [
+    `purpose averages: ${[...groups.entries()]
+      .map(([purpose, value]) => `${purpose} input=${Math.round(value.input / value.count)} output=${Math.round(value.output / value.count)} n=${value.count}`)
+      .join(" | ")}`,
+  ];
 }
 
 function formatBlockedSubmitTrace(trace: ConsoleBlockedSubmitTrace | null): string {
@@ -3074,12 +3392,19 @@ function handleConsoleAction(action: ConsoleAction) {
   consoleState = reduceConsoleState(consoleState, action);
 
   if (deletedRoomId) {
+    deletedRoomMemoryIds.add(deletedRoomId);
     const deletedStoreScopes = memoryStore.deleteRoomMemory(`room:${deletedRoomId}` as `room:${string}`);
+    const deletedScopes = Array.from(new Set([...deletedRoomMemoryScopes, ...deletedStoreScopes]));
+    clearSemanticDirtyScopes(deletedScopes);
     persistMemoryStore({
-      graphScopes: Array.from(new Set([...deletedRoomMemoryScopes, ...deletedStoreScopes])),
+      graphScopes: deletedScopes,
       graphReplace: true,
       graphNotify: activeSurface === "console" && activeConsoleView === "memory",
     });
+    void deletePersistentRoomMemory(deletedRoomId, deletedScopes);
+    if (activeSurface === "console" && activeConsoleView === "memory") {
+      notifyMemoryDashboardUpdated();
+    }
   }
 
   if (action.type === "voice.setTtsEnabled" && !action.enabled) {
@@ -3112,7 +3437,7 @@ function handleConsoleAction(action: ConsoleAction) {
     if (!consoleState.room.isOpen) {
       clearRoomAutoTimer();
     } else if (consoleState.room.autoChat) {
-      primeRoomAutoTimer("idle_auto", true);
+    primeRoomAutoTimer("idle_auto", true, undefined, { delayMode: "base" });
     }
   }
 
@@ -4441,8 +4766,8 @@ async function executeRoomInput(input: string) {
     terminationReason: null,
   });
   const memorySnippets = [
-    ...memoryStore.getRoomPromptMemory(roomScope),
-    ...memoryStore.getRoomDirectorPromptMemory(consoleState.room.director.memoryScope),
+    ...memoryStore.getRoomPromptMemory(roomScope, { budget: roomContextBudget(consoleState.room) }),
+    ...memoryStore.getRoomDirectorPromptMemory(consoleState.room.director.memoryScope).slice(0, roomContextBudgetLimits(consoleState.room).directorMemory),
   ];
   const plannerResult = await createRoomPlannerResult({
     room: consoleState.room,
@@ -4507,14 +4832,38 @@ function shouldUseCloudRoomPlanner(fallback: RoomPlannerResult): boolean {
   if (consoleState.ai.localChatModel.enabled || !canAttemptGlobalCloudChat()) {
     return false;
   }
+  if (fallback.intent === "single_reply") {
+    return false;
+  }
+  const mode = resolveRoomPromptMode(consoleState.room);
+  if (fallback.intent === "auto_simulation" && mode === "casual") {
+    return false;
+  }
+  if (fallback.intent === "group_opinion" && mode === "casual") {
+    return false;
+  }
 
   return (
     fallback.intent === "group_opinion" ||
+    fallback.intent === "director_request" ||
     fallback.intent === "debate_round" ||
     fallback.intent === "team_strategy" ||
-    fallback.intent === "auto_simulation" ||
-    (consoleState.room.autoChat && fallback.intent === "single_reply")
+    fallback.intent === "auto_simulation"
   );
+}
+
+function shouldCreateAutoRoomPlannerResult(room: RoomState): boolean {
+  if (room.activeDiscussionPlan?.status === "running") {
+    return false;
+  }
+  if (room.match.debateFlow?.steps.length) {
+    return false;
+  }
+  const mode = resolveDirectorMode(room);
+  if (isContinuousRoomFlow(room) && mode === "casual" && !isDebateRoomForPrompt(room)) {
+    return false;
+  }
+  return mode !== "casual" || isDebateRoomForPrompt(room);
 }
 
 async function requestCloudRoomPlan(
@@ -4560,7 +4909,7 @@ async function requestCloudRoomPlan(
     }));
 
   try {
-    const plan = await liveChatProvider.rawChatWithConfig(
+    const planResult = await liveChatProvider.rawChatWithConfigResult(
       withAiRequestAuditMetadata(readLiveAiConfig("chat"), audit),
       [
         {
@@ -4627,8 +4976,8 @@ async function requestCloudRoomPlan(
       undefined,
       { temperature: 0.2, maxTokens: 320, jsonMode: true },
     );
-    finishAiRequestAudit(audit, "success");
-    return plan;
+    finishAiRequestAudit(audit, "success", { usage: planResult.usage });
+    return planResult.content;
   } catch (error) {
     const normalized = normalizeAiProviderError(error);
     finishAiRequestAudit(audit, "failed", {
@@ -4949,7 +5298,9 @@ async function executeRoomDirectorTurnBody(
     terminationReason: null,
   });
   const localResult = scheduleRoomDirectorTurn(request);
-  const livePlan = localResult.plan ? await createLiveDirectorTurnPlan(request, localResult.plan, runtimeTurn) : null;
+  const livePlan = localResult.plan && shouldUseLiveDirectorTurnPlan(request, localResult.plan)
+    ? await createLiveDirectorTurnPlan(request, localResult.plan, runtimeTurn)
+    : null;
   const result = livePlan ? scheduleRoomDirectorTurn({ ...request, planOverride: livePlan }) : localResult;
 
   const directorEffect = applyRoomDirectorTurn(result);
@@ -4966,6 +5317,32 @@ async function executeRoomDirectorTurnBody(
     nextTimerAction: directorEffect.nextTimerAction,
     pendingFollowup: directorEffect.pendingFollowup,
   };
+}
+
+function shouldUseLiveDirectorTurnPlan(request: RoomDirectorTurnRequest, localPlan: DirectorTurnPlan): boolean {
+  if (!request.room.director.enabled) {
+    return false;
+  }
+  if (roomContextBudget(request.room) === "full") {
+    return true;
+  }
+  if (/Developer Director Channel:/i.test(request.userInput ?? "")) {
+    return true;
+  }
+  if (request.requestedMove === "judge" || request.requestedMove === "twist" || request.requestedMove === "recap") {
+    return true;
+  }
+  if (localPlan.move === "judge" || localPlan.move === "twist" || localPlan.judgement) {
+    return true;
+  }
+  if (shouldCommitDirectorPublicText(localPlan) && localPlan.publicTextReason !== "none") {
+    return true;
+  }
+  const mode = resolveRoomPromptMode(request.room);
+  if (mode === "story" || mode === "mystery" || mode === "debate") {
+    return true;
+  }
+  return false;
 }
 
 async function createLiveDirectorTurnPlan(
@@ -5139,13 +5516,46 @@ function isPollutedLocalDirectorSpeech(text: string, localPlan: DirectorTurnPlan
 
 function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: DirectorTurnPlan): string {
   const room = request.room;
-  const directorMemory = request.directorMemory ?? memoryStore.getRoomDirectorMemorySnapshot(room.director.memoryScope);
-  const directorGraphMemoryBlock = request.directorMemoryContext
+  const budget = roomContextBudgetLimits(room);
+  const useFullDirectorContext =
+    budget.includeFullDirectorContext ||
+    localPlan.move === "judge" ||
+    localPlan.move === "twist" ||
+    Boolean(localPlan.judgement) ||
+    shouldCommitDirectorPublicText(localPlan);
+  const promptMode = resolveRoomPromptMode(room);
+  const recentTimelineLimit = useFullDirectorContext ? budget.recentTimeline : Math.min(4, budget.recentTimeline);
+  const recentTimelineChars = useFullDirectorContext ? budget.timelineChars : Math.min(96, budget.timelineChars);
+  const recentTimeline = room.messages
+    .slice(-recentTimelineLimit)
+    .map((message) => `${message.speaker}: ${trimRoomPromptLine(message.text, recentTimelineChars)}`)
+    .join("\n");
+  const directorGraphMemoryBlock = useFullDirectorContext && request.directorMemoryContext
     ? buildDirectorGraphMemoryBlock(request.directorMemoryContext)
-    : "Director graph memory: unavailable; using legacy Director memory snapshot.";
+    : "Director graph memory: omitted for this lightweight Director pass.";
+  if (!useFullDirectorContext) {
+    return [
+      "You are the CastRoom AI Room Director lightweight observation pass.",
+      "Return an Emotion JSON object whose text field is exactly one DirectorTurnPlan JSON object. Do not use markdown.",
+      "Use the local rule plan as the baseline. Only adjust privateDirectives, nextSpeakerRoleId, waitForUser, and short state fields when clearly needed.",
+      "Do not schedule the user. User input is optional unless the local plan already marks a hard choice.",
+      "Keep publicText empty unless the local plan already allows public narration or ruling. Never put scheduling text in publicText.",
+      "If no concrete action with actor, action, and object/result is present, do not judge. Keep publicText empty.",
+      'Never invent fallback actions such as "act in the scene".',
+      "Debate setup text is configuration, not debate material and not a verdict request.",
+      "PrivateDirectives are private role instructions only; target roles or all, never @You.",
+      directorGraphMemoryBlock,
+      `Room mode: ${promptMode}`,
+      `Room topic: ${room.topic}`,
+      `Room recipe: ${room.director.recipeId}`,
+      `Trigger: ${request.userInput || request.requestedMove || request.reason}`,
+      `Recent timeline:\n${recentTimeline || "No recent messages."}`,
+      `Local rule plan summary: ${JSON.stringify(compactDirectorLocalPlanForPrompt(localPlan))}`,
+    ].join("\n");
+  }
+  const directorMemory = request.directorMemory ?? memoryStore.getRoomDirectorMemorySnapshot(room.director.memoryScope);
   const directorPrompt = resolveDirectorPrompt(room, consoleState);
   const roomPrompt = resolveRoomPrompt(room, consoleState);
-  const promptMode = resolveRoomPromptMode(room);
   const directorLayeredPrompt = compileLayeredPrompt({
     mode: promptMode,
     target: "director",
@@ -5164,11 +5574,6 @@ function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: Di
     stateCapsule: buildRoomStateCapsule(room, room.simulation.situationAssessment),
     guardFeedback: buildPromptGuardFeedback(room),
   });
-  const recentTimeline = room.messages
-    .slice(-10)
-    .map((message) => `${message.speaker}: ${trimRoomPromptLine(message.text, 180)}`)
-    .join("\n");
-
   return [
     "You are the CastRoom AI Room Director planning engine.",
     "Return an Emotion JSON object whose text field is exactly one DirectorTurnPlan JSON object. Do not use markdown.",
@@ -5181,6 +5586,9 @@ function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: Di
     "publicText is optional. Use publicTextReason narration only when the local rule plan allows public narration for a scene beat, environmental change, pressure, clue, or action consequence.",
     "privateDirectives are private scheduling instructions for target roles. Never write privateDirectives as publicText or timeline dialogue.",
     "When publicTextReason is none, keep publicText empty and use privateDirectives to tell the next role what to do.",
+    "If no concrete action with actor, action, and object/result is present, do not judge. Keep publicText empty.",
+    'Never invent fallback actions such as "act in the scene".',
+    "Debate setup text is configuration, not debate material and not a verdict request.",
     "If publicText is used, write it as immersive narration or host speech, not as debug output or role scheduling.",
     "Public narration may create an open-ended situation for the room to react to, but it must not establish unsupported facts such as an opened lock, a death, or a revealed secret.",
     "Never put next-speaker selection, role targets, acts next, who should reply, private tasks, or scheduling instructions in publicText.",
@@ -5196,10 +5604,10 @@ function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: Di
     `Active Director prompt source: ${directorPrompt.source}, rev ${directorPrompt.revision}`,
     directorLayeredPrompt,
     buildDirectorModePromptGuidance(room),
-    buildDirectorPlotArcPromptBlock(room),
-    buildRoomFrameIntentPromptBlock(room),
+    useFullDirectorContext ? buildDirectorPlotArcPromptBlock(room) : "Director plot arc: omitted for lightweight pass.",
+    useFullDirectorContext ? buildRoomFrameIntentPromptBlock(room) : "Room frame intent: omitted for lightweight pass.",
     `Active Room prompt source: ${roomPrompt.source}, rev ${roomPrompt.revision}`,
-    roomLayeredPrompt,
+    useFullDirectorContext ? roomLayeredPrompt : "Layered Room prompt: omitted for lightweight Director pass.",
     `Room topic: ${room.topic}`,
     `Room recipe: ${room.director.recipeId}`,
     `Collaboration plan: ${JSON.stringify(room.collaborationPlan ?? null)}`,
@@ -5218,10 +5626,10 @@ function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: Di
     directorGraphMemoryBlock,
     `Director memory: ${JSON.stringify({
       summary: directorMemory.summary,
-      continuity: directorMemory.continuity.entries.slice(0, 18),
+      continuity: directorMemory.continuity.entries.slice(0, useFullDirectorContext ? 18 : 6),
       entries: directorMemory.entries
         .filter((entry) => entry.status !== "archived")
-        .slice(0, 28)
+        .slice(0, useFullDirectorContext ? 28 : 8)
         .map((entry) => ({
           category: entry.category,
           text: entry.text,
@@ -5229,16 +5637,16 @@ function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: Di
           visibility: entry.visibility,
           knownToRoleIds: entry.knownToRoleIds,
         })),
-      judgements: directorMemory.judgements.slice(0, 10).map((entry) => ({
+      judgements: directorMemory.judgements.slice(0, useFullDirectorContext ? 10 : 3).map((entry) => ({
         text: entry.text,
         status: entry.status,
       })),
-      constraints: directorMemory.constraints.slice(0, 10).map((entry) => ({
+      constraints: directorMemory.constraints.slice(0, useFullDirectorContext ? 10 : 4).map((entry) => ({
         text: entry.text,
         status: entry.status,
         visibility: entry.visibility,
       })),
-      secrets: directorMemory.secrets.slice(0, 12).map((secret) => ({
+      secrets: directorMemory.secrets.slice(0, useFullDirectorContext ? 12 : 2).map((secret) => ({
         title: secret.title,
         detail: secret.detail,
         knownToRoleIds: secret.knownToRoleIds,
@@ -5250,6 +5658,30 @@ function buildDirectorPlanPrompt(request: RoomDirectorTurnRequest, localPlan: Di
     `User input or trigger: ${request.userInput || request.requestedMove || request.reason}`,
     `Local rule plan: ${JSON.stringify(localPlan)}`,
   ].join("\n");
+}
+
+function compactDirectorLocalPlanForPrompt(localPlan: DirectorTurnPlan) {
+  return {
+    move: localPlan.move,
+    publicTextReason: localPlan.publicTextReason ?? "none",
+    waitForUser: localPlan.waitForUser,
+    nextSpeakerRoleId: localPlan.nextSpeakerRoleId,
+    privateDirectives: (localPlan.privateDirectives ?? []).slice(0, 2).map((directive) => ({
+      roleId: directive.roleId,
+      reason: directive.reason,
+      sourceMove: directive.sourceMove,
+      target: directive.target,
+      task: trimRoomPromptLine(directive.task, 120),
+    })),
+    judgement: localPlan.judgement
+      ? {
+          outcome: localPlan.judgement.outcome,
+          difficulty: localPlan.judgement.difficulty,
+          actor: localPlan.judgement.actor,
+          intent: localPlan.judgement.intent,
+        }
+      : null,
+  };
 }
 
 function parseLiveDirectorTurnPlan(text: string, fallback: DirectorTurnPlan, room: RoomState): DirectorTurnPlan | null {
@@ -5288,6 +5720,10 @@ function sanitizeDirectorTurnPlan(value: Partial<DirectorTurnPlan>, fallback: Di
   const continuityWrites = mergeContinuityPlanWrites(fallback.continuityWrites, value.continuityWrites);
   const secretWrites = sanitizeSecretWrites(value.secretWrites, fallback.secretWrites);
   const knowledgeVisibility = sanitizeKnowledgeVisibility(value.knowledgeVisibility, fallback.knowledgeVisibility, move);
+  if (knowledgeVisibility !== "public" && publicText) {
+    publicText = "";
+    publicTextReason = "none";
+  }
   const nextSpeakerRoleId = sanitizeRoleId(value.nextSpeakerRoleId, room) ?? fallback.nextSpeakerRoleId;
   const waitForUser = typeof value.waitForUser === "boolean" ? value.waitForUser : fallback.waitForUser;
   const privateDirectives = sanitizeDirectorPrivateDirectives(value.privateDirectives, fallback.privateDirectives, room);
@@ -5367,7 +5803,7 @@ function sanitizeDirectorPrivateDirectives(
     return [{
       roleId,
       task,
-      target: candidate.target,
+      target: sanitizeDirectorDirectiveTarget(candidate.target, room),
       maxLength: typeof candidate.maxLength === "number" ? Math.min(360, Math.max(80, Math.floor(candidate.maxLength))) : 180,
       reason,
       sourceMove,
@@ -5376,6 +5812,13 @@ function sanitizeDirectorPrivateDirectives(
     }];
   });
   return directives.length > 0 ? directives.slice(0, 4) : fallbackDirectives;
+}
+
+function sanitizeDirectorDirectiveTarget(target: RoomMessageTarget | undefined, room: RoomState): RoomMessageTarget | undefined {
+  if (!target) {
+    return undefined;
+  }
+  return isTargetingUser(target, room.userProfile) ? "all" : target;
 }
 
 function extractJsonObjectText(text: string): string | null {
@@ -5531,6 +5974,24 @@ function containsForbiddenMemoryText(text: string): boolean {
   return /(api key|sk-[a-z0-9]|密码|验证码|私钥|助记词|银行卡|支付密码|bearer\s+[a-z0-9._-]+)/i.test(text);
 }
 
+function sanitizeDirectorInspectorPatchForPublic<T extends DirectorTickResult["inspectorPatch"]>(patch: T): T {
+  if (!patch) {
+    return patch;
+  }
+  const sourceVisibility = patch.sourceVisibility ?? "public";
+  const publicSafe = patch.publicSafe ?? sourceVisibility === "public";
+  if (publicSafe) {
+    return patch;
+  }
+  const {
+    currentFocus: _currentFocus,
+    nextPressure: _nextPressure,
+    lastTurnOutcome: _lastTurnOutcome,
+    ...safePatch
+  } = patch;
+  return safePatch as T;
+}
+
 function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeEffect {
   if (result.sceneBoard) {
     consoleState = reduceConsoleState(consoleState, {
@@ -5538,17 +5999,18 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
       sceneBoard: result.sceneBoard,
     });
   }
+  const inspectorPatch = sanitizeDirectorInspectorPatchForPublic(result.inspectorPatch as DirectorTickResult["inspectorPatch"]);
   const simulationPatch = {
     ...(result.simulation ?? {}),
-    ...(result.inspectorPatch?.currentFocus !== undefined ? { currentFocus: result.inspectorPatch.currentFocus } : {}),
-    ...(result.inspectorPatch?.stopReason !== undefined ? { stopReason: result.inspectorPatch.stopReason } : {}),
-    ...(result.inspectorPatch?.nextPressure !== undefined ? { nextPressure: result.inspectorPatch.nextPressure } : {}),
-    ...(result.inspectorPatch?.lastTurnOutcome !== undefined ? { lastRuling: result.inspectorPatch.lastTurnOutcome ?? undefined } : {}),
-    ...(result.inspectorPatch?.directorMemorySource !== undefined ? { directorMemorySource: result.inspectorPatch.directorMemorySource } : {}),
-    ...(result.inspectorPatch?.directorMemoryLoadedClaims !== undefined ? { directorMemoryLoadedClaims: result.inspectorPatch.directorMemoryLoadedClaims } : {}),
-    ...(result.inspectorPatch?.directorMemoryHiddenClaims !== undefined ? { directorMemoryHiddenClaims: result.inspectorPatch.directorMemoryHiddenClaims } : {}),
-    ...(result.inspectorPatch?.directorMemoryDisputedClaims !== undefined ? { directorMemoryDisputedClaims: result.inspectorPatch.directorMemoryDisputedClaims } : {}),
-    ...(result.inspectorPatch?.situationAssessment !== undefined ? { situationAssessment: result.inspectorPatch.situationAssessment } : {}),
+    ...(inspectorPatch?.currentFocus !== undefined ? { currentFocus: inspectorPatch.currentFocus } : {}),
+    ...(inspectorPatch?.stopReason !== undefined ? { stopReason: inspectorPatch.stopReason } : {}),
+    ...(inspectorPatch?.nextPressure !== undefined ? { nextPressure: inspectorPatch.nextPressure } : {}),
+    ...(inspectorPatch?.lastTurnOutcome !== undefined ? { lastRuling: inspectorPatch.lastTurnOutcome ?? undefined } : {}),
+    ...(inspectorPatch?.directorMemorySource !== undefined ? { directorMemorySource: inspectorPatch.directorMemorySource } : {}),
+    ...(inspectorPatch?.directorMemoryLoadedClaims !== undefined ? { directorMemoryLoadedClaims: inspectorPatch.directorMemoryLoadedClaims } : {}),
+    ...(inspectorPatch?.directorMemoryHiddenClaims !== undefined ? { directorMemoryHiddenClaims: inspectorPatch.directorMemoryHiddenClaims } : {}),
+    ...(inspectorPatch?.directorMemoryDisputedClaims !== undefined ? { directorMemoryDisputedClaims: inspectorPatch.directorMemoryDisputedClaims } : {}),
+    ...(inspectorPatch?.situationAssessment !== undefined ? { situationAssessment: inspectorPatch.situationAssessment } : {}),
   };
   if (result.match || Object.keys(simulationPatch).length > 0) {
     consoleState = reduceConsoleState(consoleState, {
@@ -5596,6 +6058,7 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
   const pendingFollowup = createDirectorPendingFollowup(result);
   const shouldWaitForUser = shouldWaitForUserAfterDirector(result);
   const directorChannelMessage = createDirectorChannelMessage(result);
+  const continuousRoomFlow = isContinuousRoomFlow(consoleState.room);
 
   if (result.type === "stop" || !result.message) {
     if (directorChannelMessage) {
@@ -5603,7 +6066,7 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
     }
     consoleState = reduceConsoleState(consoleState, {
       type: "room.setCollaborationState",
-      phase: shouldWaitForUser || result.type === "stop" ? "wait" : "commit",
+      phase: shouldWaitForUser || (result.type === "stop" && !continuousRoomFlow) ? "wait" : "commit",
       floorOwner: { type: "none" },
       terminationReason: shouldWaitForUser && result.move === "choice" ? "director_choice" : null,
     });
@@ -5618,6 +6081,15 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
         pendingFollowup: null,
       });
       clearRoomAutoTimer();
+    } else if (continuousRoomFlow) {
+      consoleState = reduceConsoleState(consoleState, {
+        type: "room.setAutoSpeechStatus",
+        status: "cooling_down",
+        nextTurnAt: Date.now() + getRoomDelayMs(consoleState.room),
+        lastReason: "director_followup",
+        resetCounters: false,
+        pendingFollowup,
+      });
     }
     return { nextTimerAction: followupTimerAction, pendingFollowup };
   }
@@ -5667,7 +6139,10 @@ function applyRoomDirectorTurn(result: RoomDirectorScheduleResult): RoomRuntimeE
     if (directorChannelMessage) {
       commitRoomTimelineMessage(directorChannelMessage, "room_director_channel_note");
     }
-    const canContinueWithoutPublicText = followupTimerAction === "schedule_once" || followupTimerAction === "schedule_continuous";
+    const canContinueWithoutPublicText =
+      followupTimerAction === "schedule_once" ||
+      followupTimerAction === "schedule_continuous" ||
+      isContinuousRoomFlow(consoleState.room);
     consoleState = reduceConsoleState(consoleState, {
       type: "room.setAutoSpeechStatus",
       status: canContinueWithoutPublicText ? "cooling_down" : "waiting_user",
@@ -5744,32 +6219,32 @@ function createDirectorChannelMessage(result: RoomDirectorScheduleResult): Conso
     return null;
   }
 
-  const lines = [
-    `Reason: ${result.reason}`,
-    `Move: ${result.move}`,
-    `Public narration: ${result.message ? plan.publicTextReason ?? "narration" : "none"}`,
-  ];
-  if (plan.nextSpeakerRoleId) {
-    const participant = consoleState.room.participants.find((candidate) => candidate.id === plan.nextSpeakerRoleId);
-    lines.push(`Next beat: ${participant?.name ?? plan.nextSpeakerRoleId}`);
-  }
-  for (const directive of directives.slice(0, 4)) {
-    const participant = consoleState.room.participants.find((candidate) => candidate.id === directive.roleId);
-    lines.push(`Private directive: ${participant?.name ?? directive.roleId} - ${trimRoomPromptLine(directive.task, 180)}`);
-  }
-  if (publicTextIsBackstage) {
-    lines.push(`Backstage text blocked from public: ${neutralizeDirectorUserInstruction(publicText)}`);
-  }
+  const neutralizedDirectiveTasks = directives
+    .slice(0, 4)
+    .map((directive) => neutralizeDirectorUserInstruction(directive.task));
   const focus = result.inspectorPatch?.currentFocus ?? result.simulation?.currentFocus;
-  if (focus) {
-    lines.push(`Focus: ${trimRoomPromptLine(focus, 180)}`);
+  const neutralizedFocus = focus ? neutralizeDirectorUserInstruction(focus) : "";
+  const note = compactDirectorChannelNote(result, publicTextIsBackstage, neutralizedDirectiveTasks, neutralizedFocus);
+  if (!note) {
+    return null;
+  }
+  const previousDirectorNote = [...consoleState.room.messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.visibility === "director_channel" &&
+        message.speakerId === consoleState.room.director.directorId &&
+        message.speakerType === "room_system",
+    );
+  if (previousDirectorNote?.text === note) {
+    return null;
   }
 
   return {
     id: crypto.randomUUID(),
     at: currentClock(),
     speaker: consoleState.room.director.displayName,
-    text: lines.join("\n"),
+    text: note,
     kind: "system",
     speakerType: "room_system",
     speakerId: consoleState.room.director.directorId,
@@ -5785,6 +6260,45 @@ function createDirectorChannelMessage(result: RoomDirectorScheduleResult): Conso
   };
 }
 
+function compactDirectorChannelNote(
+  result: RoomDirectorScheduleResult,
+  publicTextIsBackstage: boolean,
+  neutralizedDirectiveTasks: string[],
+  neutralizedFocus: string,
+): string {
+  const plan = result.plan;
+  if (!plan) {
+    return "";
+  }
+  const parts = [`Backstage: ${result.move}`];
+  if (plan.nextSpeakerRoleId) {
+    const participant = consoleState.room.participants.find((candidate) => candidate.id === plan.nextSpeakerRoleId);
+    parts.push(`next ${participant?.name ?? plan.nextSpeakerRoleId}`);
+  }
+  if (result.message) {
+    parts.push(`public ${plan.publicTextReason ?? "narration"}`);
+  } else if (publicTextIsBackstage) {
+    parts.push("public blocked");
+  }
+  const directives = plan.privateDirectives ?? [];
+  const directiveTargets: string[] = [];
+  directives.slice(0, 4).forEach((directive, index) => {
+    const participant = consoleState.room.participants.find((candidate) => candidate.id === directive.roleId);
+    const task = neutralizedDirectiveTasks[index] ? `: ${trimRoomPromptLine(neutralizedDirectiveTasks[index], 48)}` : "";
+    directiveTargets.push(`${participant?.name ?? directive.roleId}${task}`);
+  });
+  if (directiveTargets.length > 0) {
+    parts.push(`private ${directiveTargets.join(", ")}`);
+  }
+  if (neutralizedFocus) {
+    const safeFocus = trimRoomPromptLine(neutralizedFocus, 90);
+    if (safeFocus) {
+      parts.push(`focus ${safeFocus}`);
+    }
+  }
+  return parts.join("; ");
+}
+
 function neutralizeDirectorUserInstruction(text: string): string {
   const trimmed = trimRoomPromptLine(text, 220);
   if (!trimmed) {
@@ -5797,6 +6311,11 @@ function neutralizeDirectorUserInstruction(text: string): string {
 }
 
 function isDirectorUserInstructionText(text: string): boolean {
+  if (
+    /(?:@\s*(?:You|you|你|我)\b|\bYou\s+can\s+ask\b|\bask\s+a\s+role\s+to\s+act\b|\bwatch\s+the\s+room\s+move\s+on\b|用户.{0,16}(?:可以|现在可以)|让(?:某个)?角色先行|继续追这条线|旁观局势推进)/i.test(text)
+  ) {
+    return true;
+  }
   return /(?:@\s*(?:You|你|我)\b|You\s+can\s+ask|ask\s+a\s+role\s+to\s+act|watch\s+the\s+room\s+move\s+on|用户.*(?:可以|可选)|现在可以让.{0,16}角色|让某个角色先行动|等\s*[^，。,.]{0,16}\s*决定下一步)/i.test(text);
 }
 
@@ -5806,7 +6325,7 @@ function latestRoomMessageForReplyChannel(messages: ConsoleMessage[]): ConsoleMe
 
 function directorFollowupTimerAction(result: RoomDirectorScheduleResult): RoomRuntimeEffect["nextTimerAction"] {
   if (result.type !== "turn") {
-    return "clear_wait_user";
+    return isContinuousRoomFlow(consoleState.room) ? "sync" : "clear_wait_user";
   }
   if (hasExecutableDirectorFollowup(result)) {
     return "schedule_once";
@@ -5846,6 +6365,10 @@ function createDirectorPendingFollowup(result: RoomDirectorScheduleResult): Room
 }
 
 function shouldWaitForUserAfterDirector(result: RoomDirectorScheduleResult): boolean {
+  const continuousRoomFlow = isContinuousRoomFlow(consoleState.room);
+  if (continuousRoomFlow) {
+    return false;
+  }
   if (result.type !== "turn") {
     return true;
   }
@@ -5855,8 +6378,35 @@ function shouldWaitForUserAfterDirector(result: RoomDirectorScheduleResult): boo
   if (hasExecutableDirectorFollowup(result)) {
     return false;
   }
+  if (continuousRoomFlow && !directorResultRequiresHardUserInput(result)) {
+    return false;
+  }
   const decision = directorAdvanceDecision(result);
   return decision?.action === "pause";
+}
+
+function directorResultRequiresHardUserInput(result: RoomDirectorScheduleResult): boolean {
+  if (result.type !== "turn") {
+    return false;
+  }
+  const situationAssessment =
+    result.inspectorPatch?.situationAssessment ?? result.simulation?.situationAssessment ?? consoleState.room.simulation.situationAssessment;
+  const continuationAssessment = resolveContinuationAssessment(consoleState.room, result.plan ?? null, situationAssessment ?? null);
+  if (isContinuousRoomFlow(consoleState.room)) {
+    return (
+      continuationAssessment.blockingNeed === "privacy_or_safety" ||
+      continuationAssessment.blockingNeed === "provider_failure"
+    );
+  }
+  if (
+    continuationAssessment.blockingNeed === "explicit_user_choice" ||
+    continuationAssessment.blockingNeed === "irreversible_decision" ||
+    continuationAssessment.blockingNeed === "privacy_or_safety" ||
+    continuationAssessment.blockingNeed === "provider_failure"
+  ) {
+    return true;
+  }
+  return continuationAssessment.blockingNeed === "user_answer_expected" && resolveDirectorMode(consoleState.room) === "study";
 }
 
 function directorAdvanceDecision(result: RoomDirectorScheduleResult) {
@@ -5941,17 +6491,18 @@ function applyDirectorTickResult(tick: DirectorTickResult) {
       patch: tick.scriptPatch,
     });
   }
+  const inspectorPatch = sanitizeDirectorInspectorPatchForPublic(tick.inspectorPatch);
   const simulationPatch = {
     ...(tick.sceneStatePatch ?? {}),
-    ...(tick.inspectorPatch?.currentFocus !== undefined ? { currentFocus: tick.inspectorPatch.currentFocus } : {}),
-    ...(tick.inspectorPatch?.stopReason !== undefined ? { stopReason: tick.inspectorPatch.stopReason } : {}),
-    ...(tick.inspectorPatch?.nextPressure !== undefined ? { nextPressure: tick.inspectorPatch.nextPressure } : {}),
-    ...(tick.inspectorPatch?.lastTurnOutcome !== undefined ? { lastRuling: tick.inspectorPatch.lastTurnOutcome ?? undefined } : {}),
-    ...(tick.inspectorPatch?.directorMemorySource !== undefined ? { directorMemorySource: tick.inspectorPatch.directorMemorySource } : {}),
-    ...(tick.inspectorPatch?.directorMemoryLoadedClaims !== undefined ? { directorMemoryLoadedClaims: tick.inspectorPatch.directorMemoryLoadedClaims } : {}),
-    ...(tick.inspectorPatch?.directorMemoryHiddenClaims !== undefined ? { directorMemoryHiddenClaims: tick.inspectorPatch.directorMemoryHiddenClaims } : {}),
-    ...(tick.inspectorPatch?.directorMemoryDisputedClaims !== undefined ? { directorMemoryDisputedClaims: tick.inspectorPatch.directorMemoryDisputedClaims } : {}),
-    ...(tick.inspectorPatch?.situationAssessment !== undefined ? { situationAssessment: tick.inspectorPatch.situationAssessment } : {}),
+    ...(inspectorPatch?.currentFocus !== undefined ? { currentFocus: inspectorPatch.currentFocus } : {}),
+    ...(inspectorPatch?.stopReason !== undefined ? { stopReason: inspectorPatch.stopReason } : {}),
+    ...(inspectorPatch?.nextPressure !== undefined ? { nextPressure: inspectorPatch.nextPressure } : {}),
+    ...(inspectorPatch?.lastTurnOutcome !== undefined ? { lastRuling: inspectorPatch.lastTurnOutcome ?? undefined } : {}),
+    ...(inspectorPatch?.directorMemorySource !== undefined ? { directorMemorySource: inspectorPatch.directorMemorySource } : {}),
+    ...(inspectorPatch?.directorMemoryLoadedClaims !== undefined ? { directorMemoryLoadedClaims: inspectorPatch.directorMemoryLoadedClaims } : {}),
+    ...(inspectorPatch?.directorMemoryHiddenClaims !== undefined ? { directorMemoryHiddenClaims: inspectorPatch.directorMemoryHiddenClaims } : {}),
+    ...(inspectorPatch?.directorMemoryDisputedClaims !== undefined ? { directorMemoryDisputedClaims: inspectorPatch.directorMemoryDisputedClaims } : {}),
+    ...(inspectorPatch?.situationAssessment !== undefined ? { situationAssessment: inspectorPatch.situationAssessment } : {}),
   };
   if (Object.keys(simulationPatch).length > 0) {
     consoleState = reduceConsoleState(consoleState, {
@@ -6264,9 +6815,9 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
       viewportState: "cooling_down",
     });
     completeRoomDiscussionPlan("repeated");
+    const shouldContinueAuto = consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous";
+    const nextTurnAt = shouldContinueAuto ? Date.now() + getRoomDelayMs(consoleState.room) : null;
     if (isDebateRoomForPrompt(consoleState.room)) {
-      const shouldContinueAuto = consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous";
-      const nextTurnAt = shouldContinueAuto ? Date.now() + getRoomDelayMs(consoleState.room) : null;
       consoleState = reduceConsoleState(consoleState, {
         type: "room.setSimulationState",
         simulation: {
@@ -6288,13 +6839,14 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
         type: "room.setSimulationState",
         simulation: {
           currentFocus: providerTurn.detail,
-          stopReason: "repeated",
+          nextPressure: shouldContinueAuto ? "Switch speaker or bring in a fresh casual angle." : undefined,
+          stopReason: shouldContinueAuto ? undefined : "repeated",
         },
       });
       consoleState = reduceConsoleState(consoleState, {
         type: "room.setAutoSpeechStatus",
-        status: "waiting_user",
-        nextTurnAt: null,
+        status: shouldContinueAuto ? "cooling_down" : "waiting_user",
+        nextTurnAt,
         lastReason: "repetition_guard",
         resetCounters: false,
       });
@@ -6340,19 +6892,28 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     consoleState.room.director,
   );
   const preserveScheduledAllTarget = shouldPreserveScheduledAllRoomTarget(result, userInput, providerAddressing.target);
-  const providerText = preserveScheduledAllTarget
+  const providerTextBase = preserveScheduledAllTarget
     ? stripLeadingUserMentionFromRoomText(providerTextRaw, consoleState.room.userProfile)
     : providerTextRaw;
-  const providerUsedMention = !preserveScheduledAllTarget && /(^|\s)@/.test(providerText);
-  const target = preserveScheduledAllTarget ? "all" : providerUsedMention ? providerAddressing.target : result.target ?? result.message.target;
+  const providerSanitizedText = sanitizeRoomAiAtMentions(providerTextBase, consoleState.room);
+  const providerText = providerSanitizedText.text;
+  const target = preserveScheduledAllTarget ? "all" : result.target ?? result.message.target;
   const draftMessage: ConsoleMessage = {
     ...result.message,
     text: providerText,
     scope: roomScope,
     emotion: providerResult?.emotion ?? result.emotion,
     target,
-    mentions: preserveScheduledAllTarget ? [] : providerUsedMention ? providerAddressing.mentions : result.message.mentions,
+    mentions: preserveScheduledAllTarget ? [] : result.message.mentions,
   };
+  if (providerSanitizedText.blockedDirectorMention) {
+    recordDiagnostic("warn", "Room.aiDirectorMentionBlocked", {
+      roomId: consoleState.room.id,
+      messageId: draftMessage.id,
+      speakerId: draftMessage.speakerId,
+      reason: result.reason,
+    });
+  }
   const lastRoomMessage = latestRoomMessageForReplyChannel(consoleState.room.messages);
   if (
     result.message.visibility === "faction_huddle" &&
@@ -6488,7 +7049,7 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
   if (shouldScheduleContinuousRoomFlowAfterVisibleTurn(result)) {
     primeRoomAutoTimer(result.reason, false, undefined, { delayMode: "base" });
   } else if (shouldScheduleFiniteRoomFlowAfterTurn(result)) {
-    primeRoomAutoTimer("director_followup", false, createFiniteRoomFlowPendingFollowupAfterTurn(result));
+    primeRoomAutoTimer("director_followup", false, createFiniteRoomFlowPendingFollowupAfterTurn(result), { delayMode: "base" });
   } else {
     syncRoomAutoTimer();
   }
@@ -6554,6 +7115,16 @@ function advanceRoomDiscussionPlanAfterTurn(plan: RoomDiscussionPlan | undefined
 
   const nextIndex = plan.activeTurnIndex + 1;
   if (nextIndex >= plan.turns.length || nextIndex >= plan.maxTurns) {
+    if (consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous") {
+      consoleState = reduceConsoleState(consoleState, { type: "room.setDiscussionPlan", plan: null });
+      consoleState = reduceConsoleState(consoleState, {
+        type: "room.setCollaborationState",
+        phase: "commit",
+        floorOwner: { type: "none" },
+        terminationReason: null,
+      });
+      return;
+    }
     completeRoomDiscussionPlan("waiting_user");
     return;
   }
@@ -6730,9 +7301,21 @@ async function executeRoomProviderTurnBody(
       continue;
     }
 
-    const roomPrompt = providerSelection.id === "local-chat-model"
-      ? buildLocalRoomSpeakerPrompt(result, userInput, roomScope)
-      : buildRoomProviderPrompt(result, userInput, roomScope);
+    const useLocalSpeakerPrompt = providerSelection.id === "local-chat-model";
+    const useCompactSpeakerPrompt =
+      !useLocalSpeakerPrompt && shouldUseCompactRoomSpeakerPrompt(result, consoleState.room, userInput);
+    const roomPrompt = useCompactSpeakerPrompt
+      ? buildCompactRoomSpeakerPrompt(result, userInput, roomScope)
+      : useLocalSpeakerPrompt
+        ? buildLocalRoomSpeakerPrompt(result, userInput, roomScope)
+        : buildRoomProviderPrompt(result, userInput, roomScope);
+    recordDiagnostic("info", "Room.prompt.path", {
+      roleId: participant.id,
+      providerId: providerSelection.id,
+      path: useLocalSpeakerPrompt ? "local_compact" : useCompactSpeakerPrompt ? "compact" : "full",
+      promptChars: roomPrompt.length,
+      contextBudget: roomContextBudget(consoleState.room),
+    });
     const localRequestId = `${runtimeTurn.id}-${providerSelection.id}`;
     const turn = await (providerSelection.id === "cloud-chat"
       ? cloudTurnRuntime.run({
@@ -7360,6 +7943,37 @@ function stripLeadingUserMentionFromRoomText(text: string, userProfile: RoomStat
   return cleaned || text.trim();
 }
 
+function sanitizeRoomAiAtMentions(text: string, room: RoomState): { text: string; blockedDirectorMention: boolean } {
+  const boundary = "(?=$|[\\s,，.。!！?？:：;；、)）\\]】])";
+  let cleaned = text;
+  const blockedDirectorMention = hasRoomDirectorMention(cleaned, room.director);
+  const replaceAtName = (name: string, replacement: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      return;
+    }
+    cleaned = cleaned.replace(new RegExp(`(^|\\s)@${escapeRegExp(trimmed)}${boundary}`, "gi"), `$1${replacement}`);
+  };
+
+  replaceAtName("Director", "Director");
+  replaceAtName("导演", "导演");
+  replaceAtName(room.director.displayName, room.director.displayName);
+  replaceAtName("You", room.userProfile.displayName);
+  replaceAtName("you", room.userProfile.displayName);
+  replaceAtName("你", room.userProfile.displayName);
+  replaceAtName("我", room.userProfile.displayName);
+  for (const alias of room.userProfile.aliases) {
+    replaceAtName(alias, room.userProfile.displayName);
+  }
+  for (const participant of room.participants) {
+    replaceAtName(participant.name, participant.name);
+    replaceAtName(participant.displayName, participant.name);
+  }
+
+  cleaned = cleaned.replace(/(^|\s)@(?=[^\s,，.。!！?？:：;；、)）\]】]+)/g, "$1").trim();
+  return { text: cleaned || text.replace(/@/g, "").trim() || text.trim(), blockedDirectorMention };
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -7420,14 +8034,18 @@ function buildDebateProviderGuidance(result: RoomScheduleResult, userInput: stri
   if (!isDebateRoomForPrompt(consoleState.room)) {
     return "";
   }
-  const motion = extractDebateMotionForPrompt(consoleState.room, userInput);
+  const motion = consoleState.room.match.debateFlow?.motion || consoleState.room.match.motion || extractDebateMotionForPrompt(consoleState.room, userInput);
   const side = debateSideNameForPrompt(consoleState.room, result.participant);
   const position = result.participant ? debateSpeakerRoleDescription(consoleState.room, result.participant, "en") : "auto speaker";
+  const strictTask = result.participant
+    ? strictDebateFlowTurnTask(consoleState.room, result.participant, consoleState.room.match.debateFlow?.language ?? "en")
+    : null;
   const lines = [
     "Debate mode instructions:",
     motion ? `- Debate motion: ${motion}` : "- Debate motion is not confirmed yet; ask for or infer only the provided motion.",
     `- Speaker side: ${side}`,
     `- Speaker position: ${position}`,
+    strictTask ? `- Strict debate step: ${strictTask}` : "",
     "- Treat debate setup text as room instructions, not as this character's dialogue.",
     "- Private Director instructions, when present, are the current turn task. Follow them silently and do not quote them.",
     "- Do not repeat the user's setup request, moderator wording, or prior speaker's sentence.",
@@ -7584,7 +8202,7 @@ function createModeFallbackReply(result: RoomScheduleResult, userInput: string):
 function createDebateFallbackReply(result: RoomScheduleResult, userInput: string): string {
   const participant = result.participant;
   const side = debateSideNameForPrompt(consoleState.room, participant);
-  const motion = extractDebateMotionForPrompt(consoleState.room, userInput) || trimRoomPromptLine(consoleState.room.topic, 80);
+  const motion = consoleState.room.match.debateFlow?.motion || consoleState.room.match.motion || extractDebateMotionForPrompt(consoleState.room, userInput) || trimRoomPromptLine(consoleState.room.topic, 80);
   const chinese = /[\p{Script=Han}]/u.test([userInput, motion].join(" "));
   const position = participant ? debateSpeakerRoleDescription(consoleState.room, participant, chinese ? "zh-CN" : "en") : "";
   const positionPrefix = position ? `${position} ` : "";
@@ -7865,6 +8483,7 @@ function injectPrivateDirectiveIntoRolePrompt(result: RoomScheduleResult, partic
     consoleState.room.userProfile,
     consoleState.room.participants,
     consoleState.room.director,
+    { mentionStyle: "plain" },
   );
   const lines = [
     "Private Director instruction for this turn:",
@@ -7922,10 +8541,25 @@ function roomPrivateDirectiveInline(result: RoomScheduleResult, participant: Roo
     consoleState.room.userProfile,
     consoleState.room.participants,
     consoleState.room.director,
+    { mentionStyle: "plain" },
   );
   return chinese
     ? `本轮私下调度：${task}${targetLabel ? `；对象：${targetLabel}` : ""}。现在直接按任务发言，不要主持流程。`
     : `Private turn task: ${task}${targetLabel ? `; target: ${targetLabel}` : ""}. Speak directly now; do not host the flow.`;
+}
+
+function normalizeRoomSpeakerPromptTarget(result: RoomScheduleResult, userInput: string): RoomMessageTarget | undefined {
+  const target = result.target ?? result.message?.target;
+  if (!isTargetingUser(target, consoleState.room.userProfile)) {
+    return target;
+  }
+  if (result.reason === "user_reply" || result.reason === "user_follow_up") {
+    return target;
+  }
+  if (userInput.trim()) {
+    return target;
+  }
+  return "all";
 }
 
 function buildRoomProviderPrompt(
@@ -7933,6 +8567,7 @@ function buildRoomProviderPrompt(
   userInput: string,
   roomScope: `room:${string}`,
 ): string {
+  const budget = roomContextBudgetLimits(consoleState.room);
   const profile = getRoomPromptProfile(consoleState.room.promptProfileId);
   const effectiveRoomPrompt = resolveRoomPrompt(consoleState.room, consoleState);
   const participant = result.participant;
@@ -7941,40 +8576,43 @@ function buildRoomProviderPrompt(
     ? getVisibleContextForParticipant(result.participant, consoleState.room)
     : consoleState.room.messages;
   const recentTimeline = recentMessages
-    .slice(-8)
-    .map((message) => `${message.speaker}: ${trimRoomPromptLine(message.text, 180)}`)
+    .slice(-budget.recentTimeline)
+    .map((message) => `${message.speaker}: ${trimRoomPromptLine(message.text, budget.timelineChars)}`)
     .join("\n");
   const memoryLines = [
-    ...memoryStore.getRoomPromptMemory(roomScope).slice(0, 5),
-    ...(participant ? memoryStore.getPromptMemory(participant.memoryScope, { localModel: true }).slice(0, 3) : []),
-    ...memoryStore.getRoomDirectorPromptMemory(consoleState.room.director.memoryScope, participant?.id).slice(0, 6),
-    ...(participant ? memoryStore.getRoomObserverPromptMemory(roomScope, participant.id).slice(0, 6) : []),
-    ...(participant ? memoryStore.getFactionPromptMemory(roomScope, participant.factionId).slice(0, 4) : []),
+    ...memoryStore.getRoomPromptMemory(roomScope, { budget: roomContextBudget(consoleState.room) }).slice(0, budget.roomMemory),
+    ...(participant ? memoryStore.getPromptMemory(participant.memoryScope, { localModel: true }).slice(0, budget.roleMemory) : []),
+    ...memoryStore.getRoomDirectorPromptMemory(consoleState.room.director.memoryScope, participant?.id).slice(0, budget.directorMemory),
+    ...(participant ? memoryStore.getRoomObserverPromptMemory(roomScope, participant.id).slice(0, budget.observerMemory) : []),
+    ...(participant ? memoryStore.getFactionPromptMemory(roomScope, participant.factionId).slice(0, budget.factionMemory) : []),
   ];
+  const promptTarget = normalizeRoomSpeakerPromptTarget(result, userInput);
   const targetLabel = formatRoomTarget(
-    result.target,
+    promptTarget,
     consoleState.room.userProfile,
     consoleState.room.participants,
     consoleState.room.director,
+    { mentionStyle: "plain" },
   );
-  const autonomousAllRoomTurn = !userInput.trim() && (result.target === "all" || !result.target);
-  const targetRule = isTargetingUser(result.target, consoleState.room.userProfile)
-    ? `Speak directly to @${consoleState.room.userProfile.displayName}.`
-    : result.target === "all" || !result.target
+  const autonomousAllRoomTurn = !userInput.trim() && (promptTarget === "all" || !promptTarget);
+  const targetRule = isTargetingUser(promptTarget, consoleState.room.userProfile)
+    ? `Speak directly to ${consoleState.room.userProfile.displayName} by name if needed. Do not use @mentions.`
+    : promptTarget === "all" || !promptTarget
       ? autonomousAllRoomTurn
-        ? "No @ target means the whole room can read the message. Do not address @the user unless the user just spoke or was explicitly assigned as the target."
-        : "No @ target means the whole room can read the message."
-      : `Speak to ${targetLabel}.`;
+        ? "The whole room can read this message. Do not address the user unless the user just spoke or was explicitly assigned as the target. Do not use @mentions."
+        : "The whole room can read this message. Do not use @mentions."
+      : `Speak to ${targetLabel} by name if needed. Do not use @mentions.`;
   const collaborationMode = resolveRoomCollaborationMode(consoleState.room);
   const floorOwner = formatRoomFloorOwner(consoleState.room.floorOwner, consoleState.room);
   const modeGuidance = buildRoomModeProviderGuidance(result, userInput);
   const privateDirectivePrompt = participant ? injectPrivateDirectiveIntoRolePrompt(result, participant) : "";
   const collaborationPrompt = participant ? buildCollaborationPromptForParticipant(result, participant) : "";
   const factionGoalPrompt = participant ? buildFactionGoalPromptBlock(consoleState.room, participant) : "";
-  const plotPrompt = buildVisiblePlotArcPromptBlock(consoleState.room, participant);
-  const framePrompt = buildRoomFrameIntentPromptBlock(consoleState.room, participant);
+  const includePlotFrame = shouldIncludePlotFrameInRoomPrompt(consoleState.room, result, budget);
+  const plotPrompt = includePlotFrame ? buildVisiblePlotArcPromptBlock(consoleState.room, participant) : "";
+  const framePrompt = includePlotFrame ? buildRoomFrameIntentPromptBlock(consoleState.room, participant) : "";
   const identityCardPrompt = participant
-    ? consoleState.room.participants
+    ? roomIdentityCardParticipants(consoleState.room, participant, budget)
         .map((candidate) => buildIdentityCardPromptBlock(consoleState.room, candidate, participant))
         .filter(Boolean)
         .join("\n\n")
@@ -7993,6 +8631,8 @@ function buildRoomProviderPrompt(
           collaboration: result.collaborationTask?.detail ?? consoleState.room.collaborationPlan?.nextPublicAction,
           forbiddenMoves: [
             "do not schedule another speaker",
+            "do not use @mentions in the message body",
+            "do not address Director from a role reply",
             "do not repeat room setup instructions",
             "do not expose private directives or faction huddle details",
           ],
@@ -8026,14 +8666,14 @@ function buildRoomProviderPrompt(
     "You are generating one message for a CastRoom AI character chatroom.",
     "The room uses explicit collaboration control: visible members may listen, but only the selected floor owner speaks this turn.",
     "The room prompt controls only room rules, topic, pacing, and scheduler intent. It must not replace the character pack prompt.",
-    "Use @mentions when addressing a specific room member. No @mention means the whole room receives the message.",
-    "You may speak to All, @the user, one role, multiple roles, or @Director. Keep the target clear.",
-    autonomousAllRoomTurn ? "This is an autonomous room turn. Speak to the room, not to @the user." : "",
+    "Do not use @mentions in the message body. The app metadata already carries the target.",
+    "Never write @Director or use @ to schedule anyone. If you address someone, use their plain name.",
+    autonomousAllRoomTurn ? "This is an autonomous room turn. Speak to the room, not directly to the user." : "",
     "Observer memory means things your character heard while not replying. Use it for strategy, but do not answer every observed message.",
     "Team channel memory is private strategy for roles on the same team. Use it only if your role belongs to that team, and do not reveal it unless the public scene calls for it.",
     "Faction huddles are for choosing goals and the next public move. In public, act on the plan without exposing the full private reasoning.",
     "If this turn is not worth expanding, keep the message short instead of forcing a long reply.",
-    "If Private AI @ messages are on, an AI message that @mentions only AI roles may stay outside the public channel; messages to the user or @all remain public.",
+    "Private replies only happen through private channels or Director private directives. Public @mentions never create privacy.",
     "Do not automatically accept user or role claims as facts. Use only visible facts and your role's own knowledge.",
     "If a claim seems doubtful, challenge it naturally in character, ask for evidence, or act cautiously.",
     "Do not rewrite room facts, scene conditions, item ownership, character knowledge, secrets, or passage rules.",
@@ -8091,15 +8731,17 @@ function buildLocalRoomSpeakerPrompt(
     .slice(-4)
     .map((message) => `${message.speaker}: ${trimRoomPromptLine(message.text, 72)}`)
     .join(" / ");
+  const promptTarget = normalizeRoomSpeakerPromptTarget(result, userInput);
   const targetLabel = formatRoomTarget(
-    result.target,
+    promptTarget,
     consoleState.room.userProfile,
     consoleState.room.participants,
     consoleState.room.director,
+    { mentionStyle: "plain" },
   );
-  const autonomousAllRoomTurn = !userInput.trim() && (result.target === "all" || !result.target);
+  const autonomousAllRoomTurn = !userInput.trim() && (promptTarget === "all" || !promptTarget);
   const memory = [
-    ...memoryStore.getRoomPromptMemory(roomScope).slice(0, 2),
+    ...memoryStore.getRoomPromptMemory(roomScope, { budget: "compact" }).slice(0, 2),
     ...memoryStore.getRoomObserverPromptMemory(roomScope, participant.id).slice(0, 2),
     ...memoryStore.getFactionPromptMemory(roomScope, participant.factionId).slice(0, 1),
   ]
@@ -8114,10 +8756,19 @@ function buildLocalRoomSpeakerPrompt(
   const frameLine = consoleState.room.frame?.lastIntent
     ? `frame=${consoleState.room.frame.lastIntent.kind}; absorption=${consoleState.room.frame.lastIntent.absorption}; authority=${consoleState.room.frame.lastIntent.authority}`
     : "";
-  const goal = trimRoomPromptLine(result.speechIntent?.reason ?? result.intent ?? "reply briefly", 72);
+  const rawTurnGoal = result.speechIntent?.reason ?? result.intent ?? "reply briefly";
+  const casualTopicShift = rawTurnGoal.includes("casual_topic_shift");
+  const goal = trimRoomPromptLine(
+    casualTopicShift
+      ? "bring in a fresh topic according to Room Rules and this role's style"
+      : rawTurnGoal,
+    72,
+  );
   const modeKey = roomModeKeyForPrompt(consoleState.room);
   const modeTask = {
-    casual: chinese ? "自然简短地补一个有用角度" : "add one natural useful angle",
+    casual: casualTopicShift
+      ? (chinese ? "按房间规则和角色风格自然抛出一个新话题" : "introduce a fresh topic according to Room Rules and this role's style")
+      : (chinese ? "自然简短地补一个有用角度" : "add one natural useful angle"),
     story: chinese ? "按可见场景行动或质疑，不改写事实" : "act or question from visible scene facts; do not rewrite facts",
     mystery: chinese ? "只根据可见线索推理，不泄露隐藏真相" : "reason only from visible clues; do not reveal hidden truth",
     debate: chinese ? "按阵营围绕辩题发言" : "argue from the side on the motion",
@@ -8128,7 +8779,7 @@ function buildLocalRoomSpeakerPrompt(
   const beatLine = result.simulationBeat
     ? `${result.simulationBeat.type}: ${trimRoomPromptLine(result.simulationBeat.expectedStateChange, 72)}`
     : "";
-  const identityCardLine = consoleState.room.participants
+  const identityCardLine = [participant]
     .map((candidate) => buildIdentityCardPromptBlock(consoleState.room, candidate, participant))
     .filter(Boolean)
     .join("\n\n")
@@ -8157,14 +8808,16 @@ function buildLocalRoomSpeakerPrompt(
   ).lines.map((line) => trimRoomPromptLine(line, 96)).join(" / ");
 
   if (isDebateRoomForPrompt(consoleState.room)) {
-    const motion = extractDebateMotionForPrompt(consoleState.room, userInput) || trimRoomPromptLine(consoleState.room.topic, 80);
+    const motion = consoleState.room.match.debateFlow?.motion || consoleState.room.match.motion || extractDebateMotionForPrompt(consoleState.room, userInput) || trimRoomPromptLine(consoleState.room.topic, 80);
     const side = debateSideNameForPrompt(consoleState.room, participant);
     const position = debateSpeakerRoleDescription(consoleState.room, participant, chinese ? "zh-CN" : "en");
+    const strictTask = strictDebateFlowTurnTask(consoleState.room, participant, consoleState.room.match.debateFlow?.language ?? (chinese ? "zh-CN" : "en"));
     if (chinese) {
       return [
         `辩题："${motion}"。`,
         `你的阵营：${side}。`,
         `你的辩位：${position}。`,
+        strictTask ? `当前严格赛程任务：${strictTask}。` : "",
         visibleMessages ? `最近发言：${visibleMessages}。` : "",
         memory ? `可用记忆：${memory}。` : "",
         beatLine ? `当前节奏：${beatLine}。` : "",
@@ -8176,6 +8829,7 @@ function buildLocalRoomSpeakerPrompt(
       `Debate motion: "${motion}".`,
       `Your side: ${side}.`,
       `Your speaker position: ${position}.`,
+      strictTask ? `Strict debate task: ${strictTask}.` : "",
       visibleMessages ? `Recent lines: ${visibleMessages}.` : "",
         memory ? `Useful memory: ${memory}.` : "",
         factionGoalLine ? `${factionGoalLine}.` : "",
@@ -8184,7 +8838,7 @@ function buildLocalRoomSpeakerPrompt(
         frameLine ? `Frame: ${frameLine}.` : "",
         beatLine ? `Current beat: ${beatLine}.` : "",
         localTaskCardLine ? `Task card: ${localTaskCardLine}.` : "",
-      autonomousAllRoomTurn ? "Autonomous room turn: speak to the room, not to @the user." : "",
+      autonomousAllRoomTurn ? "Autonomous room turn: speak to the room, not directly to the user." : "",
       privateDirectiveLine,
       collaborationLine,
       `It is ${participant.name}'s turn. Speak to ${targetLabel} in one short natural debate line.`,
@@ -8227,7 +8881,7 @@ function buildLocalRoomSpeakerPrompt(
     userInput ? `The user just said: "${trimRoomPromptLine(userInput, 96)}".` : "",
     beatLine ? `Simulation beat: ${beatLine}.` : "",
     localTaskCardLine ? `Task card: ${localTaskCardLine}.` : "",
-    autonomousAllRoomTurn ? "Autonomous room turn: speak to the room, not to @the user." : "",
+    autonomousAllRoomTurn ? "Autonomous room turn: speak to the room, not directly to the user." : "",
     privateDirectiveLine,
     collaborationLine,
     `It is ${participant.name}'s turn. Speak to ${targetLabel} in one short natural line.`,
@@ -8237,6 +8891,135 @@ function buildLocalRoomSpeakerPrompt(
     "Do not mention Director rulings, system judgement, or backend rules.",
     "Do not repeat the user's exact words.",
   ].filter(Boolean).join(" ");
+}
+
+function buildCompactRoomSpeakerPrompt(
+  result: RoomScheduleResult,
+  userInput: string,
+  roomScope: `room:${string}`,
+): string {
+  const participant = result.participant;
+  if (!participant) {
+    return userInput || consoleState.room.topic;
+  }
+
+  const visibleMessages = getVisibleContextForParticipant(participant, consoleState.room)
+    .filter((message) => message.speaker !== participant.name)
+    .slice(-4)
+    .map((message) => `${message.speaker}: ${trimRoomPromptLine(message.text, 72)}`)
+    .join(" / ");
+  const promptTarget = normalizeRoomSpeakerPromptTarget(result, userInput);
+  const targetLabel = formatRoomTarget(
+    promptTarget,
+    consoleState.room.userProfile,
+    consoleState.room.participants,
+    consoleState.room.director,
+    { mentionStyle: "plain" },
+  );
+  const autonomousAllRoomTurn = !userInput.trim() && (promptTarget === "all" || !promptTarget);
+  const memory = [
+    ...memoryStore.getRoomPromptMemory(roomScope, { budget: "compact" }).slice(0, 1),
+    ...memoryStore.getRoomObserverPromptMemory(roomScope, participant.id).slice(0, 1),
+    ...memoryStore.getFactionPromptMemory(roomScope, participant.factionId).slice(0, 1),
+  ]
+    .slice(0, 2)
+    .map((item) => trimRoomPromptLine(item, 80))
+    .filter(Boolean)
+    .join(" / ");
+  const chinese = /[\p{Script=Han}]/u.test([userInput, visibleMessages, consoleState.room.topic].join(" "));
+  const rawTurnGoal = result.speechIntent?.reason ?? result.intent ?? "reply briefly";
+  const casualTopicShift = rawTurnGoal.includes("casual_topic_shift");
+  const goal = trimRoomPromptLine(
+    casualTopicShift
+      ? "bring in a fresh topic according to Room Rules and this role's style"
+      : rawTurnGoal,
+    72,
+  );
+  const topicShiftLine = casualTopicShift
+    ? chinese
+      ? "这个日常房间需要一个新话题。遵守 Room Rules 和当前角色风格；如果规则允许，可以相邻延伸，也可以自然跳远一点。保持简短，对全房间说。"
+      : "The casual room needs a fresh topic. Follow Room Rules and this role's style. The topic may be close or a natural jump if the rules allow it. Keep it short and addressed to the room."
+    : "";
+
+  if (chinese) {
+    return [
+      `你正在为 ${participant.name} 生成一条房间发言。`,
+      `目标：${targetLabel || "All"}。`,
+      autonomousAllRoomTurn ? "这是自动房间轮次：对全房间说，不要默认 @用户。" : "",
+      visibleMessages ? `最近对话：${visibleMessages}。` : "",
+      memory ? `相关记忆：${memory}。` : "",
+      userInput ? `用户刚才说："${trimRoomPromptLine(userInput, 96)}"。` : "",
+      `任务：${goal}。`,
+      topicShiftLine,
+      "只使用当前角色可见的信息。不要调度别人，不要提 Director、系统、规则或后台判断。",
+      "自然接一句或两句即可；不要复读用户原话。",
+    ].filter(Boolean).join(" ");
+  }
+
+  return [
+    `Generate one room message for ${participant.name}.`,
+    `Target: ${targetLabel || "All"}.`,
+    autonomousAllRoomTurn ? "Autonomous room turn: speak to the room, not directly to the user." : "",
+    visibleMessages ? `Recent room lines: ${visibleMessages}.` : "",
+    memory ? `Relevant memory: ${memory}.` : "",
+    userInput ? `The user just said: "${trimRoomPromptLine(userInput, 96)}".` : "",
+    `Task: ${goal}.`,
+    topicShiftLine,
+    "Use only information visible to this role. Do not schedule others or mention Director, system rules, or backend judgement.",
+    "Reply naturally in one or two short sentences. Do not repeat the user's exact words.",
+  ].filter(Boolean).join(" ");
+}
+
+function shouldUseCompactRoomSpeakerPrompt(result: RoomScheduleResult, room: RoomState, userInput: string): boolean {
+  if (!result.participant || roomContextBudget(room) === "full") {
+    return false;
+  }
+  const mode = resolveRoomPromptMode(room);
+  if (mode !== "casual") {
+    return false;
+  }
+  if (result.privateDirective || result.factionHuddle || result.collaborationTask || result.simulationBeat) {
+    return false;
+  }
+  if (result.plannerResult?.mode === "cloud" || result.plannerResult?.intent === "director_request" || result.plannerResult?.intent === "auto_simulation") {
+    return false;
+  }
+  if (result.reason === "director_followup" || result.reason === "question_loop" || result.reason === "repetition_guard" || result.reason === "burst_limit") {
+    return false;
+  }
+  return !/\b(open|unlock|attack|kill|take|steal|reveal|discover|decide|judge|rule)\b|打开|开锁|攻击|杀|拿到|偷|揭露|发现|裁定|判定/u.test(userInput);
+}
+
+function shouldIncludePlotFrameInRoomPrompt(room: RoomState, result: RoomScheduleResult, budget: RoomContextBudgetLimits): boolean {
+  if (budget.includePlotFrameMode === "always") {
+    return true;
+  }
+  if (budget.includePlotFrameMode === "never") {
+    return false;
+  }
+  const mode = resolveRoomPromptMode(room);
+  return (
+    mode === "story" ||
+    mode === "mystery" ||
+    mode === "debate" ||
+    mode === "planning" ||
+    mode === "study" ||
+    Boolean(result.simulationBeat) ||
+    result.reason === "director_followup" ||
+    result.plannerResult?.intent === "auto_simulation" ||
+    result.plannerResult?.intent === "director_request"
+  );
+}
+
+function roomIdentityCardParticipants(room: RoomState, participant: RoomParticipant, budget: RoomContextBudgetLimits): RoomParticipant[] {
+  switch (budget.identityCardScope) {
+    case "all":
+      return room.participants;
+    case "speaker":
+      return [participant];
+    case "none":
+      return [];
+  }
 }
 
 function formatRoomFloorOwner(owner: RoomState["floorOwner"], room: RoomState): string {
@@ -8297,7 +9080,7 @@ function setRoomAutoEnabled(enabled: boolean) {
       stopReason: undefined,
     },
   });
-  primeRoomAutoTimer("idle_auto", true);
+  primeRoomAutoTimer("idle_auto", true, undefined, { delayMode: "base" });
 }
 
 function shouldUseLocalRoomFlowProfile() {
@@ -8360,10 +9143,9 @@ function primeRoomAutoTimer(
   reason: RoomScheduleResult["reason"],
   resetCounters: boolean,
   pendingFollowup?: RoomPendingFollowup | null,
-  options: { delayMode?: "reason" | "base" } = {},
+  options: { delayMode?: "base" | "idle_gap" } = {},
 ) {
-  const delay =
-    options.delayMode === "base" ? getRoomDelayMs(consoleState.room) : getRoomAutoTimerDelayMs(consoleState.room, reason);
+  const delay = getRoomAutoTimerDelayMs(consoleState.room, options.delayMode ?? "base");
   const nextTurnAt = Date.now() + delay;
   consoleState = reduceConsoleState(consoleState, {
     type: "room.setAutoSpeechStatus",
@@ -8390,6 +9172,43 @@ function syncRoomAutoTimer() {
 
   const delay = Math.max(0, consoleState.room.autoSpeechState.nextTurnAt - Date.now());
   roomAutoTimer = window.setTimeout(runRoomAutoTurn, delay);
+}
+
+function ensureRoomAutoProgress(reason: string) {
+  const { autoSpeechState } = consoleState.room;
+  if (
+    !canRunForegroundRoomFlow() ||
+    !consoleState.room.autoChat ||
+    consoleState.room.advancePolicy !== "continuous" ||
+    !hasRunnableRoomAutoWork()
+  ) {
+    return;
+  }
+  if (autoSpeechState.status === "waiting_user") {
+    primeRoomAutoTimer(autoSpeechState.lastReason ?? "idle_auto", false, autoSpeechState.pendingFollowup, { delayMode: "base" });
+    recordDiagnostic("info", "RoomAuto.timerWatchdog", { reason, action: "convert_waiting_user_to_queue" });
+    return;
+  }
+  if (autoSpeechState.status !== "cooling_down" && autoSpeechState.status !== "running") {
+    return;
+  }
+  if (!autoSpeechState.nextTurnAt) {
+    primeRoomAutoTimer(autoSpeechState.lastReason ?? "idle_auto", false, autoSpeechState.pendingFollowup, { delayMode: "base" });
+    recordDiagnostic("info", "RoomAuto.timerWatchdog", { reason, action: "prime_missing_next_turn" });
+    return;
+  }
+  const overdue = autoSpeechState.nextTurnAt <= Date.now();
+  if (!roomAutoTimer || overdue) {
+    syncRoomAutoTimer();
+    recordDiagnostic("info", "RoomAuto.timerWatchdog", {
+      reason,
+      action: overdue ? "sync_overdue_next_turn" : "sync_missing_timer",
+    });
+  }
+}
+
+function ensureContinuousRoomAutoTimer(reason: string) {
+  ensureRoomAutoProgress(reason);
 }
 
 function hasRunnablePendingFollowup(
@@ -8427,6 +9246,17 @@ function pauseRoomAutoOutsideForeground() {
   if (!consoleState.room.isOpen || (!consoleState.room.autoChat && consoleState.room.activeDiscussionPlan?.status !== "running")) {
     return;
   }
+  if (isContinuousRoomFlow(consoleState.room)) {
+    consoleState = reduceConsoleState(consoleState, {
+      type: "room.setAutoSpeechStatus",
+      status: "cooling_down",
+      nextTurnAt: consoleState.room.autoSpeechState.nextTurnAt ?? Date.now() + getRoomDelayMs(consoleState.room),
+      lastReason: consoleState.room.autoSpeechState.lastReason ?? "idle_auto",
+      resetCounters: false,
+      pendingFollowup: consoleState.room.autoSpeechState.pendingFollowup ?? null,
+    });
+    return;
+  }
   consoleState = reduceConsoleState(consoleState, {
     type: "room.setAutoSpeechStatus",
     status: "waiting_user",
@@ -8436,6 +9266,7 @@ function pauseRoomAutoOutsideForeground() {
 }
 
 async function runRoomAutoTurn() {
+  roomAutoTimer = 0;
   if (!canRunForegroundRoomFlow()) {
     pauseRoomAutoOutsideForeground();
     requestRender("room_auto_not_foreground", { kind: "status" });
@@ -8447,7 +9278,7 @@ async function runRoomAutoTurn() {
     return;
   }
   if (consoleTurnEngine.activeTurn?.status === "pending") {
-    primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false);
+    primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false, undefined, { delayMode: "base" });
     requestRender("room_auto_turn_busy", { kind: "status" });
     return;
   }
@@ -8455,17 +9286,23 @@ async function runRoomAutoTurn() {
   const roomScope = `room:${consoleState.room.id}` as const;
   const addressing = parseRoomMentions("", consoleState.room.participants, consoleState.room.userProfile, consoleState.room.director);
   const memorySnippets = [
-    ...memoryStore.getRoomPromptMemory(roomScope),
-    ...memoryStore.getRoomDirectorPromptMemory(consoleState.room.director.memoryScope),
+    ...memoryStore.getRoomPromptMemory(roomScope, { budget: roomContextBudget(consoleState.room) }),
+    ...(
+      shouldCreateAutoRoomPlannerResult(consoleState.room)
+        ? memoryStore.getRoomDirectorPromptMemory(consoleState.room.director.memoryScope).slice(0, roomContextBudgetLimits(consoleState.room).directorMemory)
+        : []
+    ),
   ];
-  const plannerResult = await createRoomPlannerResult({
-    room: consoleState.room,
-    trigger: "auto",
-    addressing,
-    triggerMessageId: latestRoomMessageForReplyChannel(consoleState.room.messages)?.id ?? null,
-    nowMs: Date.now(),
-    memorySnippets,
-  });
+  const plannerResult = shouldCreateAutoRoomPlannerResult(consoleState.room)
+    ? await createRoomPlannerResult({
+        room: consoleState.room,
+        trigger: "auto",
+        addressing,
+        triggerMessageId: latestRoomMessageForReplyChannel(consoleState.room.messages)?.id ?? null,
+        nowMs: Date.now(),
+        memorySnippets,
+      })
+    : null;
   void applyRoomScheduleResultViaRuntime(
     scheduleRoomTurn({
       room: consoleState.room,
@@ -9313,6 +10150,13 @@ function commitRoomTimelineMessage(message: ConsoleMessage, reason: string) {
 }
 
 function validateRoomTimelineChannelVisibility(message: ConsoleMessage): string | null {
+  const publicMessage = (message.visibility ?? "public") === "public";
+  if (publicMessage && isTargetingDirector(message.target)) {
+    return "public_director_target_blocked";
+  }
+  if (publicMessage && message.mentions?.some((mention) => mention.target.type === "room_director")) {
+    return "public_director_mention_blocked";
+  }
   if (message.channelId === "director" && message.visibility !== "director_channel") {
     return "director_channel_visibility_mismatch";
   }
@@ -9366,9 +10210,12 @@ function commitRoomInspectorPatch(
 
 function applyRoomRuntimeResult(result: RoomRuntimeResult<unknown>) {
   if (!result.ok && result.reason === "active_room_runtime") {
+    const continuousFlowActive = consoleState.room.isOpen && consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous";
     commitRoomInspectorPatch({
-      currentFocus: "Room is still applying the previous step.",
-      stopReason: "waiting_user",
+      currentFocus: continuousFlowActive
+        ? "Room is still applying the previous step; auto flow remains queued."
+        : "Room is still applying the previous step.",
+      stopReason: continuousFlowActive ? undefined : "waiting_user",
     }, "room_runtime_active_operation");
   }
   const effect: RoomRuntimeEffect = {
@@ -9377,7 +10224,12 @@ function applyRoomRuntimeResult(result: RoomRuntimeResult<unknown>) {
     inspectorPatch: result.effect.inspectorPatch ?? result.inspectorPatch,
     renderKind: result.effect.renderKind ?? result.renderKind,
     focusTarget: result.effect.focusTarget ?? result.focusTarget,
-    nextTimerAction: result.effect.nextTimerAction ?? result.nextTimerAction,
+    nextTimerAction:
+      result.effect.nextTimerAction ??
+      result.nextTimerAction ??
+      (!result.ok && result.reason === "active_room_runtime" && consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous"
+        ? "sync"
+        : undefined),
     diagnostics: result.effect.diagnostics ?? result.diagnostics,
   };
   if (effect.inspectorPatch) {
@@ -9389,6 +10241,7 @@ function applyRoomRuntimeResult(result: RoomRuntimeResult<unknown>) {
     }, effect.renderReason ?? "room_runtime_inspector_patch");
   }
   applyRoomRuntimeEffect(effect);
+  ensureRoomAutoProgress("runtime_result");
 }
 
 function applyRoomRuntimeEffect(effect: RoomRuntimeEffect = {}) {
@@ -9407,13 +10260,17 @@ function applyRoomRuntimeEffect(effect: RoomRuntimeEffect = {}) {
         effect.nextTimerAction === "schedule_continuous"
           ? effect.pendingFollowup
           : effect.pendingFollowup ?? consoleState.room.autoSpeechState.pendingFollowup ?? null;
-      primeRoomAutoTimer("director_followup", false, pending);
+      primeRoomAutoTimer("director_followup", false, pending, { delayMode: "base" });
     } else {
       syncRoomAutoTimer();
     }
   } else if (effect.nextTimerAction === "clear" || effect.nextTimerAction === "clear_wait_user") {
     clearRoomAutoTimer();
     if (effect.nextTimerAction === "clear_wait_user") {
+      if (isContinuousRoomFlow(consoleState.room)) {
+        primeRoomAutoTimer("director_followup", false, effect.pendingFollowup ?? consoleState.room.autoSpeechState.pendingFollowup ?? null, { delayMode: "base" });
+        return;
+      }
       consoleState = reduceConsoleState(consoleState, {
         type: "room.setAutoSpeechStatus",
         status: "waiting_user",
@@ -9955,8 +10812,7 @@ function render() {
       renderRoomSurface(createRoomSurfaceRenderProps(desktopContext)),
     );
     repairRenderedMojibake(appRoot, consoleState.language);
-    restoreScrollSnapshot(scrollSnapshot);
-    scheduleConversationScrollToBottom(conversationScrollTarget);
+    restoreOrFollowConversationScroll(scrollSnapshot, conversationScrollTarget);
     markRenderedSurface();
     markLatestConsoleTurnRendered();
     restoreConversationInputState(inputSnapshot);
@@ -10079,7 +10935,7 @@ function resolveRenderWorkspace(): RenderWorkspace {
 
 function createRenderLocalUpdate(
   workspace: RenderWorkspace,
-  _reason: string,
+  reason: string,
   options: RenderRequestOptions = {},
 ): (() => boolean) | undefined {
   if (options.force || options.structural || options.kind === "structural") {
@@ -10092,12 +10948,26 @@ function createRenderLocalUpdate(
     if (options.kind === "message") {
       return notifyRoomSurfaceUpdated;
     }
+    if (isRoomRoleStripOnlyRenderReason(reason)) {
+      return () => queueRoomSurfaceUpdate(reason, ["roles"]);
+    }
+    if (isRoomAutoSchedulingOnlyRenderReason(reason)) {
+      return () => true;
+    }
     return notifyRoomInspectorUpdated;
   }
   if (workspace === "console_memory") {
     return notifyMemoryDashboardUpdated;
   }
   return undefined;
+}
+
+function isRoomRoleStripOnlyRenderReason(reason: string): boolean {
+  return reason.startsWith("room_participant_");
+}
+
+function isRoomAutoSchedulingOnlyRenderReason(reason: string): boolean {
+  return reason === "room_auto_turn_scheduled" || reason === "room_auto_turn_busy";
 }
 
 function shouldAvoidFullRender(options: RenderRequestOptions = {}): boolean {
@@ -10114,8 +10984,66 @@ function shouldAvoidFullRender(options: RenderRequestOptions = {}): boolean {
   return false;
 }
 
+function shouldDeferInputSensitiveRender(workspace: RenderWorkspace, options: RenderRequestOptions = {}): boolean {
+  if (options.force) {
+    return false;
+  }
+  if (!options.structural && options.kind !== "structural") {
+    return false;
+  }
+  const target = conversationInputTargetForWorkspace(workspace);
+  if (!target) {
+    return false;
+  }
+  const stability = conversationInputStability[target];
+  const now = Date.now();
+  const activeEditable = isEditableElementActiveInWorkspace(workspace);
+  const recentFocus = now - stability.lastFocusAt < 350;
+  const recentInput = now - stability.lastInputAt < 350;
+  const recentComposition = now - stability.lastCompositionAt < 1_200;
+  return stability.composing || (activeEditable && (recentFocus || recentInput || recentComposition));
+}
+
+function scheduleDeferredInputSensitiveRender(reason: string, workspace: RenderWorkspace, options: RenderRequestOptions = {}) {
+  deferredInputSensitiveRender = {
+    reason,
+    workspace,
+    options: {
+      ...options,
+      workspace,
+    },
+  };
+  if (deferredInputSensitiveRenderTimer) {
+    window.clearTimeout(deferredInputSensitiveRenderTimer);
+  }
+  deferredInputSensitiveRenderTimer = window.setTimeout(() => {
+    deferredInputSensitiveRenderTimer = 0;
+    const pending = deferredInputSensitiveRender;
+    deferredInputSensitiveRender = null;
+    if (!pending) {
+      return;
+    }
+    if (shouldDeferInputSensitiveRender(pending.workspace, pending.options)) {
+      scheduleDeferredInputSensitiveRender(pending.reason, pending.workspace, pending.options);
+      return;
+    }
+    requestRender(pending.reason, pending.options);
+  }, 220);
+}
+
 function requestRender(reason: string, options: RenderRequestOptions = {}) {
   const workspace = options.workspace ?? resolveRenderWorkspace();
+  if (shouldDeferInputSensitiveRender(workspace, options)) {
+    scheduleDeferredInputSensitiveRender(reason, workspace, options);
+    suppressedFullRenderCount += 1;
+    lastSuppressedFullRenderReason = reason;
+    recordDiagnostic("info", "UI.render.deferred_input_sensitive", {
+      reason,
+      workspace,
+      kind: options.kind ?? (options.structural ? "structural" : "status"),
+    });
+    return false;
+  }
   const decision = renderGate.request({
     reason,
     kind: options.kind ?? (options.structural ? "structural" : "status"),
@@ -10370,6 +11298,7 @@ function isConsoleChatDomReady(): boolean {
 
 function captureConversationInputSnapshot(): ConversationInputSnapshot | null {
   const consoleInput = document.querySelector<HTMLInputElement>(".console-input-row .console-input");
+  const capturedAt = Date.now();
   if (consoleInput && (consoleInput.value || document.activeElement === consoleInput)) {
     return {
       target: "console",
@@ -10379,6 +11308,7 @@ function captureConversationInputSnapshot(): ConversationInputSnapshot | null {
       selectionStart: consoleInput.selectionStart,
       selectionEnd: consoleInput.selectionEnd,
       wasFocused: document.activeElement === consoleInput,
+      capturedAt,
     };
   }
 
@@ -10392,6 +11322,7 @@ function captureConversationInputSnapshot(): ConversationInputSnapshot | null {
       selectionStart: roomInput.selectionStart,
       selectionEnd: roomInput.selectionEnd,
       wasFocused: document.activeElement === roomInput,
+      capturedAt,
     };
   }
 
@@ -10429,7 +11360,8 @@ function restoreConversationInputState(snapshot: ConversationInputSnapshot | nul
       return;
     }
 
-    if (conversationInputStability[latestTarget].composing) {
+    const stability = conversationInputStability[latestTarget];
+    if (stability.composing) {
       pendingConversationInputFocus = null;
       return;
     }
@@ -10438,8 +11370,12 @@ function restoreConversationInputState(snapshot: ConversationInputSnapshot | nul
     const snapshotWasJustSubmitted = Boolean(
       latestDraftSnapshot && isRecentlySubmittedConversationInput(latestTarget, latestDraftSnapshot.value),
     );
+    const snapshotIsStale = Boolean(
+      latestDraftSnapshot && stability.lastInputAt > latestDraftSnapshot.capturedAt,
+    );
     const shouldRestoreSnapshotValue =
       !snapshotWasJustSubmitted &&
+      !snapshotIsStale &&
       !latestFocusRequest &&
       latestDraftSnapshot?.target === latestTarget;
     const draftValue = shouldRestoreSnapshotValue ? latestDraftSnapshot.value : savedDraft.value;
@@ -10449,15 +11385,21 @@ function restoreConversationInputState(snapshot: ConversationInputSnapshot | nul
     const selectionEnd =
       (shouldRestoreSnapshotValue ? latestDraftSnapshot.selectionEnd : savedDraft.selectionEnd) ??
       selectionStart;
+    const activeEditableInput = document.activeElement === input;
+    const recentInput = Date.now() - stability.lastInputAt < 350;
+    const recentComposition = Date.now() - stability.lastCompositionAt < 1_200;
+    const shouldSkipValueWrite = activeEditableInput && (recentInput || recentComposition);
 
-    if (input.value !== draftValue) {
+    if (!shouldSkipValueWrite && input.value !== draftValue) {
       input.value = draftValue;
       input.setSelectionRange(selectionStart, selectionEnd);
     }
 
     if ((latestFocusRequest || latestDraftSnapshot?.wasFocused) && canRestoreConversationInputFocus(input)) {
       input.focus({ preventScroll: true });
-      input.setSelectionRange(selectionStart, selectionEnd);
+      if (!shouldSkipValueWrite) {
+        input.setSelectionRange(selectionStart, selectionEnd);
+      }
     }
 
     pendingConversationInputFocus = null;
@@ -10554,10 +11496,38 @@ function restoreScrollSnapshot(snapshot: ScrollSnapshot | null) {
     return;
   }
 
+  const token = ++scrollRestoreFrameToken;
   window.requestAnimationFrame(() => {
+    if (token !== scrollRestoreFrameToken) {
+      return;
+    }
     applyScrollSnapshot(snapshot);
-    window.requestAnimationFrame(() => applyScrollSnapshot(snapshot));
+    window.requestAnimationFrame(() => {
+      if (token === scrollRestoreFrameToken) {
+        applyScrollSnapshot(snapshot);
+      }
+    });
   });
+}
+
+function restoreOrFollowConversationScroll(snapshot: ScrollSnapshot | null, target: ConversationScrollTarget) {
+  if (target && shouldFollowConversationScrollTarget(snapshot, target)) {
+    scheduleConversationScrollToBottom(target);
+    return;
+  }
+  restoreScrollSnapshot(snapshot);
+}
+
+function shouldFollowConversationScrollTarget(snapshot: ScrollSnapshot | null, target: ConversationScrollTarget): boolean {
+  if (!snapshot || snapshot.surface !== activeSurface || snapshot.view !== activeConsoleView) {
+    return Boolean(target);
+  }
+  const selector = target === "chat" ? ".message-stream" : ".room-surface-timeline";
+  const tracked = snapshot.positions.find((item) => item.key.startsWith(`${selector}#`) || item.key.startsWith("data:"));
+  if (!tracked) {
+    return true;
+  }
+  return tracked.bottom <= 8;
 }
 
 function captureRoomSurfaceUiSnapshot(root: ParentNode): RoomSurfaceUiSnapshot {
@@ -10576,8 +11546,12 @@ function restoreRoomSurfaceUiSnapshot(snapshot: RoomSurfaceUiSnapshot): void {
   if (snapshot.expandedTextKeys.length === 0) {
     return;
   }
+  const token = ++roomUiRestoreFrameToken;
   const expandedKeys = new Set(snapshot.expandedTextKeys);
   const apply = () => {
+    if (token !== roomUiRestoreFrameToken) {
+      return;
+    }
     document.querySelectorAll<HTMLElement>(".expandable-text[data-expandable-key]").forEach((element) => {
       const key = element.dataset.expandableKey;
       if (!key || !expandedKeys.has(key)) {
@@ -10606,11 +11580,15 @@ function scheduleConversationScrollToBottom(target: ConversationScrollTarget) {
 
   const selector = target === "chat" ? ".message-stream" : ".room-surface-timeline";
   const scrollToBottom = () => {
+    if (token !== scrollToBottomFrameToken) {
+      return;
+    }
     document.querySelectorAll<HTMLElement>(selector).forEach((element) => {
       element.scrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
     });
   };
 
+  const token = ++scrollToBottomFrameToken;
   window.requestAnimationFrame(() => {
     scrollToBottom();
     window.requestAnimationFrame(scrollToBottom);

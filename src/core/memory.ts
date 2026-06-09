@@ -643,30 +643,36 @@ export class MemoryStore {
     };
   }
 
-  getRoomPromptMemory(scope: `room:${string}`): string[] {
+  getRoomPromptMemory(scope: `room:${string}`, options: { budget?: "compact" | "balanced" | "full" } = {}): string[] {
+    const budget = options.budget ?? "balanced";
+    const limits = budget === "compact"
+      ? { graph: 2, semantic: 1, shortTerm: 1, memory: 2, output: 3 }
+      : budget === "full"
+        ? { graph: 6, semantic: 4, shortTerm: 5, memory: 7, output: 8 }
+        : { graph: 4, semantic: 2, shortTerm: 2, memory: 4, output: 5 };
     const snapshot = this.getRoomMemorySnapshot(scope);
     const graphMemory = this.graph.queryVisibleClaimsSync({
       scope,
       viewer: { type: "room_public", roomId: scope.slice("room:".length).split(":")[0] },
-      limit: 6,
+      limit: limits.graph,
     })
       .filter(shouldInjectMemoryGraphClaimIntoPrompt)
       .map(memoryGraphClaimTextForPrompt);
     const legacyMemory = graphMemory.length > 0 ? [] : this.listCompressedMemories(scope)
       .filter((entry) => entry.status === "active")
-      .slice(-6)
+      .slice(-limits.graph)
       .map((entry) => entry.text);
     const semanticMemory = this.listSemanticObservations(scope)
       .filter((entry) => entry.visibility === "public" || entry.visibility === "global")
       .filter(shouldInjectSemanticObservationIntoPrompt)
-      .slice(0, 4)
+      .slice(0, limits.semantic)
       .map(semanticObservationTextForPrompt);
-    const shortTerm = snapshot.shortTerm.slice(-5).map((mention) => `${mention.kind}: ${mention.normalizedText}`);
-    const memoryLines = dedupePromptMemoryLines([...graphMemory, ...legacyMemory, ...semanticMemory, ...shortTerm]).slice(0, 7);
+    const shortTerm = snapshot.shortTerm.slice(-limits.shortTerm).map((mention) => `${mention.kind}: ${mention.normalizedText}`);
+    const memoryLines = dedupePromptMemoryLines([...graphMemory, ...legacyMemory, ...semanticMemory, ...shortTerm]).slice(0, limits.memory);
     return [
       snapshot.summary,
       ...memoryLines,
-    ].filter((item) => item.trim().length > 0).slice(0, 8);
+    ].filter((item) => item.trim().length > 0).slice(0, limits.output);
   }
 
   getRoomObserverPromptMemory(roomScope: `room:${string}`, roleId: string): string[] {

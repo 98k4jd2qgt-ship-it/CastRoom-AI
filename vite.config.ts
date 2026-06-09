@@ -1,7 +1,11 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vite";
 
+const projectRoot = fileURLToPath(new URL(".", import.meta.url));
+
 export default defineConfig({
-  root: ".",
+  root: projectRoot,
   clearScreen: false,
   server: {
     host: "127.0.0.1",

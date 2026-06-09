@@ -4,7 +4,7 @@ const uiSource = fs.readFileSync("src/ui/petConsole.ts", "utf8");
 const failures = [];
 
 expect(uiSource.includes("graphScopes: MemoryScope[]"), "MemoryDashboardScope should carry merged graph scopes");
-expect(uiSource.includes("graphScopes = uniqueMemoryScopes([participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope])"), "room role scope should merge public role, private observer, and faction scopes");
+expect(uiSource.includes("graphScopes = uniqueMemoryScopes([roomScope, participant.memoryScope, observerSnapshot.scope, factionSnapshot?.scope])"), "room role scope should merge public room, role, private observer, and faction scopes");
 expect(uiSource.includes("dedupeMemoryGraphClaims(graphScopes.flatMap"), "merged role graph claims should be deduped across scopes");
 expect(uiSource.includes("dedupeSemanticObservations(graphScopes.flatMap"), "merged role semantic observations should be deduped across scopes");
 expect(uiSource.includes("return mergeMemoryGraphViews(graphScopes().map"), "graph view should merge multiple scopes before rendering");

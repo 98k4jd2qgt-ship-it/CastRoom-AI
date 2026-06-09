@@ -7,7 +7,10 @@ const failures = [];
 const scheduleRoomTurn = sliceFunction(scheduler, "scheduleRoomTurn");
 mustInclude(scheduleRoomTurn, "policyBlockedAutoResult(room, \"question_loop\", \"user_answer_expected\"", "question-loop wait signal is policy-gated");
 mustInclude(scheduleRoomTurn, "policyBlockedAutoResult(room, \"waiting_user\", \"user_answer_expected\"", "user-answer wait signal is policy-gated");
-mustInclude(scheduleRoomTurn, "createAutonomousFallbackSpeechIntent(room, input, addressing, \"no_speaker_intent\")", "auto no-speaker path uses role fast path before waiting");
+mustInclude(scheduleRoomTurn, "createCasualTopicShiftSpeechIntent(room, input, addressing, \"no_speaker_intent\")", "casual auto no-speaker path tries topic shift before waiting");
+mustInclude(scheduleRoomTurn, "createAutonomousFallbackSpeechIntent(room, input, addressing, \"no_speaker_intent\")", "auto no-speaker path still has role fast path before waiting");
+mustInclude(scheduleRoomTurn, "createCasualTopicShiftSpeechIntent(room, input, addressing, \"question_loop\")", "casual question-loop path can become topic shift before waiting");
+mustInclude(scheduleRoomTurn, "createCasualTopicShiftSpeechIntent(room, input, addressing, \"repetition_guard\")", "casual repetition path can become topic shift before waiting");
 mustInclude(scheduleRoomTurn, "selectedSpeechIntent?.decision === \"ask_director\" && trigger === \"auto\"", "auto Director speech intents are downgraded before handoff");
 mustInclude(scheduleRoomTurn, "stop(\"waiting_user\", \"paused\", room, null)", "auto wait fallback pauses locally instead of forcing Director handoff");
 mustNotInclude(scheduleRoomTurn, "directorHandoff(\"waiting_user\", room, nowMs + delayMs)", "wait signal forcing Director handoff");
@@ -16,13 +19,14 @@ mustNotInclude(scheduleRoomTurn, "recentDirectorWaitingForUser(room)) {\n       
 
 const policyBlockedAutoResult = sliceFunction(scheduler, "policyBlockedAutoResult");
 mustInclude(policyBlockedAutoResult, "advanceDecision.action === \"pause\"", "schedule uses advance decision before pausing");
-mustInclude(policyBlockedAutoResult, "advanceDecision.action === \"fill_gap\"", "fill-gap produces a finite continuation branch");
+mustInclude(policyBlockedAutoResult, "effectiveDecision.action === \"fill_gap\"", "fill-gap produces a finite continuation branch");
 mustInclude(policyBlockedAutoResult, "createPolicyPendingFollowup", "fill-gap uses one-shot pending follow-up");
 
 mustInclude(scheduler, "blockingNeed === \"privacy_or_safety\"", "privacy remains hard blocker");
 mustInclude(scheduler, "blockingNeed === \"provider_failure\"", "provider failure remains hard blocker");
 mustInclude(scheduler, "blockingNeed === \"irreversible_decision\"", "irreversible decision remains hard blocker");
-mustInclude(scheduler, "action = continuation.blockingNeed === \"explicit_user_choice\" ? \"pause\" : \"fill_gap\"", "fill-gap explicit choice behavior");
+mustInclude(scheduler, 'continuation.blockingNeed === "explicit_user_choice"', "explicit choice remains a hard pause");
+mustInclude(scheduler, 'action = "fill_gap"', "fill-gap soft blockers stay finite");
 
 mustInclude(main, "resolveContinuationAssessment(consoleState.room", "Director wait uses continuation assessment");
 mustInclude(main, "resolveAdvanceDecision(consoleState.room", "Director wait uses advance decision");

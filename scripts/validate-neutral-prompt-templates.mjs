@@ -68,6 +68,9 @@ mustInclude("src/core/prompts.ts", [
   "This is a multi-character Room, not a one-on-one chat box.",
   "Roles should not repeat long user instructions",
   "Roles may speak, stay silent, observe",
+  "introduce a fresh topic when the room goes quiet or repetitive",
+  "Follow the Room Rules for how far topic shifts may jump",
+  "If selected to revive a quiet room",
   "Long-term facts require visible support, Director judgement, or explicit developer authority.",
   "This room is for natural conversation.",
   "This room is for scene-based roleplay and narrative progression.",
@@ -111,6 +114,7 @@ mustInclude("src/core/roomProfiles.ts", [
   "Runtime speaker assignments, faction strategy, visible memory, and private directives",
   "multi-character Room, not a one-on-one chat box",
   "Roles may speak, stay silent, observe",
+  "revive quiet/repetitive casual chat with one fresh topic within Room Rules",
   "Do not repeat long user instructions",
   "Do not force a plot, debate, lesson, or planning structure unless the user asks.",
   "Final judgement should wait until enough debate material exists or required speakers have finished.",
@@ -174,6 +178,16 @@ mustNotIncludeInTemplateRegion(
   "export const roomPromptProfiles",
   "export const roomDirectorProfiles",
   bannedConcreteTemplateContent,
+);
+
+mustNotIncludeInTemplateRegion(
+  "src/core/prompts.ts",
+  "const roomModePromptTemplates",
+  "function field",
+  [
+    "Wait for user direction when there is no visible next step.",
+    "Pause on repetition, unavailable model, direct player choice, unclear direction, or lack of a visible next step.",
+  ],
 );
 
 mustNotMatchInTemplateRegion(
