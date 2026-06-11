@@ -172,34 +172,6 @@ Typical configuration areas:
 
 CastRoom AI 不提供托管 AI 服务。云端模型需要用户自行配置 provider；本地模型资源是可选资源。
 
-## Repository Scope
-
-The public source repository does not include:
-
-- API keys or `.env` files;
-- runtime memory data;
-- chat history;
-- logs or diagnostics containing user content;
-- local screenshots or temporary files;
-- installer output and staging artifacts;
-- local model and runner binaries;
-- character pack instance folders.
-
-Release assets are separately validated so the portable zip starts from a clean default state. It may include resources required for local AI testing, but it must not include user data, keys, memory, logs, or runtime state.
-
-公开源码仓库不包含：
-
-- API key 或 `.env` 文件；
-- 运行期记忆数据；
-- 聊天记录；
-- 包含用户内容的日志或诊断数据；
-- 本地截图或临时文件；
-- 安装包产物和 staging 目录；
-- 本地模型与 runner 二进制；
-- 角色包实例目录。
-
-Release 资产会单独校验，确保 portable zip 从干净默认状态启动。它可以包含本地 AI 测试所需资源，但不能包含用户数据、key、记忆、日志或运行状态。
-
 ## Requirements
 
 - Windows 10/11
