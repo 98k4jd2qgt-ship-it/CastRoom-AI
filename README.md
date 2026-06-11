@@ -215,20 +215,6 @@ Build the desktop application:
 npm.cmd run tauri -- build
 ```
 
-Prepare public source export:
-
-```powershell
-npm.cmd run github:export
-npm.cmd run check:github-export
-```
-
-Prepare release assets:
-
-```powershell
-npm.cmd run github:release-assets
-npm.cmd run check:github-release-assets
-```
-
 ## Offline Assets
 
 Large offline assets are intentionally excluded from the source repository. Expected local asset locations:
