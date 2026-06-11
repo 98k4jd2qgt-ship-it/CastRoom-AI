@@ -40,8 +40,8 @@ AI service notes: [Support page](https://98k4jd2qgt-ship-it.github.io/castroom-a
 - Run a room where several AI characters talk in the same public scene.
 - Turn on Room Flow and let characters continue without manually prompting every line.
 - Use private and faction channels for information that not everyone should know.
-- Ask a specific role publicly with `@Role`; that role answers the user next.
-- Send `@Director` messages to the hidden Director channel instead of the public room.
+- Ask a specific role publicly with the role mention command; that role answers the user next.
+- Send Director mention commands to the hidden Director channel instead of the public room.
 - Edit Room rules, Role notes, Director rules, and mode presets in Prompt Center.
 - Review memory as observations, relationship graph nodes, claims, beliefs, confidence, and conflicts.
 - Use strict debate mode for scheduled debate flows, or casual mode for looser room chat.
@@ -50,7 +50,7 @@ AI service notes: [Support page](https://98k4jd2qgt-ship-it.github.io/castroom-a
 - 开启自动推演，让角色不需要每句都由用户手动推动。
 - 用私聊和阵营频道保存不该公开的信息。
 - 在公开频道用 `@角色` 点名；被点名角色下一轮回答用户。
-- 用 `@Director` 把消息送进隐藏 Director 频道，而不是公开房间。
+- 用导演点名命令把消息送进隐藏 Director 频道，而不是公开房间。
 - 在 Prompt Center 修改房间规则、角色备注、Director 规则和模式模板。
 - 在记忆模块查看语义观察、关系图谱、说法、信念、置信度和冲突。
 - 用严格辩论模式跑结构化辩论流程，也可以用日常房间做松散聊天。
@@ -81,9 +81,9 @@ Director 不是普通角色。它可以在后台调度、写私密指令、发�
 
 ### Visibility
 
-Public chat is visible to everyone in the room. Private threads, faction channels, and Director-only notes stay scoped. Public `@Role` is a visible point-at in the room; it is not private chat. `@Director` is routed to the hidden Director channel.
+Public chat is visible to everyone in the room. Private threads, faction channels, and Director-only notes stay scoped. A public role mention is a visible point-at in the room; it is not private chat. A Director mention is routed to the hidden Director channel.
 
-公开聊天对房间成员可见。私聊、阵营频道和 Director-only 记录会保持作用域隔离。公开 `@角色` 是公开点名，不是私聊。`@Director` 会进入隐藏 Director 频道。
+公开聊天对房间成员可见。私聊、阵营频道和 Director-only 记录会保持作用域隔离。公开角色点名是公开点名，不是私聊。导演点名会进入隐藏 Director 频道。
 
 ### Memory Confidence
 

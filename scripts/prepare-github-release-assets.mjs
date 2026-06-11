@@ -237,8 +237,8 @@ This update builds on v0.1.3. It focuses on continuous room flow reliability, Di
   Director 频道、私聊、阵营和 director-only 内容默认不能进入公开旁白、公开状态栏、公开记忆、公开图谱或普通角色 prompt。
 - Public status panels use public-safe content only. Private snippets remain in authorized views or developer diagnostics.
   公开状态栏只使用 public-safe 内容；私密片段只保留在授权视角或开发者诊断里。
-- User @Director messages stay in the hidden Director channel. Public @Role mentions remain visible and create one-shot forced replies from mentioned roles.
-  用户 @Director 消息留在隐藏 Director 频道；公开 @角色 是所有人可见的点名，并创建一次性指定回应。
+- Director mention commands stay in the hidden Director channel. Public role mentions remain visible and create one-shot forced replies from mentioned roles.
+  导演点名命令留在隐藏 Director 频道；公开角色点名是所有人可见的点名，并创建一次性指定回应。
 
 ### Memory and graph / 记忆与图谱
 
