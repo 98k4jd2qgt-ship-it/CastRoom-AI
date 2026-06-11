@@ -44,10 +44,8 @@ flowchart LR
     audit["Token Audit<br/>usage / purpose / prompt path"]
   end
 
-  subgraph data["Persistence and Release Boundary"]
+  subgraph data["Persistence"]
     storage["App Data<br/>rooms / memory / settings"]
-    export["Public Export<br/>no keys / no user data"]
-    release["Release Assets<br/>portable zip / installer / checksums"]
   end
 
   webview --> roomSurface
@@ -72,8 +70,6 @@ flowchart LR
   tauri --> storage
   core --> storage
   memory --> storage
-  storage --> export
-  storage --> release
 ```
 
 ## 2. Room Turn Pipeline
