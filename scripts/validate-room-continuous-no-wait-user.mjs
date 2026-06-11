@@ -27,7 +27,9 @@ mustInclude(scheduleRoomTurn, '...stop("no_candidate", "cooling_down", room, now
 mustNotInclude(scheduleRoomTurn, 'lastMessageTargetsUserQuestion(room)) {\n      return stop("waiting_user"', "direct user question wait in continuous path");
 
 mustInclude(providerSkippedBlock, 'const shouldContinueAuto = consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous"', "provider repeat skip detects continuous flow");
-mustInclude(providerSkippedBlock, 'stopReason: shouldContinueAuto ? undefined : "repeated"', "continuous repeated speaker skip does not set repeated stop reason");
+mustInclude(providerSkippedBlock, "if (shouldContinueAuto)", "continuous repeated speaker skip has a dedicated branch");
+mustInclude(providerSkippedBlock, "commitRoomDiagnosticPatch", "continuous repeated speaker skip writes diagnostics only");
+mustInclude(providerSkippedBlock, 'stopReason: "repeated"', "non-continuous repeated speaker skip can still expose repeated stop reason");
 mustInclude(providerSkippedBlock, 'status: shouldContinueAuto ? "cooling_down" : "waiting_user"', "continuous repeated speaker skip cools down");
 mustInclude(providerSkippedBlock, "nextTurnAt,", "continuous repeated speaker skip keeps a next turn");
 

@@ -148,6 +148,7 @@ import {
   applyDirectorOverride,
   evaluateAiDraftAgainstDirectorRules,
   evaluateRoomAction,
+  evaluateRoomRoleMessageForRuling,
   isRoomAppSafetyText,
   parseDirectorOverrideRequest,
   resolveRoomFrameIntent,
@@ -253,6 +254,7 @@ export {
   applyDirectorOverride,
   evaluateAiDraftAgainstDirectorRules,
   evaluateRoomAction,
+  evaluateRoomRoleMessageForRuling,
   parseDirectorOverrideRequest,
   resolveRoomFrameIntent,
   resolveRoomFrameInterpretation,
@@ -1939,7 +1941,12 @@ export type RoomHardStopReason =
 
 export type RoomAutoFlowCommand =
   | { type: "dispatch_role"; roleId: string; target: "all" | RoomMessageTarget; reason: string }
-  | { type: "dispatch_director"; move: RoomDirectorMove; reason: string }
+  | {
+      type: "dispatch_director";
+      move: RoomDirectorMove;
+      reason: string;
+      barrier?: "none" | "public_narration_pending";
+    }
   | { type: "schedule_retry"; reason: string; delayMs: number }
   | { type: "hard_stop"; reason: RoomHardStopReason };
 
@@ -1991,7 +1998,7 @@ export function resolveRoomAutoFlowCommand(
     return { type: "dispatch_role", roleId, target: "all", reason: input.reason ?? "idle_auto" };
   }
   if (room.director.enabled) {
-    return { type: "dispatch_director", move: "cue", reason: input.reason ?? "idle_auto" };
+    return { type: "dispatch_director", move: "cue", reason: input.reason ?? "idle_auto", barrier: "none" };
   }
   return { type: "schedule_retry", reason: input.reason ?? "no_candidate", delayMs };
 }
@@ -2975,6 +2982,33 @@ export function scheduleRoomTurn(input: ScheduleRoomTurnInput): RoomScheduleResu
   }
 
   if (!speechIntent || speechIntent.decision !== "speak") {
+    if (trigger === "auto" && isContinuousRoomFlow(room)) {
+      const fallbackIntent =
+        createCasualTopicShiftSpeechIntent(room, input, addressing, speechIntent?.reason ?? "no_candidate") ??
+        createAutonomousFallbackSpeechIntent(room, input, addressing, speechIntent?.reason ?? "no_candidate");
+      if (fallbackIntent?.decision === "speak") {
+        return finalizeScheduleResult({
+          type: "turn",
+          reason: fallbackIntent.reason.startsWith("casual_topic_shift") ? "casual_topic_shift" : "no_candidate",
+          status: "cooling_down",
+          nextTurnAt: nowMs + delayMs,
+          consecutiveAutoTurns: room.autoSpeechState.consecutiveAutoTurns + 1,
+          userTriggeredFollowUps: room.autoSpeechState.userTriggeredFollowUps,
+          speechIntent: fallbackIntent,
+          participant: room.participants.find((item) => item.id === fallbackIntent.roleId),
+          intent: fallbackIntent.reason,
+          target: "all",
+          discussionPlan: stalePlanResult,
+          observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
+        });
+      }
+      return finalizeScheduleResult({
+        ...stop("no_candidate", "cooling_down", room, nowMs + delayMs),
+        speechIntent: speechIntent ?? undefined,
+        discussionPlan: stalePlanResult,
+        observerRoleIds: intents.filter((intent) => intent.decision === "listen" || intent.decision === "defer").map((intent) => intent.roleId),
+      });
+    }
     if (trigger === "auto" && shouldContinueRoomAutoAfterBeat(room)) {
       const fallbackIntent =
         createCasualTopicShiftSpeechIntent(room, input, addressing, speechIntent?.reason ?? "no_candidate") ??
@@ -3255,11 +3289,18 @@ export function planDirectorTick(input: {
   const isSceneMode = mode === "story" || mode === "mystery";
   const isCasualMode = mode === "casual";
   const text = stripMentions(sourceMessage.text).trim();
-  const actionCheck = evaluateRoomAction({
-    room,
-    message: sourceMessage,
-    userInput: text,
-  });
+  const actionCheck =
+    input.source === "role"
+      ? evaluateRoomRoleMessageForRuling({
+          room,
+          message: sourceMessage,
+          userInput: text,
+        })
+      : evaluateRoomAction({
+          room,
+          message: sourceMessage,
+          userInput: text,
+        });
   const requiredIntervention =
     actionCheck.result !== "allowed"
       ? "action_ruling"
@@ -3277,6 +3318,7 @@ export function planDirectorTick(input: {
   const publicSafe = sourceVisibility === "public";
   const narrationTrigger = directorTickNarrationTrigger(room, sourceMessage, mode, requiredIntervention);
   const publicNarration = narrationTrigger ? createDirectorTickNarration(room, sourceMessage, narrationTrigger) : null;
+  const narrationBarrier = publicNarration ? "public_narration_pending" : "none";
   const scriptPatch = createDirectorTickScriptPatch(room, sourceMessage, mode, requiredIntervention, narrationTrigger, nowLabel);
   const focus = createDirectorTickFocus(room, sourceMessage, mode, requiredIntervention, narrationTrigger);
   const directorChannelNote = createDirectorTickChannelNote({
@@ -3291,6 +3333,7 @@ export function planDirectorTick(input: {
   return {
     publicNarration,
     narrationTrigger,
+    narrationBarrier,
     directorChannelNote,
     inspectorPatch: {
       currentFocus: publicSafe ? focus : undefined,
@@ -3378,6 +3421,9 @@ function isPublicSafeDirectorScriptItem(item: DirectorScriptItem): boolean {
   if (item.status !== "planned" && item.status !== "active") {
     return false;
   }
+  if (containsDirectorBackstageLeakText(item.text)) {
+    return false;
+  }
   if (item.publicSafety === "private_blocked") {
     return false;
   }
@@ -3394,7 +3440,7 @@ function activePublicDirectorScriptTexts(items: DirectorScriptItem[] | undefined
   return (items ?? [])
     .filter(isPublicSafeDirectorScriptItem)
     .map((item) => item.text.trim())
-    .filter(Boolean);
+    .filter((text) => text && !containsDirectorBackstageLeakText(text));
 }
 
 function createDirectorTickNarration(
@@ -3412,7 +3458,7 @@ function createDirectorTickNarration(
     case "environment_change":
       return `${anchor ?? "Something in the room shifts subtly"}, changing what the room can notice without revealing hidden plans.`;
     case "action_consequence":
-      return `The attempted action changes the room's attention, but its result still needs a clear ruling before it becomes fact.`;
+      return `${source || "The visible action"} draws the room's attention, and its visible consequence becomes the next thing everyone can respond to.`;
     case "ambient_pressure":
       return `${pressure ?? "A small pressure enters the room"}; the pause now has something visible to push against.`;
     case "phase_summary":
@@ -3706,6 +3752,35 @@ export function validateDirectorPublicTextAgainstSituation(input: {
   assessment: SituationAssessment;
   outcome: DirectorStructuredOutcome;
 }): DirectorStructuredOutcome {
+  const publicRulingWithoutJudgement =
+    input.outcome.publicTextReason === "ruling" &&
+    !input.plan.judgement &&
+    !isDebateFinalVerdictDue(input.room);
+  if (publicRulingWithoutJudgement) {
+    return {
+      ...input.outcome,
+      publicText: "",
+      publicTextReason: "none",
+      statePatch: {
+        ...input.outcome.statePatch,
+        simulationPatch: {
+          ...input.outcome.statePatch.simulationPatch,
+          currentFocus: input.room.simulation.currentFocus,
+          lastRuling: input.room.simulation.lastRuling,
+          nextPressure: input.room.simulation.nextPressure,
+          phase: input.room.simulation.phase,
+          stopReason: input.room.simulation.stopReason,
+        },
+        inspectorPatch: {
+          ...input.outcome.statePatch.inspectorPatch,
+          currentFocus: input.room.simulation.currentFocus,
+          nextPressure: input.room.simulation.nextPressure,
+          lastTurnOutcome: null,
+        },
+      },
+    };
+  }
+
   if (input.assessment.mode !== "debate") {
     return input.outcome;
   }
@@ -4960,9 +5035,14 @@ function createSceneDelta(
   }
 
   if (move === "cue") {
+    const safeInput = sanitizeDirectorNarrationSource(input);
+    const canCreatePublicClue =
+      safeInput &&
+      !isDirectorChannelSourceText(userInput) &&
+      !containsDirectorBackstageLeakText(safeInput);
     return {
       currentScene: room.director.sceneBoard.currentScene || "The room is following a new clue.",
-      addClues: [`Follow up on: ${input}`],
+      addClues: canCreatePublicClue ? [`Follow up on: ${safeInput}`] : [],
     };
   }
   if (move === "twist") {
@@ -5171,17 +5251,20 @@ function directorPublicTextReason(
     }
     return "none";
   }
-  if (modeIntent?.waitForUser && move !== "pause") {
-    return "choice";
-  }
-  if (move === "recap" && isPrivateRoomChannelActive(room)) {
-    return "recap";
+  if (isExplicitPublicNarrationRequest(userInput)) {
+    return "narration";
   }
   if (move === "recap" && isExplicitPublicDirectorTextRequest(userInput, move)) {
     return "recap";
   }
   if ((move === "cue" || move === "twist") && isExplicitPublicDirectorTextRequest(userInput, move)) {
     return "narration";
+  }
+  if (modeIntent?.waitForUser && move !== "pause") {
+    return modeIntent.mode === "casual" ? "none" : "choice";
+  }
+  if (move === "recap" && isPrivateRoomChannelActive(room)) {
+    return "recap";
   }
   const narrationMode = modeIntent?.mode ?? resolveDirectorModeIntent(room, userInput).mode;
   const hasScenePressure = Boolean(stripMentions(userInput).trim());
@@ -5204,8 +5287,17 @@ export function shouldCommitDirectorPublicText(plan: DirectorTurnPlan | undefine
 export function isDirectorPublicSchedulingText(text: string): boolean {
   return (
     isDirectorInternalPromptText(text) ||
-    /(?:\bacts\s+next\b|\bnext\s+(?:speaker|role|turn|direction)\b|\bprivate\s*directives?\b|\bschedule(?:s|d|ing)?\b|\bcue\s+(?:the\s+)?(?:next\s+)?role\b|\brole\s+turn\b|\btarget\s+role\b|\bLight\s+recap\b|\bAdd\s+only\s+one\s+useful\s+next\s+direction\b|\u5148\u628a\u8bdd\u9898\u6536\u4e00\u4e0b|\u63a5\u4e0b\u6765\u53ea\u8865|\u6709\u7528\u65b9\u5411|\u4e0b\u4e00(?:\u4f4d|\u4e2a|\u8f6e)|\u8f6e\u5230|\u8bf7.{0,24}(?:\u53d1\u8a00|\u63a5\u8bdd|\u56de\u5e94|\u8865\u4e00\u53e5)|\u8c03\u5ea6|\u79c1\u4e0b\u63d0\u9192|\u540e\u53f0\u6307\u4ee4)/i.test(text)
+    containsDirectorBackstageLeakText(text) ||
+    /(?:\bacts\s+next\b|\bnext\s+(?:speaker|role|turn|direction)\b|\bprivate\s*directives?\b|\bschedule(?:s|d|ing)?\b|\bcue\s+(?:the\s+)?(?:next\s+)?role\b|\brole\s+turn\b|\btarget\s+role\b|\bLight\s+recap\b|\bAdd\s+only\s+one\s+useful\s+next\s+direction\b|\bUser\s+input\s+remains\s+optional\b|\bcontinue\s+through\s+role\s+flow\b|\bonly\s+an\s+explicit\s+branch\s+should\s+wait\b|\u5148\u628a\u8bdd\u9898\u6536\u4e00\u4e0b|\u63a5\u4e0b\u6765\u53ea\u8865|\u6709\u7528\u65b9\u5411|\u4e0b\u4e00(?:\u4f4d|\u4e2a|\u8f6e)|\u8f6e\u5230|\u8bf7.{0,24}(?:\u53d1\u8a00|\u63a5\u8bdd|\u56de\u5e94|\u8865\u4e00\u53e5)|\u8c03\u5ea6|\u79c1\u4e0b\u63d0\u9192|\u540e\u53f0\u6307\u4ee4|\u7528\u6237\u8f93\u5165\u4fdd\u6301\u53ef\u9009|\u89d2\u8272\u81ea\u7136\u63a5\u4e0a|\u7528\u6237\u4e0d\u9700\u8981\u88ab\u8c03\u5ea6|\u53ea\u6709\u660e\u786e\u5206\u652f)/i.test(text)
   );
+}
+
+function containsDirectorBackstageLeakText(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) {
+    return false;
+  }
+  return /(?:\bDeveloper\s+Director\s+Channel\b|\bFollow\s+up\s+on\s*:\s*(?:Developer\s+Director\s+Channel|Director\s+Channel)\b|\bBackstage\s*:|\bReason\s*:|\bMove\s*:|\bNext\s+beat\s*:|\bPublic\s+narration\s*:|\bFocus\s*:|\bCurrent\s+scene\s*:.*\bGoal\s*:.*\bOpen\s+clues\s*:|\bKeep\s+the\s+conversation\s+clear,\s*directed,\s*and\s*easy\s*to\s*continue\b|\battempted\s+action\b|\bneeds\s+a\s+clear\s+ruling\s+before\s+it\s+becomes\s+fact\b|\u5f53\u524d\u573a\u666f\uff1a.*\u76ee\u6807\uff1a.*\u516c\u5f00\u7ebf\u7d22\uff1a|\u5f53\u524d\u573a\u666f[:：].*\u76ee\u6807[:：].*\u516c\u5f00\u7ebf\u7d22[:：]|\u540e\u53f0\s*[:：]|\u539f\u56e0\s*[:：]|\u79c1\u5bc6\u6307\u4ee4|\u79c1\u4e0b\u6307\u4ee4)/i.test(normalized);
 }
 
 function isDirectorInternalPromptText(text: string): boolean {
@@ -5224,6 +5316,8 @@ function sanitizeDirectorNarrationSource(text: string): string {
     .split(/\r?\n/)
     .filter((line) => !isDirectorInternalPromptText(line))
     .join(" ")
+    .replace(/\bDeveloper Director Channel Public Narration Request\s*:\s*/gi, "")
+    .replace(/\bDeveloper Director Channel\s*:\s*/gi, "")
     .replace(/\bReason\s*:\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\b\.?/gi, "")
     .replace(/\u539f\u56e0\s*[：:]\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\u3002?/gi, "")
     .trim();
@@ -5235,10 +5329,33 @@ function sanitizeDirectorNarrationSource(text: string): string {
   }
   return trimForReply(
     stripMentions(text)
+      .replace(/\bDeveloper Director Channel Public Narration Request\s*:\s*/gi, "")
+      .replace(/\bDeveloper Director Channel\s*:\s*/gi, "")
       .replace(/\bReason\s*:\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\b\.?/gi, "")
       .replace(/\u539f\u56e0\s*[：:]\s*(?:idle_auto|repetition_guard|question_loop|burst_limit|waiting_user|director_followup|cooldown)\u3002?/gi, "")
       .trim(),
   );
+}
+
+function isDirectorChannelSourceText(text: string): boolean {
+  return /\bDeveloper Director Channel(?: Public Narration Request)?\b/i.test(text);
+}
+
+function extractExplicitPublicNarrationBody(text: string): string {
+  const stripped = sanitizeDirectorNarrationSource(text);
+  const match = stripped.match(/(?:\u65c1\u767d|\u4e3b\u9891\u9053|\u516c\u5f00|public\s+narration|main\s+channel|public\s+channel)\s*[:：]\s*(.+)$/i);
+  if (match?.[1]?.trim()) {
+    return trimForReply(match[1].trim(), 160);
+  }
+  const lineAfterMarker = text
+    .replace(/\bDeveloper Director Channel Public Narration Request\s*:\s*/gi, "")
+    .replace(/\bDeveloper Director Channel\s*:\s*/gi, "")
+    .trim();
+  const afterColon = lineAfterMarker.match(/[:：]\s*(.+)$/);
+  if (afterColon?.[1]?.trim() && !/(?:\u65c1\u767d|\u4e3b\u9891\u9053|\u516c\u5f00|public|main\s+channel)/i.test(afterColon[1])) {
+    return trimForReply(afterColon[1].trim(), 160);
+  }
+  return "";
 }
 
 function directorNarrationPrefersChinese(room: RoomState, userInput: string): boolean {
@@ -5251,9 +5368,13 @@ function isExplicitPublicDirectorTextRequest(userInput: string, move: RoomDirect
   if (!normalized) {
     return false;
   }
-  const asksPublic = /(公开|全员|大家|宣布|播报|告诉大家|向全体|public|announce|all)/i.test(normalized);
+  const developerPublicNarrationRequest = /\bdeveloper director channel public narration request\b/i.test(normalized);
+  if (developerPublicNarrationRequest) {
+    return true;
+  }
+  const asksPublic = /(\u4e3b\u9891\u9053|\u516c\u5f00|\u5168\u5458|\u5927\u5bb6|\u5ba3\u5e03|\u64ad\u62a5|\u544a\u8bc9\u5927\u5bb6|\u5411\u5168\u4f53|public|main\s+channel|public\s+channel|announce|all)/i.test(normalized);
   const asksRecap = /(总结|复盘|回顾|收束|recap|summary)/i.test(normalized);
-  const asksHostCue = /(主持|开场|下一轮|推进|继续|cue|host|next round|continue)/i.test(normalized);
+  const asksHostCue = /(\u65c1\u767d|\u53d9\u8ff0|\u4e3b\u6301|\u5f00\u573a|\u4e0b\u4e00\u8f6e|\u9636\u6bb5|\u8bf4\u660e|\u63a8\u8fdb|\u7ee7\u7eed|narrat|cue|host|phase|stage|next round|continue)/i.test(normalized);
   if (move === "recap") {
     return asksPublic || asksRecap;
   }
@@ -5263,6 +5384,21 @@ function isExplicitPublicDirectorTextRequest(userInput: string, move: RoomDirect
   return asksPublic;
 }
 
+
+function isExplicitPublicNarrationRequest(userInput: string): boolean {
+  const normalized = stripMentions(userInput).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const asksNarration = /(?:\bnarrat(?:e|ion|or)?\b|\bpublic\s+narration\b|\u65c1\u767d|\u53d9\u8ff0)/i.test(normalized);
+  if (!asksNarration) {
+    return false;
+  }
+  const asksPublic = /(?:\bmain\s+channel\b|\bpublic\s+channel\b|\bpublic\b|\u4e3b\u9891\u9053|\u516c\u5f00)/i.test(normalized)
+    || /\bdeveloper director channel public narration request\b/i.test(normalized);
+  const asksNonNarrationPublicMove = /(?:\brecap\b|\bsummary\b|\bverdict\b|\bruling\b|\u603b\u7ed3|\u590d\u76d8|\u88c1\u5b9a|\u5224\u5b9a|\u9636\u6bb5\u8bf4\u660e)/i.test(normalized);
+  return asksPublic && !asksNonNarrationPublicMove;
+}
 function isPrivateRoomChannelActive(room: RoomState): boolean {
   return room.activeChannelId.startsWith("faction:") || room.activeChannelId.startsWith("private:");
 }
@@ -5395,19 +5531,27 @@ function createDirectorPlanText(
   room: RoomState,
   move: RoomDirectorMove,
   userInput: string,
-  sceneDelta: SceneDelta,
+  _sceneDelta: SceneDelta,
   judgement?: JudgementCheck,
   modeIntent?: DirectorModeIntent,
 ): string {
   const chinese = directorNarrationPrefersChinese(room, userInput);
   const player = room.userProfile.displayName;
-  const clues = [...(sceneDelta.addClues ?? []), ...room.director.sceneBoard.openClues].slice(0, 2).join(" / ") || (chinese ? "暂无公开线索" : "no open clues yet");
 
   if (isDebateSetupRequest(room, userInput)) {
     return createDebateDirectorSetupText(room, userInput, chinese);
   }
   if (judgement) {
     return immersiveJudgementText(judgement, chinese);
+  }
+  if (isExplicitPublicDirectorTextRequest(userInput, move)) {
+    const explicitBody = extractExplicitPublicNarrationBody(userInput);
+    if (explicitBody && !containsDirectorBackstageLeakText(explicitBody)) {
+      return explicitBody;
+    }
+    return chinese
+      ? "房间里的话音短暂停住，刚才的寒暄还留在空气里，空气安静了一瞬。"
+      : "The room falls quiet for a beat, and the last exchange hangs gently in the air.";
   }
   const modeText = createModeDirectorPublicText(room, move, userInput, judgement, modeIntent, chinese);
   if (modeText) {
@@ -5418,8 +5562,8 @@ function createDirectorPlanText(
     const detail = trimForReply(userInput || room.director.sceneBoard.currentScene || room.topic, 96);
     if (mode === "casual") {
       return chinese
-        ? "话题短暂停了一下，刚才那句话还留在房间里，等着有人自然接上。"
-        : "The conversation pauses for a beat, leaving the last remark in the room for someone to pick up naturally.";
+        ? "话题短暂停了一下，刚才那句话还留在房间里，空气安静了一瞬。"
+        : "The conversation pauses for a beat, leaving the last remark in the room.";
     }
     if (mode === "story") {
       return chinese
@@ -5452,8 +5596,8 @@ function createDirectorPlanText(
       : "The scene holds here without scheduling the user; only an explicit branch should wait for input.";
   }
   return chinese
-    ? `当前场景：${room.director.sceneBoard.currentScene || "还没有明确场景"}。目标：${room.director.sceneBoard.goal || "等待下一步"}。公开线索：${clues}。`
-    : `Current scene: ${room.director.sceneBoard.currentScene || "not established yet"}. Goal: ${room.director.sceneBoard.goal || "waiting for the next step"}. Open clues: ${clues}.`;
+    ? "房间里的注意力短暂收拢，刚才的内容还没有变成新的事实，只留下一个可以继续回应的停顿。"
+    : "The room's attention gathers for a beat; the last exchange has not become a new fact, but it leaves a pause someone can answer.";
 }
 
 function immersiveJudgementText(judgement: JudgementCheck, chinese: boolean): string {

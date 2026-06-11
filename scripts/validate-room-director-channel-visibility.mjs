@@ -9,6 +9,7 @@ const visibility = read("src/core/roomVisibility.ts");
 const appState = read("src/core/appState.ts");
 const roomSurface = read("src/ui/roomSurface.ts");
 const main = read("src/main.ts");
+const memoryAdapter = read("src/core/roomMemoryAdapter.ts");
 
 mustInclude(types, '"director_channel"', "RoomMessageVisibility should include director_channel");
 mustInclude(types, '"director"', "RoomActiveChannelId and RoomChannelType should include director");
@@ -21,8 +22,11 @@ mustInclude(appState, 'message.visibility === "director_channel"', "read marker 
 mustInclude(appState, 'room.freedomLevel === "developer" ? "director" : "public"', "active director channel should normalize to public outside developer mode");
 mustInclude(roomSurface, 'channel.type === "director"', "room UI should render director channel type");
 mustInclude(roomSurface, 'directorChannelNote', "room UI should label director channel as backstage");
+mustInclude(roomSurface, "publicRoomContextMessages", "public context panel should filter Director Channel messages from shared memory summaries");
 mustInclude(main, 'director_channel_role_speaker_blocked', "timeline commit guard should block role speakers in director channel");
 mustInclude(main, 'director_message_channel_missing', "timeline commit guard should require director channel id");
+mustInclude(memoryAdapter, 'message.visibility === "director_channel"', "memory adapter should route Director Channel messages away from public room memory");
+mustInclude(memoryAdapter, "writtenScopes: [room.director.memoryScope]", "Director Channel messages should only write Director memory scope");
 
 if (failures.length > 0) {
   console.error(`validate-room-director-channel-visibility failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);

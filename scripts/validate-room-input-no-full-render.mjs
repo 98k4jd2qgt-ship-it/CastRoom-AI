@@ -5,14 +5,15 @@ const failures = [];
 
 const createRenderLocalUpdate = sliceFunction(main, "createRenderLocalUpdate");
 mustInclude(createRenderLocalUpdate, 'workspace === "room"', "Room workspace has a local update path");
-mustInclude(createRenderLocalUpdate, "return notifyRoomSurfaceUpdated", "Room local update preserves input shell");
+mustInclude(createRenderLocalUpdate, "return notifyRoomTimelineUpdated", "Room message update preserves input shell");
 
-const notifyRoomSurfaceUpdated = sliceFunction(main, "notifyRoomSurfaceUpdated");
-mustInclude(notifyRoomSurfaceUpdated, 'querySelector<HTMLElement>(".room-surface")', "Room local update targets existing room surface");
-mustInclude(notifyRoomSurfaceUpdated, "renderRoomSurface(createRoomSurfaceRenderProps(createDesktopContext()))", "Room local update renders fresh non-input content");
-mustInclude(notifyRoomSurfaceUpdated, '\".room-surface-topbar\", \".room-role-strip\", \".room-surface-main\"', "Room local update replaces only non-input regions");
-mustNotInclude(notifyRoomSurfaceUpdated, ".room-input-row", "Room local update must not replace the input row");
-mustInclude(notifyRoomSurfaceUpdated, "restoreConversationInputState(inputSnapshot)", "Room local update restores draft and focus");
+const notifyRoomTimelineUpdated = sliceFunction(main, "notifyRoomTimelineUpdated");
+const flushRoomSurfaceUpdateQueue = sliceFunction(main, "flushRoomSurfaceUpdateQueue");
+mustInclude(notifyRoomTimelineUpdated, 'queueRoomSurfaceUpdate("room_timeline_update", ["timeline"])', "Room message update targets existing timeline surface");
+mustInclude(flushRoomSurfaceUpdateQueue, 'patchRoomSurfacePart(shell, nextShell, kinds, "timeline"', "Room message update replaces only the timeline");
+mustInclude(flushRoomSurfaceUpdateQueue, "const timelineOnly = isTimelineOnlyRoomSurfaceUpdate(kinds)", "timeline-only message update is detected");
+mustInclude(flushRoomSurfaceUpdateQueue, "const inputSnapshot = timelineOnly ? null : captureConversationInputSnapshot()", "timeline-only message update does not capture input value");
+mustInclude(flushRoomSurfaceUpdateQueue, "if (inputSnapshot) {\n    restoreConversationInputState(inputSnapshot);", "timeline-only message update does not restore stale input value");
 
 const shouldAvoidFullRender = sliceFunction(main, "shouldAvoidFullRender");
 mustInclude(shouldAvoidFullRender, "isWorkspaceInputRenderSensitive(workspace)", "full render is avoided while input is active");

@@ -2110,6 +2110,7 @@ export type DirectorRequiredIntervention =
 export interface DirectorTickResult {
   publicNarration?: string | null;
   narrationTrigger?: DirectorNarrationTrigger | null;
+  narrationBarrier?: DirectorFlowBarrier | null;
   directorChannelNote?: string | null;
   privateDirectives?: RoomDirectorPrivateDirective[];
   inspectorPatch?: DirectorStatePatch["inspectorPatch"];
@@ -2119,6 +2120,12 @@ export interface DirectorTickResult {
   requiredIntervention?: DirectorRequiredIntervention | null;
   hardPause?: RoomStopReason | null;
 }
+
+export type DirectorFlowBarrier =
+  | "none"
+  | "public_narration_pending"
+  | "public_narration_committed"
+  | "public_narration_blocked";
 
 export interface RoomDirectorScheduleResult {
   type: "turn" | "stop";

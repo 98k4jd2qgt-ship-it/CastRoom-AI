@@ -5718,6 +5718,7 @@ function renderMemoryGraphConflictPanel(
   void invoke<{ claims: MemoryGraphClaim[] }>("memory_graph_query_conflicts", { scope: node.scope, claimId })
     .then((result) => {
       body.replaceChildren();
+      const selectedClaim = result.claims.find((claim) => claim.id === claimId);
       const conflicts = result.claims.filter((claim) => claim.id !== claimId);
       if (conflicts.length === 0) {
         body.textContent = memoryGraphText(language, "noConflictsFound", "No conflicts found.");
@@ -5726,10 +5727,22 @@ function renderMemoryGraphConflictPanel(
       for (const conflict of conflicts) {
         const row = document.createElement("article");
         row.className = "memory-graph-conflict-row";
-        const text = document.createElement("p");
-        text.textContent = conflict.text;
-        const meta = document.createElement("small");
-        meta.textContent = `${conflict.kind} · ${conflict.status} · ${Math.round(conflict.confidence * 100)}%`;
+        const comparison = document.createElement("div");
+        comparison.className = "memory-graph-conflict-comparison";
+        comparison.append(
+          renderMemoryGraphConflictClaimCard(
+            memoryGraphText(language, "selectedClaim", "Selected claim"),
+            selectedClaim,
+            node,
+          ),
+          renderMemoryGraphConflictClaimCard(
+            memoryGraphText(language, "conflictingClaim", "Conflicting claim"),
+            conflict,
+          ),
+        );
+        const reason = document.createElement("small");
+        reason.className = "memory-graph-conflict-reason";
+        reason.textContent = memoryGraphConflictReasonText(language, selectedClaim, conflict);
         const actions = document.createElement("div");
         actions.className = "memory-scope-actions";
         actions.append(
@@ -5747,7 +5760,7 @@ function renderMemoryGraphConflictPanel(
             }).then(refreshGraph);
           }),
         );
-        row.append(text, meta, actions);
+        row.append(comparison, reason, actions);
         body.append(row);
       }
     })
@@ -5755,6 +5768,123 @@ function renderMemoryGraphConflictPanel(
       body.textContent = memoryGraphText(language, "conflictQueryUnavailable", "Conflict query is unavailable.");
     });
   return panel;
+}
+
+function renderMemoryGraphConflictClaimCard(
+  label: string,
+  claim: MemoryGraphClaim | undefined,
+  fallbackNode?: MemoryGraphViewNode,
+): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "memory-graph-conflict-claim-card";
+  const heading = document.createElement("strong");
+  heading.textContent = label;
+  const text = document.createElement("p");
+  text.textContent = claim?.text ?? fallbackNode?.text ?? fallbackNode?.label ?? "";
+  const evidence = document.createElement("p");
+  evidence.className = "memory-graph-conflict-evidence";
+  evidence.textContent = claim ? memoryGraphClaimEvidenceSummary(claim) : memoryGraphNodeEvidenceSummary(fallbackNode);
+  const meta = document.createElement("small");
+  meta.textContent = claim ? memoryGraphClaimConflictMeta(claim) : memoryGraphNodeConflictMeta(fallbackNode);
+  const source = document.createElement("small");
+  source.className = "memory-graph-conflict-source";
+  source.textContent = claim ? memoryGraphClaimSourceSummary(claim) : memoryGraphNodeSourceSummary(fallbackNode);
+  card.append(heading, text, evidence, meta, source);
+  return card;
+}
+
+function memoryGraphClaimEvidenceSummary(claim: MemoryGraphClaim): string {
+  const observations = claim.reasonChain
+    ?.filter((step) => step.type === "observation")
+    .map((step) => step.text.trim())
+    .filter(Boolean);
+  if (observations?.length) {
+    return `原句: ${observations.slice(0, 2).join(" / ")}`;
+  }
+  return `原句: ${claim.text}`;
+}
+
+function memoryGraphNodeEvidenceSummary(node: MemoryGraphViewNode | undefined): string {
+  const observations = node?.reasonChain
+    ?.filter((step) => step.type === "observation")
+    .map((step) => step.text.trim())
+    .filter(Boolean);
+  if (observations?.length) {
+    return `原句: ${observations.slice(0, 2).join(" / ")}`;
+  }
+  return node?.text ? `原句: ${node.text}` : "";
+}
+
+function memoryGraphClaimConflictMeta(claim: MemoryGraphClaim): string {
+  const confidence = `${Math.round(claim.confidence * 100)}%`;
+  const time = claim.lastSeenAt ? ` · ${claim.lastSeenAt}` : "";
+  return [
+    claim.kind,
+    claim.status,
+    claim.epistemicStatus,
+    claim.visibility,
+    confidence,
+  ].filter(Boolean).join(" · ") + time;
+}
+
+function memoryGraphNodeConflictMeta(node: MemoryGraphViewNode | undefined): string {
+  if (!node) {
+    return "";
+  }
+  const confidence = typeof node.confidence === "number" ? `${Math.round(node.confidence * 100)}%` : "";
+  return [
+    node.claimKind,
+    node.status,
+    node.epistemicStatus,
+    node.visibility,
+    confidence,
+  ].filter(Boolean).join(" · ");
+}
+
+function memoryGraphClaimSourceSummary(claim: MemoryGraphClaim): string {
+  const reason = claim.reasonChain?.map((step) => `${step.type}: ${step.text}`).join(" / ");
+  const sourceIds = memoryGraphSourceIdsFromProperties(claim.properties);
+  const sourceText = sourceIds.length > 0 ? `sourceMessageIds: ${sourceIds.join(", ")}` : "";
+  return [sourceText, reason].filter(Boolean).join(" · ") || `canonicalKey: ${claim.canonicalKey}`;
+}
+
+function memoryGraphNodeSourceSummary(node: MemoryGraphViewNode | undefined): string {
+  if (!node) {
+    return "";
+  }
+  const reason = node.reasonChain?.map((step) => `${step.type}: ${step.text}`).join(" / ");
+  const claimIds = node.sourceClaimIds?.length ? `sourceClaimIds: ${node.sourceClaimIds.join(", ")}` : "";
+  return [claimIds, reason, node.subtitle].filter(Boolean).join(" · ");
+}
+
+function memoryGraphSourceIdsFromProperties(properties: Record<string, unknown>): string[] {
+  const raw = properties.sourceMessageIds ?? properties.sourceMessageId;
+  if (Array.isArray(raw)) {
+    return raw.filter((item): item is string => typeof item === "string");
+  }
+  return typeof raw === "string" ? [raw] : [];
+}
+
+function memoryGraphConflictReasonText(
+  language: ConsoleAppState["language"],
+  selectedClaim: MemoryGraphClaim | undefined,
+  conflict: MemoryGraphClaim,
+): string {
+  const label = memoryGraphText(language, "conflictReason", "Conflict reason");
+  if (!selectedClaim) {
+    return `${label}: ${conflict.subjectNodeId} / ${conflict.predicate}`;
+  }
+  const sameSubject = selectedClaim.subjectNodeId === conflict.subjectNodeId;
+  const samePredicate = selectedClaim.predicate === conflict.predicate;
+  const differentObject = (selectedClaim.objectNodeId ?? "") !== (conflict.objectNodeId ?? "");
+  const statusConflict = selectedClaim.epistemicStatus !== conflict.epistemicStatus || selectedClaim.status !== conflict.status;
+  const details = [
+    sameSubject ? "same subject" : `subject: ${selectedClaim.subjectNodeId} vs ${conflict.subjectNodeId}`,
+    samePredicate ? "same relation" : `relation: ${selectedClaim.predicate} vs ${conflict.predicate}`,
+    differentObject ? "different object/text" : "",
+    statusConflict ? "different truth/status" : "",
+  ].filter(Boolean).join(" · ");
+  return `${label}: ${details || "related claims disagree"}`;
 }
 
 interface MemoryGraphLayoutBox {

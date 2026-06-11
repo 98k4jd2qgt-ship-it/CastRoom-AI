@@ -13,8 +13,16 @@ mustInclude(main, "sanitizeDirectorInspectorPatchForPublic", "public inspector p
 mustInclude(main, "currentFocus: _currentFocus", "sanitizer should strip private current focus");
 mustInclude(main, "nextPressure: _nextPressure", "sanitizer should strip private next pressure");
 mustInclude(main, "lastTurnOutcome: _lastTurnOutcome", "sanitizer should strip private last ruling");
+mustInclude(main, "situationAssessment: _situationAssessment", "sanitizer should strip private situation assessment");
+mustInclude(main, "sanitizeDirectorSimulationPatchForPublic", "public simulation patch sanitizer should exist");
+mustInclude(main, "delete safePatch.currentFocus", "simulation sanitizer should strip private current focus");
+mustInclude(main, "delete safePatch.nextPressure", "simulation sanitizer should strip private next pressure");
+mustInclude(main, "delete safePatch.lastRuling", "simulation sanitizer should strip private ruling");
+mustInclude(main, "delete safePatch.situationAssessment", "simulation sanitizer should strip private assessment");
 mustInclude(main, "sanitizeDirectorInspectorPatchForPublic(result.inspectorPatch", "director schedule results should use inspector sanitizer");
 mustInclude(main, "sanitizeDirectorInspectorPatchForPublic(tick.inspectorPatch", "director tick results should use inspector sanitizer");
+mustInclude(main, "sanitizeDirectorSimulationPatchForPublic(result.simulation", "director schedule results should sanitize simulation state");
+mustInclude(main, "sanitizeDirectorSimulationPatchForPublic(tick.sceneStatePatch", "director tick results should sanitize scene state");
 
 if (failures.length > 0) {
   console.error(`validate-room-inspector-privacy failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);

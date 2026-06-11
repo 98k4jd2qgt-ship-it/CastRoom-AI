@@ -15,7 +15,7 @@ mustInclude(main, "shouldUseLiveDirectorTurnPlan(request, localResult.plan)", "D
 mustInclude(main, "function shouldUseLiveDirectorTurnPlan", "Director LLM gating helper exists");
 mustInclude(main, 'fallback.intent === "group_opinion" && mode === "casual"', "casual group opinion should skip the cloud planner");
 mustInclude(main, 'roomContextBudget(request.room) === "full"', "full budget always allows live Director");
-mustInclude(main, "/Developer Director Channel:/i.test", "developer Director Channel can force live Director");
+mustInclude(main, "/Developer Director Channel(?: Public Narration Request)?:/i.test", "developer Director Channel and explicit public narration requests can force live Director");
 mustInclude(main, 'localPlan.move === "judge"', "action ruling can force live Director");
 mustInclude(main, "shouldCommitDirectorPublicText(localPlan)", "public narration/ruling can force live Director");
 mustInclude(main, 'mode === "story" || mode === "mystery" || mode === "debate"', "complex modes can force live Director");

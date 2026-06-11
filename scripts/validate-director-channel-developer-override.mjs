@@ -13,7 +13,8 @@ const moveBlock = sliceFunction(main, "inferDeveloperDirectorChannelMove");
 mustInclude(inputBlock, 'inputVisibility.visibility === "director_channel"', "room input should detect developer director channel");
 mustInclude(inputBlock, 'target: effectiveTarget', "developer director channel input should retarget to Director");
 mustInclude(inputBlock, "shouldApplyDirectorOverride(input)", "developer director channel should reuse override handling");
-mustInclude(inputBlock, "Developer Director Channel:", "Director prompt should receive developer-channel context");
+mustInclude(inputBlock, "Developer Director Channel", "Director prompt should receive developer-channel context");
+mustInclude(inputBlock, "Developer Director Channel Public Narration Request", "explicit public narration requests should be marked before Director planning");
 mustInclude(inputBlock, "requestedMove: inferDeveloperDirectorChannelMove(input)", "developer director channel should steer Director move");
 mustInclude(inputBlock, "recordRoomMessageMemory(userMessage", "normal room messages should still record memory after director-channel early return");
 expect(

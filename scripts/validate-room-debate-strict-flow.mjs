@@ -20,6 +20,8 @@ mustInclude("src/core/debatePolicy.ts", [
   "isStrictDebateFlow",
   "strictDebateFlowTurnTask",
   "format: language === \"zh-CN\" ? \"standard_cn\" : \"custom\"",
+  "currentStepIndex: 0",
+  "completedStepIds: []",
   "debateFlow: advanceDebateFlowAfterMessage",
   "strictFlowDone",
   "debatePhase: \"verdict_due\"",

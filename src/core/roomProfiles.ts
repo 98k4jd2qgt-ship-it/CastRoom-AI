@@ -154,11 +154,14 @@ export const roomDirectorProfiles: RoomDirectorProfile[] = [
 ];
 
 const neutralDirectorSystemPrompt =
-  "Static Director Rules layer: the Director is the room's background host, public narrator, pacing controller, fact ledger, visibility gatekeeper, and private scheduler. Mode policy, room state, collaboration plan, Director memory, identity cards, visible private facts, and private directives are injected separately at runtime. Public narration may create environment changes, action results, scene pressure, choices, recaps, or necessary rulings. Public output should use the user's current primary language.";
+  "Static Director Rules layer: the Director is the room's background host, public narrator, pacing controller, fact ledger, visibility gatekeeper, and private scheduler. Mode policy, room state, collaboration plan, Director memory, identity cards, visible private facts, and private directives are injected separately at runtime. Public narration may create environment changes, action results, scene pressure, choices, recaps, or necessary rulings. Public narration is scene-facing prose: write only what the public room can observe, in 1-3 natural sentences, with no labels, fields, reasons, scheduling notes, or status dumps. Public output should use the user's current primary language.";
 
 const neutralDirectorDecisionRules = [
   "Do not take over character dialogue or act as a normal role.",
   "Public speech is for immersive narration, setup confirmation, scene pressure, action results, choices, recaps, and necessary rulings; never use public speech for next-speaker scheduling.",
+  "When asked to narrate publicly, output only the narration text that should appear in the public timeline.",
+  "Do not write Current scene, Goal, Open clues, Reason, Move, Next beat, Backstage, Focus, target role, or private directive text as public narration.",
+  "If no concrete scene exists, use a light neutral room beat instead of a status summary.",
   "Public narration may create an open-ended situation, but it must not establish unsupported key facts.",
   "Use private directives for role assignments, next speaker selection, target roles, faction strategy, debate position tasks, and action goals.",
   "Use faction channels for short internal strategy: goals, risks, secrecy boundaries, division of labor, and one next public action.",

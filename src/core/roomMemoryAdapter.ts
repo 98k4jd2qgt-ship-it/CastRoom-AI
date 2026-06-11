@@ -88,6 +88,28 @@ export class RoomMemoryAdapter {
     const { room, message, source } = input;
     const shouldRecordObservations = input.recordObservations ?? true;
 
+    if (message.visibility === "director_channel") {
+      return {
+        results: [
+          this.record({
+            kind: "director",
+            input: {
+              scope: room.director.memoryScope,
+              roomScope: roomScope(room),
+              speaker: message.speaker,
+              text: message.text,
+              move: message.directorMove ?? "cue",
+              now: this.deps.now(),
+              visibility: "director_only",
+              sourceMessageId: message.id,
+            },
+          }),
+        ],
+        observerRoleIds: [],
+        writtenScopes: [room.director.memoryScope],
+      };
+    }
+
     if (message.visibility === "private_ai" || message.visibility === "private_thread") {
       return this.recordPrivateMessage({
         room,

@@ -13,8 +13,13 @@ mustInclude(main, 'publicTextReason = "none"', "Director public text gate should
 mustInclude(main, "sanitizeDirectorInspectorPatchForPublic", "Director inspector patch should be sanitized before public state");
 mustInclude(scheduler, "publicSafe", "Director tick should mark public safety on inspector patches");
 mustInclude(scheduler, "sourceVisibility", "Director tick should mark source visibility on inspector patches");
+mustInclude(scheduler, "narrationBarrier", "Director tick should mark narration barrier state");
 mustInclude(scheduler, "activePublicDirectorScriptTexts(room.director.scriptBoard.environmentAnchors)", "public narration should read public-safe environment anchors");
 mustInclude(scheduler, "activePublicDirectorScriptTexts(room.director.scriptBoard.pressureSources)", "public narration should read public-safe pressure sources");
+mustInclude(main, "completeDirectorNarrationBarrier(\"public_narration_blocked\", tick)", "unsafe or scheduling-flavored narration should be blocked through the barrier path");
+mustInclude(scheduler, "lastRuling: input.room.simulation.lastRuling", "invalid public ruling should not leave ruling state behind");
+mustInclude(scheduler, "lastTurnOutcome: null", "invalid public ruling should clear inspector outcome");
+mustInclude(scheduler, "phase: input.room.simulation.phase", "invalid public ruling should not force payoff phase");
 
 if (failures.length > 0) {
   console.error(`validate-director-public-output-source-gate failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);

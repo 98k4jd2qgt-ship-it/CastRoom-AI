@@ -522,8 +522,8 @@ export function parseDebateFlowSetup(text: string, room: RoomState): RoomDebateF
     language,
     motion,
     steps,
-    currentStepIndex: steps.findIndex((step) => !step.requiresDirector),
-    completedStepIds: steps.filter((step) => step.type === "director_opening").map((step) => step.id),
+    currentStepIndex: 0,
+    completedStepIds: [],
     sourceText: trimForReply(text, 240),
     updatedAt: new Date().toISOString(),
   };
@@ -725,7 +725,7 @@ export function createDebateDirectorSetupText(room: RoomState, userInput: string
 }
 
 export function createDebateDirectorMatchPatch(room: RoomState, userInput: string): Partial<RoomState["match"]> | undefined {
-  if (!isDebateSetupRequest(room, userInput) && !/一辩|一辯|二辩|二辯|三辩|三辯|first\s*speaker|second\s*speaker|third\s*speaker/i.test(userInput)) {
+  if (!isDebateSetupRequest(room, userInput) && !/一辩|一辯|二辩|二辯|三辩|三辯|四辩|四辯|first\s*speaker|second\s*speaker|third\s*speaker|fourth\s*speaker/i.test(userInput)) {
     return undefined;
   }
 

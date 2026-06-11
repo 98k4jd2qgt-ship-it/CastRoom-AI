@@ -176,7 +176,8 @@ mustNotInclude(main, [
 ]);
 
 const syncRoomAutoTimer = functionBlock(main, "syncRoomAutoTimer");
-mustInclude(syncRoomAutoTimer, ["!canRunForegroundRoomFlow()", "clearRoomAutoTimer()", "window.setTimeout"]);
+mustInclude(syncRoomAutoTimer, ["!canRunForegroundRoomFlow()", "clearRoomAutoScheduledTimer()", "window.setTimeout"]);
+mustNotInclude(syncRoomAutoTimer, ["window.clearTimeout(roomAutoImmediateDispatchTimer)"]);
 
 const runRoomAutoTurn = functionBlock(main, "runRoomAutoTurn");
 mustInclude(runRoomAutoTurn, ["!canRunForegroundRoomFlow()", "pauseRoomAutoOutsideForeground()", "return;"]);

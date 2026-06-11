@@ -61,6 +61,55 @@ expect(
   "Story narration should not describe role scheduling or internal reasons.",
 );
 
+const explicitDirectorChannelRoom = createRoomFixture({
+  id: "director-channel-public-narration-room",
+  promptProfileId: "casual-chat",
+  directorProfileId: "host",
+  recipeId: "casual",
+});
+explicitDirectorChannelRoom.activeChannelId = "director";
+const explicitDirectorChannelNarration = scheduler.scheduleRoomDirectorTurn({
+  room: explicitDirectorChannelRoom,
+  nowLabel: "01:02",
+  userInput: "Developer Director Channel Public Narration Request:\n开发者测试任务在主频道发布一条旁白",
+  requestedMove: "twist",
+  reason: "mentioned",
+});
+
+expect(
+  explicitDirectorChannelNarration.type === "turn",
+  "Explicit Director Channel public narration request should produce a Director turn.",
+);
+expect(
+  explicitDirectorChannelNarration.type === "turn" && explicitDirectorChannelNarration.message,
+  "Explicit Director Channel public narration request should publish a public Director message.",
+);
+expect(
+  explicitDirectorChannelNarration.type === "turn" && explicitDirectorChannelNarration.message?.visibility === "public",
+  "Explicit Director Channel public narration should be visible in the public room.",
+);
+expect(
+  explicitDirectorChannelNarration.type === "turn" && !explicitDirectorChannelNarration.message?.channelId,
+  "Explicit Director Channel public narration should not stay bound to the Director channel.",
+);
+expect(
+  explicitDirectorChannelNarration.type === "turn" &&
+    explicitDirectorChannelNarration.plan.publicTextReason === "narration",
+  "Explicit Director Channel public narration should keep publicTextReason narration.",
+);
+expect(
+  explicitDirectorChannelNarration.type === "turn" &&
+    !scheduler.isDirectorPublicSchedulingText(explicitDirectorChannelNarration.message?.text ?? ""),
+  "Explicit Director Channel public narration should pass the public scheduling/leak gate.",
+);
+expect(
+  explicitDirectorChannelNarration.type === "turn" &&
+    !/(Backstage|Reason:|Move:|Next beat|Developer Director Channel|public blocked|当前场景|目标|公开线索|下一个|下一位|接话)/i.test(
+      explicitDirectorChannelNarration.message?.text ?? "",
+    ),
+  "Explicit Director Channel public narration should be natural narration, not a status dump or scheduling text.",
+);
+
 if (failures.length > 0) {
   console.error(`validate-director-public-narration-style failed:\n${failures.map((failure) => `- ${failure}`).join("\n")}`);
   process.exit(1);

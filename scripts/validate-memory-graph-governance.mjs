@@ -31,6 +31,9 @@ for (const marker of [
   "memoryGraphGovernanceModeOptions",
   "renderMemoryGraphGovernanceSummary",
   "decorateMemoryGraphViewWithIssues",
+  "memoryGraphClaimEvidenceSummary",
+  "memoryGraphNodeEvidenceSummary",
+  "memory-graph-conflict-evidence",
   "memory_graph_merge_claims",
   'mode: graphState.mode',
 ]) {
@@ -41,6 +44,7 @@ for (const marker of [
   ".memory-graph-governance-summary",
   ".memory-graph-governance-chip",
   ".memory-graph-issue-row",
+  ".memory-graph-conflict-evidence",
   '.memory-graph-node[data-kind="issue"]',
 ]) {
   expect(styles.includes(marker), `Memory graph governance CSS must include ${marker}`, failures);

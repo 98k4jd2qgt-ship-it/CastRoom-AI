@@ -447,6 +447,28 @@ export function evaluateRoomAction(input: {
   return { result: "allowed", reason: "No Director constraint blocks this input.", matchedConstraintIds: [] };
 }
 
+export function evaluateRoomRoleMessageForRuling(input: {
+  room: RoomState;
+  message: ConsoleMessage;
+  userInput: string;
+}): RoomActionCheck {
+  const text = input.userInput.trim();
+  if (!text) {
+    return { result: "allowed", reason: "Empty role message has no room action.", matchedConstraintIds: [] };
+  }
+  if (input.message.speakerType !== "role") {
+    return evaluateRoomAction(input);
+  }
+  if (!roleMessageMayNeedPublicRuling(text)) {
+    return {
+      result: "allowed",
+      reason: "Role message is conversational; no public Director ruling is needed.",
+      matchedConstraintIds: [],
+    };
+  }
+  return evaluateRoomAction(input);
+}
+
 export function evaluateAiDraftAgainstDirectorRules(input: {
   draft: string;
   role: RoomParticipant;
@@ -612,6 +634,19 @@ function resolveRoomFreedomLevel(room: RoomState): RoomFreedomLevel {
 
 function looksLikePlayerActionAttempt(text: string): boolean {
   return /(?:\bi\s+(?:try|attempt|open|take|give|move|enter|leave|use|check|look|ask|tell|push|pull)\b|\bwe\s+(?:try|attempt|open|take|give|move|enter|leave|use|check|look|ask|tell)\b|\u6211(?:\u5c1d\u8bd5|\u8981|\u53bb|\u6253\u5f00|\u62ff|\u7ed9|\u8fdb\u5165|\u79bb\u5f00|\u4f7f\u7528|\u67e5\u770b|\u95ee|\u544a\u8bc9)|\u6211\u4eec(?:\u5c1d\u8bd5|\u8981|\u53bb|\u6253\u5f00|\u62ff|\u7ed9|\u8fdb\u5165|\u79bb\u5f00|\u4f7f\u7528|\u67e5\u770b|\u95ee|\u544a\u8bc9))/i.test(text);
+}
+
+function roleMessageMayNeedPublicRuling(text: string): boolean {
+  if (looksLikeCasualActionQuestion(text)) {
+    return false;
+  }
+  if (ROOM_FACT_REWRITE_PATTERN.test(text) || ROOM_FACT_REWRITE_CN_PATTERN.test(text)) {
+    return true;
+  }
+  return (
+    /(?:\b(?:i|we)\s+(?:try|attempt|tried|attempted|force|forced|steal|stole|attack|attacked|break|broke|destroy|destroyed|unlock|unlocked|open|opened|take|took|grab|grabbed|move|moved|enter|entered|leave|left|use|used|search|searched|inspect|inspected|reveal|revealed|kill|killed|hurt|injure|injured)\b|\b(?:the\s+)?(?:door|lock|gate|key|secret|weapon|item|room|scene|target|victim)\s+(?:is|was|has been)\s+(?:open|opened|unlocked|taken|moved|destroyed|revealed|hurt|dead|killed)\b)/i.test(text) ||
+    /(?:(?:我|我们).{0,8}(?:尝试|试图|强行|偷走|偷取|攻击|破坏|摧毁|打开|开锁|解锁|拿走|拿起|移动|进入|离开|使用|搜索|搜查|检查|调查|揭露|公开|杀死|伤害).{0,16}(?:门|锁|钥匙|秘密|物品|道具|武器|房间|场景|目标|某人|对方)|(?:门|锁|钥匙|秘密|物品|武器|目标).{0,8}(?:已经|现在|被).{0,8}(?:打开|解锁|拿走|移动|破坏|摧毁|公开|揭露|杀死|伤害))/.test(text)
+  );
 }
 
 function roomActionNeedsJudgement(text: string): boolean {

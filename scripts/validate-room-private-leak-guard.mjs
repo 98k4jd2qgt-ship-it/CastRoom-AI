@@ -47,6 +47,11 @@ mustMatch(
   /Room\.directorPrivateLeakGuard[\s\S]*private_leak_blocked/,
   "director leak guard records blocked state",
 );
+mustMatch(
+  main,
+  /type:\s*"room\.setAutoSpeechStatus"[\s\S]*status:\s*"blocked"[\s\S]*lastReason:\s*"director_followup"[\s\S]*clearRoomAutoTimer\(\);[\s\S]*Room\.directorPrivateLeakGuard/,
+  "director leak guard hard-stops auto flow before watchdog can requeue",
+);
 mustInclude(main, "validateRoomTimelineChannelVisibility", "commit-level visibility guard");
 mustInclude(main, "Room.privateLeakCommitGuard", "commit-level diagnostic");
 mustInclude(main, '"private_message_channel_missing"', "commit guard blocks missing private channel");

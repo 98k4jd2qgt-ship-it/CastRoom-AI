@@ -2,6 +2,7 @@ import type {
   CommandSuggestion,
   ConsoleAction,
   ConsoleAppState,
+  ConsoleMessage,
   ConsoleView,
   ConsoleCommandRouter,
   DesktopContextState,
@@ -49,6 +50,7 @@ import {
   getRoomDirectorProfile,
   getRoomPromptProfile,
   hasRoomDirectorMention,
+  isStrictDebateFlow,
   isTargetingDirector,
   parseRoomMentions,
   resolveRoomCollaborationMode,
@@ -99,6 +101,14 @@ const directorScriptItemListKeys: DirectorScriptItemListKey[] = [
 ];
 
 const directorScriptDrafts = new Map<string, DirectorScriptDraftState>();
+
+function isPublicRoomContextMessage(message: ConsoleMessage): boolean {
+  return (message.visibility ?? "public") === "public" && (message.channelId ?? "public") !== "director";
+}
+
+function publicRoomContextMessages(room: ConsoleAppState["room"], count: number): ConsoleMessage[] {
+  return room.messages.filter(isPublicRoomContextMessage).slice(-count);
+}
 
 export function renderRoomSurface(props: RoomSurfaceProps): HTMLElement {
   const language = props.state.language;
@@ -2289,7 +2299,7 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
   const sectionsByMode: Record<string, RoomContextPanelViewModel["sections"]> = {
     casual: [
       { id: "topic", title: label("roomState"), items: [{ label: label("topic"), value: localizedRoomSystemText(room.topic, language) }, { label: label("roomFlow"), value: room.autoChat ? label("running") : label("waiting") }, { label: label("currentPlan"), value: roomPlanDetail(room, language) }] },
-      { id: "memory", title: label("sharedMemory"), items: [{ label: label("recent"), value: compactList(room.messages.slice(-3).map((message) => message.speaker + ": " + message.text), label("noSummary")) }] },
+      { id: "memory", title: label("sharedMemory"), items: [{ label: label("recent"), value: compactList(publicRoomContextMessages(room, 3).map((message) => message.speaker + ": " + message.text), label("noSummary")) }] },
     ],
     story: [
       { id: "scene", title: label("story"), items: commonScene },
@@ -2301,7 +2311,7 @@ function buildRoomContextPanel(props: RoomSurfaceProps): RoomContextPanelViewMod
     ],
     debate: [
       { id: "debate", title: label("debate"), items: [{ label: label("motion"), value: debateMotion ? localizedRoomSystemText(debateMotion, language) : label("noneYet") }, { label: label("speakerAssignments"), value: debateAssignments || label("noneYet") }, { label: label("teams"), value: room.factions.filter((item) => item.id !== "neutral").map((item) => item.name).join(", ") || label("noTeams") }] },
-      { id: "arguments", title: label("argumentSummary"), items: [{ label: label("recent"), value: compactList(room.messages.slice(-3).map((message) => message.speaker + ": " + message.text), label("noArgumentSummary")) }] },
+      { id: "arguments", title: label("argumentSummary"), items: [{ label: label("recent"), value: compactList(publicRoomContextMessages(room, 3).map((message) => message.speaker + ": " + message.text), label("noArgumentSummary")) }] },
     ],
     study: [
       { id: "study", title: label("study"), items: [{ label: label("goal"), value: localizedRoomSystemText(scene.goal, language) }, { label: label("explained"), value: compactLocalizedList(scene.openClues, label("noneYet"), language) }, { label: label("review"), value: compactLocalizedList(scene.unresolved, label("noneYet"), language) }] },
@@ -3811,6 +3821,12 @@ function autoSpeechStatusLabel(props: RoomSurfaceProps): string {
     case "waiting_user":
       return t(language, "roomAutoWaiting");
     case "cooling_down":
+      if (room.isOpen && room.autoChat && room.advancePolicy === "continuous") {
+        const nextTurnAt = room.autoSpeechState.nextTurnAt;
+        return typeof nextTurnAt === "number" && nextTurnAt > Date.now()
+          ? t(language, "roomAutoCooling")
+          : t(language, "roomAutoRunning");
+      }
       return t(language, "roomAutoCooling");
     case "blocked":
       return t(language, "roomAutoLimited");
@@ -3998,9 +4014,12 @@ function roomPlanLabel(room: ConsoleAppState["room"], language: ConsoleAppState[
 function roomPlanDetail(room: ConsoleAppState["room"], language: ConsoleAppState["language"]): string {
   const plan = room.activeDiscussionPlan;
   const continuousFlowActive = room.isOpen && room.autoChat && room.advancePolicy === "continuous";
+  if (continuousFlowActive && !shouldShowStructuredRoomPlan(room)) {
+    return roomFlowDisplayText(room, language);
+  }
   if (!plan) {
     if (room.autoChat) {
-      return roomUiText(language, "autoWaitingNextTurn");
+      return roomFlowDisplayText(room, language);
     }
     return room.lastTerminationReason ? terminationReasonLabel(room.lastTerminationReason, language) : roomUiText(language, "waitingInput");
   }
@@ -4019,7 +4038,35 @@ function roomPlanDetail(room: ConsoleAppState["room"], language: ConsoleAppState
   return `${currentName} ${plan.activeTurnIndex + 1}/${plan.turns.length} / ${roomUiText(language, "next")} ${nextName}`;
 }
 
-function isHardContinuousUiStopReason(reason: ConsoleAppState["room"]["lastTerminationReason"]): boolean {
+function shouldShowStructuredRoomPlan(room: ConsoleAppState["room"]): boolean {
+  return isStrictDebateFlow(room) && room.activeDiscussionPlan?.status === "running";
+}
+
+function roomFlowDisplayText(room: ConsoleAppState["room"], language: ConsoleAppState["language"]): string {
+  if (!room.autoChat) {
+    return room.lastTerminationReason ? terminationReasonLabel(room.lastTerminationReason, language) : roomUiText(language, "waitingInput");
+  }
+  switch (room.autoSpeechState.status) {
+    case "running":
+      return t(language, "roomAutoRunning");
+    case "cooling_down": {
+      const nextTurnAt = room.autoSpeechState.nextTurnAt;
+      return typeof nextTurnAt === "number" && nextTurnAt > Date.now()
+        ? roomUiText(language, "autoWaitingNextTurn")
+        : t(language, "roomAutoRunning");
+    }
+    case "blocked":
+      return isHardContinuousUiStopReason(room.autoSpeechState.lastReason)
+        ? t(language, "roomAutoLimited")
+        : t(language, "roomAutoRunning");
+    case "waiting_user":
+      return room.advancePolicy === "continuous" ? t(language, "roomAutoRunning") : t(language, "roomAutoWaiting");
+    default:
+      return t(language, "roomAutoRunning");
+  }
+}
+
+function isHardContinuousUiStopReason(reason: string | null | undefined): boolean {
   return reason === "model_unavailable" || reason === "private_leak_blocked" || reason === "budget_limit";
 }
 

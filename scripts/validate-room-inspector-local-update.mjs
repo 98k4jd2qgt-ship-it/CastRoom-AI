@@ -5,14 +5,16 @@ const failures = [];
 
 const createRenderLocalUpdate = sliceFunction(main, "createRenderLocalUpdate");
 mustInclude(createRenderLocalUpdate, 'workspace === "room"', "Room workspace has a local update path");
-mustInclude(createRenderLocalUpdate, 'options.kind === "message"', "message updates keep using the full non-input Room refresh");
-mustInclude(createRenderLocalUpdate, "return notifyRoomSurfaceUpdated", "message updates can refresh timeline-bearing Room regions");
+mustInclude(createRenderLocalUpdate, 'options.kind === "message"', "message updates use a targeted Room refresh");
+mustInclude(createRenderLocalUpdate, "return notifyRoomTimelineUpdated", "message updates refresh only the timeline");
 mustInclude(createRenderLocalUpdate, "return notifyRoomInspectorUpdated", "status/diagnostic updates use the Inspector local refresh");
 
 const inspectorUpdate = sliceFunction(main, "notifyRoomInspectorUpdated");
+const timelineUpdate = sliceFunction(main, "notifyRoomTimelineUpdated");
 const patchRoomInspectorRail = sliceFunction(main, "patchRoomInspectorRail");
 const patchElementIfChanged = sliceFunction(main, "patchElementIfChanged");
 mustInclude(inspectorUpdate, 'queueRoomSurfaceUpdate("room_inspector_update", ["inspector"])', "Inspector update targets the queued right rail patch");
+mustInclude(timelineUpdate, 'queueRoomSurfaceUpdate("room_timeline_update", ["timeline"])', "message update targets the queued timeline patch");
 mustInclude(patchRoomInspectorRail, '".room-inspector-status"', "Inspector update patches status as a right-rail section");
 mustInclude(patchRoomInspectorRail, '".room-context-panel"', "Inspector update patches context as a right-rail section");
 mustInclude(patchRoomInspectorRail, '".room-inspector-actions"', "Inspector update patches controls as a right-rail section");
@@ -23,7 +25,8 @@ mustNotInclude(inspectorUpdate, "scheduleConversationScrollToBottom", "status up
 mustNotInclude(inspectorUpdate, "markRenderedSurface", "status updates must not mark timeline message counts as rendered");
 
 const flushRoomSurfaceUpdateQueue = sliceFunction(main, "flushRoomSurfaceUpdateQueue");
-mustInclude(flushRoomSurfaceUpdateQueue, 'patchRoomSurfacePart(shell, nextShell, kinds, "main"', "message updates may replace the main region");
+mustInclude(flushRoomSurfaceUpdateQueue, 'patchRoomSurfacePart(shell, nextShell, kinds, "timeline"', "message updates replace only the timeline region");
+mustInclude(flushRoomSurfaceUpdateQueue, 'patchRoomSurfacePart(shell, nextShell, kinds, "main"', "structural surface updates may replace the main region");
 mustInclude(flushRoomSurfaceUpdateQueue, "resolveConversationScrollTarget", "message updates still resolve timeline follow-scroll");
 mustInclude(flushRoomSurfaceUpdateQueue, "restoreOrFollowConversationScroll", "message updates still restore or follow timeline scroll");
 

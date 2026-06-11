@@ -7,12 +7,15 @@ const notifyRoomSurfaceUpdated = sliceFunction(main, "notifyRoomSurfaceUpdated")
 const notifyRoomInspectorUpdated = sliceFunction(main, "notifyRoomInspectorUpdated");
 const flushRoomSurfaceUpdateQueue = sliceFunction(main, "flushRoomSurfaceUpdateQueue");
 const render = sliceFunction(main, "render");
+const requestRender = sliceFunction(main, "requestRender");
 const applyRoomRuntimeResult = sliceFunction(main, "applyRoomRuntimeResult");
 
 mustNotInclude(notifyRoomSurfaceUpdated, "ensureRoomAutoProgress", "surface notify should not trigger auto watchdog");
 mustNotInclude(notifyRoomInspectorUpdated, "ensureRoomAutoProgress", "inspector notify should not trigger auto watchdog");
 mustNotInclude(flushRoomSurfaceUpdateQueue, "ensureRoomAutoProgress", "queued UI flush should not trigger auto watchdog");
 mustNotInclude(render, 'ensureRoomAutoProgress("room_render")', "full room render should not trigger auto watchdog");
+mustNotInclude(requestRender, "ensureRoomAutoProgress", "render requests should not trigger auto watchdog");
+mustNotInclude(requestRender, "queueRoomAutoProgressCheck", "render requests should not enqueue auto progress checks");
 mustInclude(applyRoomRuntimeResult, 'ensureRoomAutoProgress("runtime_result")', "runtime result still repairs auto progress");
 
 if (failures.length) {

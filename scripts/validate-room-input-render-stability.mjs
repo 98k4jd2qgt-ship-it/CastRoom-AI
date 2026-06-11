@@ -2,8 +2,12 @@ import fs from "node:fs";
 
 const failures = [];
 const main = fs.readFileSync("src/main.ts", "utf8");
+const flushRoomSurfaceUpdateQueue = sliceFunction(main, "flushRoomSurfaceUpdateQueue");
 const restoreConversationInputState = sliceFunction(main, "restoreConversationInputState");
 
+mustInclude(flushRoomSurfaceUpdateQueue, "const timelineOnly = isTimelineOnlyRoomSurfaceUpdate(kinds)", "flush detects timeline-only room updates");
+mustInclude(flushRoomSurfaceUpdateQueue, "const inputSnapshot = timelineOnly ? null : captureConversationInputSnapshot()", "timeline-only updates skip input snapshot capture");
+mustInclude(flushRoomSurfaceUpdateQueue, "if (inputSnapshot) {\n    restoreConversationInputState(inputSnapshot);", "timeline-only updates skip input restore");
 mustInclude(restoreConversationInputState, "const stability = conversationInputStability[latestTarget]", "restore uses a single current stability snapshot");
 mustInclude(restoreConversationInputState, "const activeEditableInput = document.activeElement === input", "restore detects active input");
 mustInclude(restoreConversationInputState, "const recentInput = Date.now() - stability.lastInputAt < 350", "restore protects recent typing");
