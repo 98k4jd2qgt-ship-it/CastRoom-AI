@@ -33,7 +33,7 @@ flowchart LR
   subgraph memory["Memory System"]
     raw["Raw Context<br/>recent messages"]
     semantic["Semantic Observations<br/>traits / claims / beliefs"]
-    graph["Perspective Graph<br/>public / role / faction / director"]
+    perspectiveGraph["Perspective Graph<br/>public / role / faction / director"]
     governance["Governance<br/>conflict / confidence / review"]
   end
 
@@ -63,9 +63,9 @@ flowchart LR
   gateway --> audit
   committer --> raw
   raw --> semantic
-  semantic --> graph
-  graph --> governance
-  graph --> prompts
+  semantic --> perspectiveGraph
+  perspectiveGraph --> governance
+  perspectiveGraph --> prompts
   guards --> committer
   tauri --> storage
   core --> storage
