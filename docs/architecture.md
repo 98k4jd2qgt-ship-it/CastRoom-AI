@@ -1,8 +1,8 @@
 # CastRoom AI Architecture
 
-This page contains the high-level architecture diagrams used by the GitHub README and demo explanations. The diagrams are written in Mermaid so GitHub can render them directly.
+This page contains the high-level architecture diagrams for CastRoom AI. The diagrams are written in Mermaid so GitHub can render them directly.
 
-这份文档用于讲解 CastRoom AI 的系统结构。图用 Mermaid 编写，GitHub 可以直接渲染，不需要额外上传图片。
+这份文档记录 CastRoom AI 的核心架构。图用 Mermaid 编写，GitHub 可以直接渲染。
 
 ## 1. System Overview
 
@@ -214,30 +214,3 @@ flowchart TD
   directorView --> conflict["Conflict Governance<br/>source sentence vs source sentence"]
   conflict --> actions["Resolve<br/>confirm / keep as claim / refute / role-only belief"]
 ```
-
-## 5. Release and Data Safety
-
-The public repository and release assets are built through a sanitized export path. User data, keys, runtime memories, logs, and local configuration are not part of the source repository.
-
-```mermaid
-flowchart LR
-  worktree["Development Worktree"] --> checks["Checks<br/>check / build / check:rust"]
-  worktree --> publicExport["Public Export Script<br/>sanitized source tree"]
-  publicExport --> exportCheck["Export Guard<br/>reject keys / data / logs / builds"]
-  exportCheck --> github["GitHub main branch"]
-
-  worktree --> tauriBuild["Tauri Build<br/>desktop binaries"]
-  tauriBuild --> releasePrep["Release Asset Prep<br/>portable zip / setup / msi"]
-  releasePrep --> assetCheck["Asset Guard<br/>empty portable data / no runtime memory"]
-  assetCheck --> release["GitHub Release<br/>versioned assets + SHA256SUMS"]
-```
-
-## Talk Track
-
-讲解时可以按这个顺序走：
-
-1. 先讲 Room 不是普通多角色群聊，而是有自动调度、Director、可见性和记忆治理的房间系统。
-2. 再讲自动推进：普通聊天走短路径，复杂剧情、裁定和辩论才升级到 Director。
-3. 然后讲 Director：能公开旁白，但后台调度、私聊和隐藏事实不会进主频道。
-4. 接着讲记忆：上下文不是记忆，记忆有来源、置信度、视角和冲突治理。
-5. 最后讲开源发布边界：源码和安装包都经过数据与密钥清理。
