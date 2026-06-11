@@ -61,6 +61,16 @@ AI service notes: [Support page](https://98k4jd2qgt-ship-it.github.io/castroom-a
 | --- | --- | --- |
 | ![Room workspace](docs/screenshots/room-workspace.png) | ![Prompt Center](docs/screenshots/prompt-center.png) | ![Memory graph](docs/screenshots/memory-view.png) |
 
+## Architecture
+
+![CastRoom AI simplified architecture](docs/screenshots/architecture-simple-en.png)
+
+![CastRoom AI 简化架构图](docs/screenshots/architecture-simple-zh.png)
+
+For the detailed room flow, Director boundary, memory graph, privacy gate, and release safety diagrams, see [Architecture](docs/architecture.md).
+
+详细架构图见 [Architecture](docs/architecture.md)，包含自动推演、Director 边界、记忆图谱、防泄漏和发布安全流程。
+
 ## Core Ideas
 
 ### Room Flow
