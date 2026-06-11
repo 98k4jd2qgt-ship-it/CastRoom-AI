@@ -1,0 +1,32 @@
+%%{init: {"theme": "base", "themeVariables": {"background": "#ffffff", "primaryColor": "#f8fafc", "primaryTextColor": "#0f172a", "primaryBorderColor": "#94a3b8", "lineColor": "#334155", "fontFamily": "Segoe UI, Arial, sans-serif"}}}%%
+flowchart LR
+  user["User / Developer<br/>message, mention, or rule"]
+  room["Room UI<br/>public room<br/>private chats<br/>Director channel"]
+  flow["Auto Flow<br/>pace + next speaker<br/>continue / fill gap / wait"]
+  context["Context Builder<br/>visible messages<br/>focused memory"]
+  role["AI Role<br/>natural reply<br/>no private leakage"]
+  gate["Privacy Gate<br/>check public output<br/>block backstage text"]
+  timeline["Public Timeline<br/>visible room result<br/>next turn starts here"]
+
+  director["Director<br/>narration / ruling<br/>stage change / recovery"]
+  memory["Memory Graph<br/>claims / beliefs<br/>conflicts / confirmed facts"]
+
+  user --> room --> flow --> context --> role --> gate --> timeline
+  flow -.-> director
+  director -.-> gate
+  room -.-> memory
+  memory -.-> context
+  memory -.-> director
+  timeline -.-> flow
+
+  classDef main fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a;
+  classDef flowNode fill:#ecfdf5,stroke:#047857,stroke-width:3px,color:#064e3b;
+  classDef gateNode fill:#fff7ed,stroke:#c2410c,stroke-width:3px,color:#7c2d12;
+  classDef directorNode fill:#eff6ff,stroke:#2563eb,stroke-width:2px,color:#1e3a8a;
+  classDef memoryNode fill:#f5f3ff,stroke:#7c3aed,stroke-width:2px,color:#4c1d95;
+
+  class user,room,context,role,timeline main;
+  class flow flowNode;
+  class gate gateNode;
+  class director directorNode;
+  class memory memoryNode;

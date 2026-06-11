@@ -1,212 +1,85 @@
 # CastRoom AI Architecture
 
-This page contains the high-level architecture diagrams for CastRoom AI. The diagrams are written in Mermaid so GitHub can render them directly.
+This page describes the runtime shape of CastRoom AI.
 
-这份文档记录 CastRoom AI 的核心架构。图用 Mermaid 编写，GitHub 可以直接渲染。
-
-## 1. System Overview
-
-CastRoom AI is a Tauri desktop app. The web UI renders the room, memory console, prompt center, and configuration panels. The core engine decides room turns, protects visibility boundaries, builds prompts, calls AI providers, and persists room-scoped state.
+## 1. Main Runtime Path
 
 ```mermaid
 flowchart LR
-  subgraph app["Tauri Desktop App"]
-    webview["WebView UI<br/>Room / Memory / Prompt Center"]
-    tauri["Tauri Commands<br/>filesystem / window / bundled assets"]
-  end
-
-  subgraph ui["UI Layer"]
-    roomSurface["Room Surface<br/>timeline / channels / control rail"]
-    memoryConsole["Memory Console<br/>list / graph / governance"]
-    promptCenter["Prompt Center<br/>room rules / director rules / role notes"]
-    settings["AI and Room Settings"]
-  end
-
-  subgraph core["Core Room Engine"]
-    committer["Message Committer<br/>visibility / target / timeline"]
-    scheduler["Room Scheduler<br/>speaker policy / debate flow / continuous flow"]
-    director["Director Layer<br/>narration / ruling / private directives"]
-    guards["Rule Guards<br/>privacy / action fact gate / output cleaning"]
-    prompts["Prompt Assembly<br/>compact / balanced / full"]
-  end
-
-  subgraph memory["Memory System"]
-    raw["Raw Context<br/>recent messages"]
-    semantic["Semantic Observations<br/>traits / claims / beliefs"]
-    perspectiveGraph["Perspective Graph<br/>public / role / faction / director"]
-    governance["Governance<br/>conflict / confidence / review"]
-  end
-
-  subgraph ai["AI Runtime"]
-    gateway["AI Gateway"]
-    cloud["OpenAI-compatible providers"]
-    local["Bundled local runtime"]
-    audit["Token Audit<br/>usage / purpose / prompt path"]
-  end
-
-  subgraph data["Persistence"]
-    storage["App Data<br/>rooms / memory / settings"]
-  end
-
-  webview --> roomSurface
-  webview --> memoryConsole
-  webview --> promptCenter
-  webview --> settings
-  roomSurface --> committer
-  roomSurface --> scheduler
-  scheduler --> director
-  scheduler --> guards
-  scheduler --> prompts
-  prompts --> gateway
-  gateway --> cloud
-  gateway --> local
-  gateway --> audit
-  committer --> raw
-  raw --> semantic
-  semantic --> perspectiveGraph
-  perspectiveGraph --> governance
-  perspectiveGraph --> prompts
-  guards --> committer
-  tauri --> storage
-  core --> storage
-  memory --> storage
+  user["User / Developer"] --> room["Room UI"]
+  room --> flow["Auto Flow"]
+  flow --> roles["AI Roles"]
+  roles --> timeline["Public Timeline"]
+  flow -.-> director["Director"]
+  director -.-> timeline
+  room -.-> privacy["Privacy Boundary"]
+  roles -.-> privacy
+  director -.-> privacy
+  room -.-> memory["Memory Graph"]
+  roles -.-> memory
+  memory -.-> flow
+  privacy -.-> flow
 ```
 
-## 2. Room Turn Pipeline
+Normal chat follows the short path from Room UI to Auto Flow to AI Roles. Director intervention is reserved for narration, rulings, stage changes, recovery, and visibility-sensitive decisions.
 
-A room turn is not a direct “send message to all models” loop. The scheduler first decides whether the room needs a role reply, Director intervention, a retry, or a hard stop. In normal casual chat, the path should be short: local scheduling plus a compact speaker prompt.
+## 2. Room Flow
 
 ```mermaid
 flowchart TD
-  trigger["Trigger<br/>user message / auto timer / Director Channel"] --> commit["Commit Message<br/>speaker / channel / visibility"]
-  commit --> flow["RoomAutoFlowDriver<br/>single source of auto-flow truth"]
-
-  flow --> hard{"Hard blocker?"}
-  hard -->|yes| stop["Hard stop<br/>provider failure / no role / privacy block / manual pause"]
-  hard -->|no| strict{"Structured flow?<br/>strict debate / required stage"}
-
-  strict -->|yes| step["Resolve current step<br/>Director host or exact role"]
-  strict -->|no| pending{"Pending forced reply<br/>or private directive?"}
-
-  pending -->|yes| forced["Dispatch required role"]
-  pending -->|no| needDirector{"Need Director?"}
-
-  needDirector -->|yes| directorStep["Director step<br/>narration / ruling / visibility guard"]
-  needDirector -->|no| speaker["Select speaker<br/>speaker policy + participation score"]
-
-  speaker --> found{"Runnable role?"}
-  found -->|yes| prompt["Build role prompt<br/>compact / balanced / full"]
-  found -->|no| fallback["Soft fallback<br/>topic shift / role rotation / retry"]
-
-  directorStep --> publicNarration{"Public narration?"}
-  publicNarration -->|yes| gate["Public output gate<br/>privacy + no backstage text"]
-  gate -->|allowed| narration["Commit Director narration<br/>public timeline first"]
-  gate -->|blocked| directorNote["Director Channel note<br/>not visible to roles"]
-  publicNarration -->|no| directorNote
-
-  narration --> scheduleNext["Schedule next role turn<br/>respect auto pace"]
-  directorNote --> scheduleNext
-  forced --> prompt
-  fallback --> scheduleNext
-  prompt --> provider["AI Provider Call"]
-  provider --> clean["Output cleaner<br/>no role mentions as control / no Director leaks"]
-  clean --> timeline["Commit visible result"]
-  timeline --> memoryDirty["Mark memory scopes dirty"]
-  timeline --> scheduleNext
-  scheduleNext --> timer["Real nextTurnAt + timer<br/>watchdog repairs missing or overdue timers"]
+  trigger["User message / auto timer / Director channel"] --> commit["Commit message with channel and visibility"]
+  commit --> driver["RoomAutoFlowDriver"]
+  driver --> hard{"Hard blocker?"}
+  hard -->|yes| stop["Hard stop"]
+  hard -->|no| structured{"Structured flow?"}
+  structured -->|yes| step["Resolve exact step"]
+  structured -->|no| directorNeed{"Need Director?"}
+  directorNeed -->|yes| directorStep["Director step"]
+  directorNeed -->|no| speaker["Select speaker"]
+  step --> dispatch["Dispatch role or Director"]
+  directorStep --> gate["Public output gate"]
+  speaker --> prompt["Build compact / balanced / full prompt"]
+  gate --> timeline["Commit safe public narration or backstage note"]
+  prompt --> provider["AI provider"]
+  provider --> clean["Clean output"]
+  clean --> timeline
+  timeline --> next["Schedule next turn"]
 ```
 
-## 3. Director Boundaries
+`continuous` should keep moving unless there is a real hard blocker such as a provider failure, no runnable role, a privacy block, or a manual pause. `fill_gap` fills one missing beat and then observes. `wait_for_instruction` waits for the user.
 
-The Director can observe more than ordinary roles, but public output is tightly gated. Backstage scheduling and private information must not leak into the main channel, public status panel, public graph, or ordinary role prompts.
+## 3. Director Boundary
 
 ```mermaid
 flowchart LR
-  subgraph sources["Sources"]
-    publicMsg["Public room message"]
-    privateMsg["Private / faction message"]
-    directorMsg["Director Channel message"]
-    script["Director Script<br/>room + mode scoped"]
-  end
-
-  classify["Source visibility classifier<br/>public / private / faction / director-only"]
-
-  subgraph director["Director Processing"]
-    observe["Backstage observation"]
-    decide["Intervention decision<br/>silent / narration / ruling / directive"]
-    privateDirective["Private directives<br/>role scheduling layer"]
-    scriptPatch["Script patch<br/>hidden facts / public-safe beats"]
-  end
-
-  subgraph gates["Public Gates"]
-    outputGate["validateDirectorPublicOutput"]
-    inspectorGate["sanitizeInspectorPatchForViewer"]
-    scriptGate["activePublicDirectorScriptTexts"]
-  end
-
-  subgraph destinations["Destinations"]
-    publicTimeline["Public timeline<br/>only public-safe narration"]
-    directorChannel["Director Channel<br/>backstage notes and diagnostics"]
-    publicStatus["Public status panel<br/>stable public state only"]
-    rolePrompt["Ordinary role prompt<br/>viewer-safe context only"]
-    hiddenState["Director-only memory and script"]
-  end
-
-  publicMsg --> classify
-  privateMsg --> classify
-  directorMsg --> classify
-  script --> classify
-  classify --> observe
-  observe --> decide
-  decide --> privateDirective
-  decide --> scriptPatch
-  decide --> outputGate
-  scriptPatch --> scriptGate
-  decide --> inspectorGate
-
-  outputGate -->|allowed| publicTimeline
-  outputGate -->|blocked| directorChannel
-  inspectorGate --> publicStatus
-  scriptGate --> rolePrompt
-  privateDirective --> rolePrompt
-  classify --> hiddenState
-  hiddenState --> directorChannel
+  publicInput["Public input"] --> classify["Visibility classifier"]
+  privateInput["Private / faction / Director channel"] --> classify
+  classify --> director["Director processing"]
+  director --> publicGate["Public output gate"]
+  director --> backstage["Director channel note"]
+  director --> directive["Private directive"]
+  publicGate -->|allowed| publicTimeline["Public timeline"]
+  publicGate -->|blocked| backstage
+  directive --> roleTurn["Role scheduling layer"]
 ```
 
-## 4. Memory and Perspective Graph
+Director can know more than ordinary roles, but public output is checked before it reaches the main timeline. Backstage notes, private directives, private chats, and faction information must not be injected into ordinary public prompts.
 
-The memory system separates recent context, semantic observations, claims, beliefs, and confirmed facts. The graph is a perspective graph: it shows what the public room, a role, a faction, or the Director can see and believe.
+## 4. Memory Graph
 
 ```mermaid
 flowchart TD
-  message["Room messages<br/>speaker / time / channel / visibility"] --> context["Raw Context<br/>short recent window"]
-  context --> extractor["Semantic Extractor<br/>batch / idle / memory panel"]
-  extractor --> observations["Semantic Observations<br/>trait / goal / claim / belief / doubt"]
-
-  observations --> candidates["Fact Candidates<br/>needs review / evidence-linked"]
-  observations --> relations["Perspective Relations<br/>who said / who believes / who doubts"]
-  candidates --> facts["Confirmed Facts<br/>Director / developer / strong evidence"]
-
-  subgraph viewers["Viewer Filters"]
-    publicView["Public Room View"]
-    roleView["Role View<br/>public + own private + faction"]
-    factionView["Faction View"]
-    directorView["Director View<br/>highest permission"]
-  end
-
-  relations --> publicView
-  relations --> roleView
-  relations --> factionView
-  relations --> directorView
-  facts --> publicView
-  facts --> roleView
-  facts --> factionView
-  facts --> directorView
-
-  publicView --> publicPrompt["Public prompt memory<br/>public confirmed facts only"]
-  roleView --> rolePrompt["Role prompt memory<br/>viewer-safe beliefs and claims"]
-  directorView --> directorPrompt["Director focused memory<br/>light / focused / full audit"]
-
-  directorView --> conflict["Conflict Governance<br/>source sentence vs source sentence"]
-  conflict --> actions["Resolve<br/>confirm / keep as claim / refute / role-only belief"]
+  messages["Room messages with speaker, time, channel, visibility"] --> context["Recent context"]
+  context --> observations["Semantic observations"]
+  observations --> claims["Claims / beliefs / doubts"]
+  observations --> candidates["Fact candidates"]
+  candidates --> facts["Confirmed facts"]
+  claims --> perspectives["Perspective views"]
+  facts --> perspectives
+  perspectives --> publicPrompt["Public prompt memory"]
+  perspectives --> rolePrompt["Role prompt memory"]
+  perspectives --> directorPrompt["Director focused memory"]
+  perspectives --> conflicts["Conflict governance"]
 ```
+
+Memory is not a flat transcript. CastRoom AI separates context, semantic observations, claims, beliefs, conflicts, and confirmed facts. Conflict governance should show which source sentence conflicts with which other source sentence.

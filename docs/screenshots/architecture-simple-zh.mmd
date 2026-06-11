@@ -1,0 +1,32 @@
+%%{init: {"theme": "base", "themeVariables": {"background": "#ffffff", "primaryColor": "#f8fafc", "primaryTextColor": "#0f172a", "primaryBorderColor": "#94a3b8", "lineColor": "#334155", "fontFamily": "Microsoft YaHei, Segoe UI, Arial, sans-serif"}}}%%
+flowchart LR
+  user["用户 / 开发者<br/>发言、点名或规则"]
+  room["房间界面<br/>公开频道<br/>私聊 / Director 频道"]
+  flow["自动推演<br/>节奏 + 下一位<br/>连续 / 补空档 / 等指令"]
+  context["上下文组装<br/>可见消息<br/>相关记忆"]
+  role["AI 角色<br/>自然接话<br/>不带出私密信息"]
+  gate["防泄漏检查<br/>检查公开输出<br/>拦截后台文本"]
+  timeline["公开时间线<br/>房间里可见的结果<br/>下一轮从这里继续"]
+
+  director["Director<br/>旁白 / 裁定<br/>阶段切换 / 防卡住"]
+  memory["记忆图谱<br/>说法 / 信念<br/>冲突 / 确认事实"]
+
+  user --> room --> flow --> context --> role --> gate --> timeline
+  flow -.-> director
+  director -.-> gate
+  room -.-> memory
+  memory -.-> context
+  memory -.-> director
+  timeline -.-> flow
+
+  classDef main fill:#f8fafc,stroke:#64748b,stroke-width:2px,color:#0f172a;
+  classDef flowNode fill:#ecfdf5,stroke:#047857,stroke-width:3px,color:#064e3b;
+  classDef gateNode fill:#fff7ed,stroke:#c2410c,stroke-width:3px,color:#7c2d12;
+  classDef directorNode fill:#eff6ff,stroke:#2563eb,stroke-width:2px,color:#1e3a8a;
+  classDef memoryNode fill:#f5f3ff,stroke:#7c3aed,stroke-width:2px,color:#4c1d95;
+
+  class user,room,context,role,timeline main;
+  class flow flowNode;
+  class gate gateNode;
+  class director directorNode;
+  class memory memoryNode;
