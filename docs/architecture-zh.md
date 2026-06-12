@@ -142,13 +142,13 @@ flowchart TD
   timeline["已提交消息<br/>说话者 / 时间 / 频道 / 可见性"] --> context["近期上下文<br/>短期使用"]
   context --> extractor["语义提取<br/>批量或规则驱动"]
   extractor --> observations["语义观察<br/>倾向 / 目标 / 关系 / 说法"]
-  observations --> graph["多视角图谱<br/>按 viewer 查询关系"]
+  observations --> perspectiveGraph["多视角图谱<br/>按 viewer 查询关系"]
   observations --> candidates["事实候选"]
   candidates --> governance["记忆治理<br/>确认 / 保留为说法 / 反驳"]
   governance --> facts["确认事实"]
-  graph --> conflicts["冲突视图<br/>源句对源句"]
+  perspectiveGraph --> conflicts["冲突视图<br/>源句对源句"]
   facts --> promptMemory["Prompt 记忆摘要"]
-  graph --> promptMemory
+  perspectiveGraph --> promptMemory
   promptMemory --> rolePrompt["按视角过滤的角色 prompt"]
   promptMemory --> directorPrompt["Director 聚焦记忆"]
 ```

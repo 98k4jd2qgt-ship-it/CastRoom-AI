@@ -142,13 +142,13 @@ flowchart TD
   timeline["Committed messages<br/>speaker / time / channel / visibility"] --> context["Recent context<br/>short-lived"]
   context --> extractor["Semantic extraction<br/>batched or rule-based"]
   extractor --> observations["Semantic observations<br/>traits / goals / relationships / claims"]
-  observations --> graph["Perspective graph<br/>viewer-aware relations"]
+  observations --> perspectiveGraph["Perspective graph<br/>viewer-aware relations"]
   observations --> candidates["Fact candidates"]
   candidates --> governance["Governance<br/>confirm / keep as claim / refute"]
   governance --> facts["Confirmed facts"]
-  graph --> conflicts["Conflict view<br/>source sentence vs source sentence"]
+  perspectiveGraph --> conflicts["Conflict view<br/>source sentence vs source sentence"]
   facts --> promptMemory["Prompt memory digest"]
-  graph --> promptMemory
+  perspectiveGraph --> promptMemory
   promptMemory --> rolePrompt["Viewer-filtered role prompt"]
   promptMemory --> directorPrompt["Focused Director memory"]
 ```
