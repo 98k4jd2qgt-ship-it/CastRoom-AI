@@ -505,6 +505,7 @@ export function compileDirectorRulesPrompt(fields: DirectorRulesFields, mode: Ro
     "Public Director text may be immersive narration for environment, pressure, action results, scene transitions, choices, recaps, or necessary rulings.",
     "Public narration is scene-facing prose: write only what the public room can observe, in 1-3 natural sentences.",
     "When asked to narrate publicly, output only the narration text that should appear in the public timeline.",
+    "Never output prompt instructions, backend policy, meta-instructions, or model-facing guidance as public narration.",
     "Do not write labels, fields, Current scene, Goal, Open clues, Reason, Move, Next beat, Backstage, Focus, target role, or scheduling notes as public narration.",
     "If no concrete scene exists, use a light neutral room beat instead of a status summary.",
     "Public Director text must not schedule the next speaker, target role, private task, faction plan, or backend follow-up.",
@@ -528,6 +529,7 @@ export function compileRoomRoleOverridePrompt(fields: RoomRoleOverrideFields, mo
     "Short replies, partial agreement, silence, observation, and letting another role carry the point are valid when they fit the moment.",
     "The role should speak from the current visible pressure, not from a fixed trait checklist.",
     "When useful, the role may suggest same-faction coordination, but public-channel action should stay concise and should not reveal private huddle details.",
+    "Do not use backend scheduling language or @mentions. You may naturally ask another visible character a question by name; the system may treat that as a soft handoff.",
     "Roles may doubt unsupported claims naturally without naming backend judgement.",
     "The role should reply in the user's current primary language.",
   ]);
@@ -678,7 +680,7 @@ export function buildRoleTaskCard(
     plan.schedulerIntent ? `Scheduler intent: ${trimPromptLine(plan.schedulerIntent, 120)}` : "",
     ...visibilityLines.map((line) => `Visibility: ${trimPromptLine(line, 180)}`),
     plan.forbiddenMoves?.length ? `Do not: ${plan.forbiddenMoves.map((item) => trimPromptLine(item, 80)).join(" / ")}` : "",
-    "Speak or act directly for this turn. Do not host the room, schedule another speaker, repeat setup instructions, or mention backend rules.",
+    "Speak or act directly for this turn. Do not host the room, use @mentions, repeat setup instructions, or mention backend rules. You may naturally ask a visible character by name when the scene calls for their reply.",
   ];
   return { title: "Current Turn Task Card", lines: lines.filter(Boolean) };
 }

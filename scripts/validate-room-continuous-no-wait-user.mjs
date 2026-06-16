@@ -10,6 +10,7 @@ const shouldWaitForUserAfterDirector = sliceFunction(main, "shouldWaitForUserAft
 const directorResultRequiresHardUserInput = sliceFunction(main, "directorResultRequiresHardUserInput");
 const advanceRoomDiscussionPlanAfterTurn = sliceFunction(main, "advanceRoomDiscussionPlanAfterTurn");
 const providerSkippedBlock = sliceBetween(main, 'if (providerTurn?.kind === "skipped")', "const providerResult = providerTurn?.kind");
+const privateWhisperLimitBlock = sliceBetween(main, 'if (message.visibility === "private_ai" && reachedPrivateWhisperLimit', "queueRoomParticipantIdle(result.participant.id)");
 
 mustInclude(scheduler, "export function isContinuousRoomFlow", "central continuous Room Flow helper");
 mustInclude(scheduler, "function isHardRoomAutoBlock", "hard blocker whitelist helper");
@@ -32,6 +33,11 @@ mustInclude(providerSkippedBlock, "commitRoomDiagnosticPatch", "continuous repea
 mustInclude(providerSkippedBlock, 'stopReason: "repeated"', "non-continuous repeated speaker skip can still expose repeated stop reason");
 mustInclude(providerSkippedBlock, 'status: shouldContinueAuto ? "cooling_down" : "waiting_user"', "continuous repeated speaker skip cools down");
 mustInclude(providerSkippedBlock, "nextTurnAt,", "continuous repeated speaker skip keeps a next turn");
+
+mustInclude(privateWhisperLimitBlock, "isContinuousRoomFlow(consoleState.room)", "private whisper limit has a continuous branch");
+mustInclude(privateWhisperLimitBlock, 'status: "cooling_down"', "private whisper limit keeps continuous queued");
+mustInclude(privateWhisperLimitBlock, 'lastReason: "director_followup"', "private whisper limit does not write waiting_user in continuous");
+mustInclude(privateWhisperLimitBlock, "room_private_whisper_limit_continuous", "private whisper continuous path is diagnostic-only");
 
 mustInclude(shouldWaitForUserAfterDirector, "continuousRoomFlow", "Director wait helper knows continuous flow");
 mustInclude(shouldWaitForUserAfterDirector, "if (continuousRoomFlow)", "Director wait helper checks continuous before user wait logic");

@@ -25,7 +25,8 @@ mustInclude(policyBlockedAutoResult, "createPolicyPendingFollowup", "fill-gap us
 mustInclude(scheduler, "blockingNeed === \"privacy_or_safety\"", "privacy remains hard blocker");
 mustInclude(scheduler, "blockingNeed === \"provider_failure\"", "provider failure remains hard blocker");
 mustInclude(scheduler, "blockingNeed === \"irreversible_decision\"", "irreversible decision remains hard blocker");
-mustInclude(scheduler, 'continuation.blockingNeed === "explicit_user_choice"', "explicit choice remains a hard pause");
+mustInclude(scheduler, 'const explicitChoice = !isContinuousRoomFlow(room) && blockingNeed === "explicit_user_choice"', "explicit choice only pauses outside continuous flow");
+mustInclude(scheduler, 'canContinueWithoutUser: blockingNeed === "none" || (!hardBlocker && !explicitChoice)', "continuous explicit choice is treated as a soft continuation signal");
 mustInclude(scheduler, 'action = "fill_gap"', "fill-gap soft blockers stay finite");
 
 mustInclude(main, "resolveContinuationAssessment(consoleState.room", "Director wait uses continuation assessment");

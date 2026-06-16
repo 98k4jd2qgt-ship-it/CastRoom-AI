@@ -25,8 +25,9 @@ mustInclude(isHardContinuousUiStopReason, 'reason === "budget_limit"', "budget l
 
 mustNotInclude(toggleAutoChatBlock, 'stopReason: state.room.autoChat ? "waiting_user"', "manual pause does not write waiting_user stop reason");
 mustInclude(applyRoomRuntimeResult, 'result.reason === "active_room_runtime"', "runtime active-operation branch is handled");
-mustInclude(applyRoomRuntimeResult, 'continuousFlowActive ? undefined : "waiting_user"', "continuous active-operation branch does not write waiting_user");
-mustInclude(applyRoomRuntimeResult, '? "sync"', "continuous active-operation branch syncs the timer");
+mustInclude(applyRoomRuntimeResult, 'continuousRuntimeBusy ? undefined : "waiting_user"', "continuous active-operation branch does not write waiting_user");
+mustInclude(applyRoomRuntimeResult, "runtime_busy_retry_queued", "continuous active-operation branch records queued retry diagnostics");
+mustInclude(applyRoomRuntimeResult, "{ delayMs: 250 }", "continuous active-operation branch schedules a short retry instead of only syncing the timer");
 mustInclude(applyRoomRuntimeResult, 'ensureRoomAutoProgress("runtime_result")', "runtime result runs continuous timer watchdog");
 
 if (failures.length) {

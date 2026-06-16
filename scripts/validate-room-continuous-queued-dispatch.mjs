@@ -18,6 +18,9 @@ mustInclude(main, "watchdog_interval", "watchdog interval should repair silent q
 mustInclude(main, "missing_timer", "watchdog diagnostics should include missing timer recovery");
 mustInclude(main, "missing_next_turn", "watchdog should repair queued states without nextTurnAt");
 mustInclude(main, "active_room_runtime", "runtime busy should be treated as a queued retry path");
+mustInclude(main, "continuousRuntimeBusy", "continuous runtime busy should have a dedicated retry branch");
+mustInclude(main, "runtime_busy_retry_queued", "continuous runtime busy should be diagnosed as a queued retry");
+mustInclude(main, "{ delayMs: 250 }", "continuous runtime busy should schedule a short retry instead of only syncing an existing timer");
 mustInclude(main, "effect.nextTimerAction === \"clear\" && isContinuousRoomFlow(consoleState.room)", "continuous flow should not accept bare timer clear effects");
 mustInclude(main, "runtime_clear_in_continuous", "continuous timer clear recovery should be diagnosed");
 mustInclude(main, "reprime_clear_action", "continuous timer clear recovery should re-prime the queue");
@@ -25,7 +28,8 @@ mustInclude(main, "primeRoomAutoTimer(\"director_followup\"", "continuous clear 
 mustInclude(main, "function recoverContinuousScheduleStop", "continuous soft stop schedule results should be recovered by the flow driver");
 mustInclude(main, "recover_soft_stop", "continuous soft stop recovery should be diagnosed");
 mustInclude(main, "recoverContinuousScheduleStop(result, \"schedule_result_stop\")", "schedule stop branch should recover soft continuous stops before plain timer sync");
-mustInclude(main, "result.nextTurnAt ||", "soft stop recovery should not overwrite real queued turns");
+mustInclude(main, "sync_queued_soft_stop", "soft stop recovery should repair real queued turns instead of ignoring them");
+mustInclude(main, "soft_blocked_to_queue", "watchdog should recover soft blocked continuous states");
 mustInclude(main, "isHardContinuousStopReason(result.reason)", "soft stop recovery should preserve hard blockers");
 
 if (failures.length > 0) {

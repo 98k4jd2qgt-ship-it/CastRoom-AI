@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.4";
-const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-11";
+const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.5";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-16";
 const appVersion = version.replace(/^v/i, "");
 const outDir = path.join(root, "artifacts", "github-release", version);
 const portableStageDir = path.join(outDir, "portable-stage");
@@ -205,9 +205,9 @@ ${alternativeSection}
 
 ## Development log / 开发日志
 
-This update builds on v0.1.3. It focuses on continuous room flow reliability, Director narration routing, privacy boundaries, memory cleanup, and UI stability.
+This update builds on v0.1.4. It focuses on continuous room flow reliability, Director narration routing, privacy boundaries, memory cleanup, and UI stability.
 
-本次更新基于 v0.1.3，重点修复连续自动推进、Director 旁白路由、隐私边界、房间记忆清理和 Room UI 稳定性。
+本次更新基于 v0.1.4，重点修复连续自动推进、Director 旁白路由、隐私边界、房间记忆清理和 Room UI 稳定性。
 
 ### Room flow and scheduling / 房间推演与调度
 

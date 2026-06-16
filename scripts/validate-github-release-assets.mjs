@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
-const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.4";
-const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-11";
+const version = process.env.CASTROOM_RELEASE_VERSION ?? "v0.1.5";
+const assetStamp = process.env.CASTROOM_RELEASE_ASSET_STAMP ?? "2026-06-16";
 const assetVersion = version.startsWith("v") ? version : `v${version}`;
 const assetPrefix = `CastRoom-AI_${assetVersion}_${assetStamp}`;
 const outDir = path.join(root, "artifacts", "github-release", version);

@@ -8,8 +8,8 @@ const main = read("src/main.ts");
 const scheduler = read("src/core/roomScheduler.ts");
 
 mustInclude(scheduler, "export function planDirectorTick", "scheduler should expose a lightweight Director tick");
-mustInclude(main, "applyDirectorTickAfterMessage(userMessage, \"user\")", "user messages should be observed after action gates");
 mustInclude(main, "applyDirectorTickAfterMessage(message, \"role\")", "role messages should be observed after role commit");
+mustNotInclude(sliceFunction(main, "executeRoomInput"), "applyDirectorTickAfterMessage(userMessage, \"user\")", "plain public user messages should prioritize role replies before passive Director tick");
 mustInclude(main, "planDirectorTick({", "main should call lightweight tick directly");
 mustNotInclude(sliceFunction(main, "applyDirectorTickAfterMessage"), "await applyRoomDirectorTurnAsync", "Director tick must not call full Director LLM");
 mustNotInclude(sliceFunction(main, "applyDirectorTickAfterMessage"), "await createLiveDirectorTurnPlan", "Director tick must not call live Director planner");

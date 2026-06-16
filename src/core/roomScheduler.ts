@@ -2762,8 +2762,7 @@ function shouldUseRoleFastPathForAutoDirectorPlan(room: RoomState, turn: RoomPla
   }
 
   if (beatType === "director_cue") {
-    const mode = resolveDirectorMode(room);
-    return mode !== "story" && mode !== "mystery";
+    return true;
   }
 
   return true;
@@ -5288,6 +5287,7 @@ export function isDirectorPublicSchedulingText(text: string): boolean {
   return (
     isDirectorInternalPromptText(text) ||
     containsDirectorBackstageLeakText(text) ||
+    containsDirectorPublicMetaInstructionText(text) ||
     /(?:\bacts\s+next\b|\bnext\s+(?:speaker|role|turn|direction)\b|\bprivate\s*directives?\b|\bschedule(?:s|d|ing)?\b|\bcue\s+(?:the\s+)?(?:next\s+)?role\b|\brole\s+turn\b|\btarget\s+role\b|\bLight\s+recap\b|\bAdd\s+only\s+one\s+useful\s+next\s+direction\b|\bUser\s+input\s+remains\s+optional\b|\bcontinue\s+through\s+role\s+flow\b|\bonly\s+an\s+explicit\s+branch\s+should\s+wait\b|\u5148\u628a\u8bdd\u9898\u6536\u4e00\u4e0b|\u63a5\u4e0b\u6765\u53ea\u8865|\u6709\u7528\u65b9\u5411|\u4e0b\u4e00(?:\u4f4d|\u4e2a|\u8f6e)|\u8f6e\u5230|\u8bf7.{0,24}(?:\u53d1\u8a00|\u63a5\u8bdd|\u56de\u5e94|\u8865\u4e00\u53e5)|\u8c03\u5ea6|\u79c1\u4e0b\u63d0\u9192|\u540e\u53f0\u6307\u4ee4|\u7528\u6237\u8f93\u5165\u4fdd\u6301\u53ef\u9009|\u89d2\u8272\u81ea\u7136\u63a5\u4e0a|\u7528\u6237\u4e0d\u9700\u8981\u88ab\u8c03\u5ea6|\u53ea\u6709\u660e\u786e\u5206\u652f)/i.test(text)
   );
 }
@@ -5297,7 +5297,15 @@ function containsDirectorBackstageLeakText(text: string): boolean {
   if (!normalized) {
     return false;
   }
-  return /(?:\bDeveloper\s+Director\s+Channel\b|\bFollow\s+up\s+on\s*:\s*(?:Developer\s+Director\s+Channel|Director\s+Channel)\b|\bBackstage\s*:|\bReason\s*:|\bMove\s*:|\bNext\s+beat\s*:|\bPublic\s+narration\s*:|\bFocus\s*:|\bCurrent\s+scene\s*:.*\bGoal\s*:.*\bOpen\s+clues\s*:|\bKeep\s+the\s+conversation\s+clear,\s*directed,\s*and\s*easy\s*to\s*continue\b|\battempted\s+action\b|\bneeds\s+a\s+clear\s+ruling\s+before\s+it\s+becomes\s+fact\b|\u5f53\u524d\u573a\u666f\uff1a.*\u76ee\u6807\uff1a.*\u516c\u5f00\u7ebf\u7d22\uff1a|\u5f53\u524d\u573a\u666f[:：].*\u76ee\u6807[:：].*\u516c\u5f00\u7ebf\u7d22[:：]|\u540e\u53f0\s*[:：]|\u539f\u56e0\s*[:：]|\u79c1\u5bc6\u6307\u4ee4|\u79c1\u4e0b\u6307\u4ee4)/i.test(normalized);
+  return /(?:\bDeveloper\s+Director\s+Channel\b|\bFollow\s+up\s+on\s*:\s*(?:Developer\s+Director\s+Channel|Director\s+Channel)\b|\bBackstage\s*:|\bReason\s*:|\bMove\s*:|\bNext\s+beat\s*:|\bPublic\s+narration\s*:|\bFocus\s*:|\bCurrent\s+scene\s*:.*\bGoal\s*:.*\bOpen\s+clues\s*:|\bKeep\s+the\s+conversation\s+clear,\s*directed,\s*and\s*easy\s*to\s*continue\b|\bThe\s+room\s+is\s+ready\.\s+Add\s+characters,\s+set\s+a\s+topic,\s+then\s+talk\s+naturally\b|\bvisible\s+details\s+settle\s+into\s+place\b|\bgiving\s+everyone\s+something\s+concrete\s+to\s+respond\s+to\b|\battempted\s+action\b|\bneeds\s+a\s+clear\s+ruling\s+before\s+it\s+becomes\s+fact\b|\u5f53\u524d\u573a\u666f\uff1a.*\u76ee\u6807\uff1a.*\u516c\u5f00\u7ebf\u7d22\uff1a|\u5f53\u524d\u573a\u666f[:：].*\u76ee\u6807[:：].*\u516c\u5f00\u7ebf\u7d22[:：]|\u623f\u95f4\u5df2\u7ecf\u51c6\u5907\u597d|\u6dfb\u52a0\u89d2\u8272|\u8bbe\u7f6e\u8bdd\u9898|\u53ef\u89c1\u7ec6\u8282|\u7ed9\u6bcf\u4e2a\u4eba\u4e00\u4e2a\u53ef\u4ee5\u56de\u5e94\u7684\u5177\u4f53\u76ee\u6807|\u540e\u53f0\s*[:：]|\u539f\u56e0\s*[:：]|\u79c1\u5bc6\u6307\u4ee4|\u79c1\u4e0b\u6307\u4ee4)/i.test(normalized);
+}
+
+function containsDirectorPublicMetaInstructionText(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) {
+    return false;
+  }
+  return /(?:\bEstablish\s+what\s+the\s+room\s+can\s+currently\s+(?:see|hear|notice)\b|\bbefore\s+forcing\s+a\s+plot\s+beat\b|\bchanging\s+what\s+the\s+room\s+can\s+notice\b|\bwithout\s+revealing\s+hidden\s+plans\b|\bscene-facing\s+prose\b|\b(?:write|describe|produce|generate)\s+(?:only\s+)?(?:public\s+)?(?:narration|prose|scene\s+text)\b|\bpublic\s+output\b|\bprompt\s+instructions?\b|\bbackend\s+policy\b|\bmeta-?instructions?\b|\u5148\u63cf\u8ff0\u623f\u95f4\u80fd(?:\u770b\u89c1|\u542c\u89c1|\u6ce8\u610f\u5230)|\u63a8\u52a8\u5267\u60c5\u524d|\u4e0d\u8981\u6cc4\u9732\u9690\u85cf\u8ba1\u5212|\u516c\u5f00\u8f93\u51fa|\u751f\u6210\u65c1\u767d|\u63d0\u793a\u8bcd|\u540e\u53f0\u89c4\u5219|\u72b6\u6001\u5b57\u6bb5|\u8c03\u5ea6\u8bf4\u660e)/i.test(normalized);
 }
 
 function isDirectorInternalPromptText(text: string): boolean {

@@ -48,7 +48,7 @@ mustInclude(main, 'delayMode?: "base" | "idle_gap"; delayMs?: number', "prime ti
 mustInclude(main, 'delayMode: "base"', "auto pace change reprimes next tick with base delay");
 mustInclude(main, "options.delayMs ?? getRoomAutoTimerDelayMs", "prime timer can override delay for immediate dispatch and internal retries");
 mustInclude(main, "shouldScheduleContinuousRoomFlowAfterVisibleTurn", "continuous room flow reprimes after visible speaker turns");
-mustInclude(main, 'primeRoomAutoTimer(result.reason, false, undefined, { delayMode: "base" })', "continuous room flow delay starts after message commit");
+mustInclude(main, 'primeRoomAutoTimer(result.reason, false, roleHandoffFollowup, { delayMode: "base" })', "continuous room flow delay starts after message commit and may carry a soft role handoff");
 mustInclude(main, 'primeRoomAutoTimer("idle_auto", true, undefined, { delayMs: 0 })', "starting Room Flow dispatches immediately instead of waiting for the base delay");
 mustInclude(main, 'primeRoomAutoTimer("director_followup", false, pending, { delayMode: "base" })', "runtime pending followups use base delay");
 mustInclude(main, 'delayMs: 250', "active runtime overlap uses a short retry instead of the user-facing pace delay");

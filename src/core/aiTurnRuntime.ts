@@ -157,6 +157,17 @@ export class AiTurnRuntime {
     this.completedTurns.splice(0, Math.max(0, this.completedTurns.length - 50));
   }
 
+  markVisibleTerminalCommitted(turn: AiTurnRuntimeTurn | null | undefined) {
+    if (!turn) {
+      return;
+    }
+    turn.visibleTerminalCommitted = true;
+    const completed = this.completedTurns.find((completedTurn) => completedTurn.id === turn.id);
+    if (completed) {
+      completed.visibleTerminalCommitted = true;
+    }
+  }
+
   cancelScope(scope: string, reason: string): AiTurnRuntimeTurn | null {
     const turn = this.activeByScope.get(scope);
     if (!turn) {

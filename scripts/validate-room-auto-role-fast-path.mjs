@@ -19,7 +19,8 @@ mustInclude(directorPlanFastPath, 'turn.speakerType !== "director"', "plan fast 
 mustInclude(directorPlanFastPath, 'beatType === "director_judge"', "plan fast path preserves Director judgement");
 mustInclude(directorPlanFastPath, 'beatType === "director_twist"', "plan fast path preserves Director twists");
 mustInclude(directorPlanFastPath, 'beatType === "scene_shift"', "plan fast path preserves scene shifts");
-mustInclude(directorPlanFastPath, 'mode !== "story" && mode !== "mystery"', "Director cue is only preserved as public narration in scene modes");
+mustInclude(directorPlanFastPath, 'beatType === "director_cue"', "Director cue is recognized as a role fast path candidate");
+mustNotInclude(directorPlanFastPath, 'mode !== "story" && mode !== "mystery"', "story/mystery Director cue preservation");
 
 mustInclude(scheduleRoomTurn, "autoDirectorPlanRoleFastPath", "scheduler detects auto Director planned turns that should become role turns");
 mustInclude(scheduleRoomTurn, "!autoDirectorPlanRoleFastPath", "scheduler skips executing downgraded Director planned turns");

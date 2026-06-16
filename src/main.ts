@@ -136,6 +136,7 @@ import {
 } from "./core/roomScheduler";
 import { isDebateFinalVerdictDue, isStrictDebateFlow, resolveNextDebateSpeakerAssignment, strictDebateFlowTurnTask } from "./core/debatePolicy";
 import { resolveDirectorMode } from "./core/directorModePolicy";
+import { getChannelVisibleRoleIds } from "./core/roomVisibility";
 import { TauriVoiceService } from "./core/voice";
 import type {
   AiProvider,
@@ -1994,6 +1995,7 @@ function shouldForceRoomInspectorStablePatch(reason: string): boolean {
     "room_delete",
     "room_duplicate",
     "room_auto_toggle",
+    "room_control_change",
   ]);
   return forcedReasons.has(reason);
 }
@@ -3494,7 +3496,7 @@ function handleConsoleAction(action: ConsoleAction) {
 
   if (action.type === "room.toggleAutoChat") {
     setRoomAutoEnabled(!consoleState.room.autoChat);
-    requestRender("room_toggle_auto_chat", { kind: "status" });
+    requestRender("room_control_change", { kind: "status" });
     return;
   }
 
@@ -3528,7 +3530,14 @@ function handleConsoleAction(action: ConsoleAction) {
 
   if (action.type === "room.setAdvancePolicy") {
     consoleState = reduceConsoleState(consoleState, action);
-    requestRender("room_advance_policy", { kind: "status" });
+    if (consoleState.room.autoChat) {
+      primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false, consoleState.room.autoSpeechState.pendingFollowup, {
+        delayMode: "base",
+      });
+    } else {
+      syncRoomAutoTimer();
+    }
+    requestRender("room_control_change", { kind: "status" });
     return;
   }
 
@@ -3597,6 +3606,8 @@ function handleConsoleAction(action: ConsoleAction) {
     primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false, undefined, {
       delayMode: "base",
     });
+    requestRender("room_control_change", { kind: "status" });
+    return;
   }
 
   requestRender("console_action", { structural: true });
@@ -4903,8 +4914,6 @@ async function executeRoomInput(input: string) {
     });
     return;
   }
-
-  applyDirectorTickAfterMessage(userMessage, "user");
 
   consoleState = reduceConsoleState(consoleState, {
     type: "room.setCollaborationState",
@@ -6584,7 +6593,7 @@ function sanitizeDirectorChannelNoteFocus(text: string): string {
 }
 
 function isDirectorChannelNoteLeakText(text: string): boolean {
-  return /Developer Director Channel|Follow up on|Current scene|Open clues|Backstage|Reason\s*:|Move\s*:|Next beat|public blocked/i.test(text);
+  return /Developer Director Channel|Follow up on|Current scene|Open clues|Backstage|Reason\s*:|Move\s*:|Next beat|public blocked|Establish what the room can currently|before forcing a plot beat|changing what the room can notice|without revealing hidden plans|scene-facing prose|public output|prompt instruction|backend policy|meta-?instruction|先描述房间能(?:看见|听见|注意到)|推动剧情前|不要泄露隐藏计划|公开输出|生成旁白|提示词|后台规则|状态字段|调度说明/i.test(text);
 }
 
 function neutralizeDirectorUserInstruction(text: string): string {
@@ -7050,10 +7059,19 @@ function recoverContinuousScheduleStop(result: RoomScheduleResult, source: strin
   if (
     !isContinuousRoomFlow(consoleState.room) ||
     result.type !== "stop" ||
-    result.nextTurnAt ||
     isHardContinuousStopReason(result.reason)
   ) {
     return false;
+  }
+  if (result.nextTurnAt) {
+    syncRoomAutoTimer();
+    recordDiagnostic("info", "RoomAuto.flowDriver", {
+      source,
+      action: "sync_queued_soft_stop",
+      reason: result.reason,
+      nextTurnAt: result.nextTurnAt,
+    });
+    return true;
   }
   primeRoomAutoTimer(result.reason, false, consoleState.room.autoSpeechState.pendingFollowup, { delayMs: 0 });
   recordDiagnostic("info", "RoomAuto.flowDriver", {
@@ -7229,6 +7247,29 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
       emotion: result.emotion,
       viewportState: "api_error",
     });
+    const fallbackFollowup = createProviderFallbackPendingFollowup(consoleState.room, result.participant.id);
+    if (fallbackFollowup && isContinuousRoomFlow(consoleState.room)) {
+      const nextTurnAt = Date.now() + Math.min(750, Math.max(250, Math.floor(getRoomDelayMs(consoleState.room) / 4)));
+      consoleState = reduceConsoleState(consoleState, {
+        type: "room.setAutoSpeechStatus",
+        status: "cooling_down",
+        nextTurnAt,
+        lastReason: "api_unavailable",
+        resetCounters: false,
+        pendingFollowup: fallbackFollowup,
+      });
+      commitRoomDiagnosticPatch(
+        {
+          currentFocus: `Role provider returned no text; retrying with ${fallbackFollowup.summary}.`,
+          stopReason: undefined,
+        },
+        "room_provider_unavailable_role_fallback",
+      );
+      syncRoomAutoTimer();
+      requestConversationInputFocus("room");
+      requestRender("room_provider_unavailable_role_fallback", { kind: "status" });
+      return;
+    }
     consoleState = reduceConsoleState(consoleState, {
       type: "room.setAutoSpeechStatus",
       status: "blocked",
@@ -7348,7 +7389,22 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     emotion,
     viewportState: "speaking",
   });
-  commitRoomTimelineMessage(message, "room_speaker_message");
+  const speakerCommitResult = commitRoomTimelineMessage(message, "room_speaker_message");
+  const speakerVisibleCommitted = isVisibleRoomTimelineCommit(speakerCommitResult);
+  if (!speakerVisibleCommitted) {
+    recordDiagnostic("error", "Room.speaker.visibleCommitFailed", {
+      messageId: message.id,
+      reason: speakerCommitResult.reason ?? "unknown",
+    });
+    commitRoomDiagnosticPatch({
+      currentFocus: "A role reply was generated but could not be committed to the public timeline.",
+      stopReason: "model_unavailable",
+    }, "room_speaker_visible_commit_failed");
+    requestRender("room_speaker_visible_commit_failed", { kind: "message" });
+    return;
+  }
+  markRoomProviderTurnVisibleCommitted(providerTurn);
+  scheduleRoomTimelineCommitFlush(message.id, "room_speaker_message");
   if (result.collaborationTask) {
     consoleState = reduceConsoleState(consoleState, {
       type: "room.setCollaborationPlan",
@@ -7386,6 +7442,20 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
   });
   recordRoomMemoryAdapterResult(memoryResult);
   applyDirectorTickAfterMessage(message, "role");
+  const roleHandoffFollowup = createRoleHandoffPendingFollowup(
+    consoleState.room,
+    message,
+    result.participant,
+    Date.now(),
+  );
+  if (roleHandoffFollowup) {
+    recordDiagnostic("info", "Room.roleHandoff", {
+      fromRoleId: result.participant.id,
+      targetRoleId: roleHandoffFollowup.targetRoleId,
+      reason: roleHandoffFollowup.reason,
+      messageId: message.id,
+    });
+  }
   if (isTargetingDirector(message.target)) {
     void applyRoomDirectorTurnAsync({
       room: consoleState.room,
@@ -7396,13 +7466,31 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
     });
   }
   if (message.visibility === "private_ai" && reachedPrivateWhisperLimit(consoleState.room.messages, consoleState.room.privateWhisperPolicy.maxConsecutivePrivateTurns)) {
-    consoleState = reduceConsoleState(consoleState, {
-      type: "room.setAutoSpeechStatus",
-      status: "waiting_user",
-      nextTurnAt: null,
-      lastReason: "waiting_user",
-      resetCounters: false,
-    });
+    if (isContinuousRoomFlow(consoleState.room)) {
+      consoleState = reduceConsoleState(consoleState, {
+        type: "room.setAutoSpeechStatus",
+        status: "cooling_down",
+        nextTurnAt: Date.now() + getRoomDelayMs(consoleState.room),
+        lastReason: "director_followup",
+        resetCounters: false,
+        pendingFollowup: roleHandoffFollowup,
+      });
+      commitRoomDiagnosticPatch(
+        {
+          currentFocus: "Private whisper limit reached; continuous room flow stays queued.",
+          stopReason: undefined,
+        },
+        "room_private_whisper_limit_continuous",
+      );
+    } else {
+      consoleState = reduceConsoleState(consoleState, {
+        type: "room.setAutoSpeechStatus",
+        status: "waiting_user",
+        nextTurnAt: null,
+        lastReason: "waiting_user",
+        resetCounters: false,
+      });
+    }
     void applyRoomDirectorTurnAsync({
       room: consoleState.room,
       nowLabel: currentClock(),
@@ -7413,9 +7501,14 @@ async function applyRoomScheduleResultAsync(result: RoomScheduleResult, userInpu
   }
   queueRoomParticipantIdle(result.participant.id);
   if (shouldScheduleContinuousRoomFlowAfterVisibleTurn(result)) {
-    primeRoomAutoTimer(result.reason, false, undefined, { delayMode: "base" });
+    primeRoomAutoTimer(result.reason, false, roleHandoffFollowup, { delayMode: "base" });
   } else if (shouldScheduleFiniteRoomFlowAfterTurn(result)) {
-    primeRoomAutoTimer("director_followup", false, createFiniteRoomFlowPendingFollowupAfterTurn(result), { delayMode: "base" });
+    primeRoomAutoTimer(
+      "director_followup",
+      false,
+      roleHandoffFollowup ?? createFiniteRoomFlowPendingFollowupAfterTurn(result),
+      { delayMode: "base" },
+    );
   } else {
     syncRoomAutoTimer();
   }
@@ -7472,6 +7565,110 @@ function createFiniteRoomFlowPendingFollowupAfterTurn(result: RoomScheduleResult
       ? `Next debate speaker: ${participant.name}`
       : `Next debate speaker: ${assignment.roleId}`,
   };
+}
+
+function createRoleHandoffPendingFollowup(
+  room: RoomState,
+  message: ConsoleMessage,
+  participant: RoomParticipant,
+  now: number,
+): RoomPendingFollowup | null {
+  const target = detectRoleHandoffTarget(room, message, participant);
+  if (!target) {
+    return null;
+  }
+  return {
+    id: crypto.randomUUID(),
+    source: "role",
+    mode: "one_shot",
+    nextMove: "role_turn",
+    targetRoleId: target.id,
+    reason: "role_handoff",
+    createdAt: now,
+    expiresAt: now + Math.max(getRoomDelayMs(room) * 4, 30_000),
+    runCount: 0,
+    maxRuns: 1,
+    summary: `${participant.name} asked ${target.name} to respond: ${trimRoomPromptLine(message.text, 120)}`,
+  };
+}
+
+function createProviderFallbackPendingFollowup(room: RoomState, failedRoleId: string): RoomPendingFollowup | null {
+  const visibleRoleIds = new Set(getChannelVisibleRoleIds(room, room.activeChannelId));
+  const fallback = room.participants.find(
+    (participant) =>
+      participant.id !== failedRoleId &&
+      visibleRoleIds.has(participant.id) &&
+      participant.viewportState !== "api_error",
+  );
+  if (!fallback) {
+    return null;
+  }
+  const now = Date.now();
+  return {
+    id: crypto.randomUUID(),
+    source: "director",
+    mode: "one_shot",
+    nextMove: "role_turn",
+    targetRoleId: fallback.id,
+    reason: "provider_fallback",
+    createdAt: now,
+    expiresAt: now + Math.max(getRoomDelayMs(room) * 4, 30_000),
+    runCount: 0,
+    maxRuns: 1,
+    summary: fallback.name,
+  };
+}
+
+function detectRoleHandoffTarget(
+  room: RoomState,
+  message: ConsoleMessage,
+  participant: RoomParticipant,
+): RoomParticipant | null {
+  if (message.speakerType !== "role" || message.speakerId !== participant.id) {
+    return null;
+  }
+  if ((message.visibility ?? "public") === "director_channel" || message.privateReason === "director_channel") {
+    return null;
+  }
+  const text = message.text.trim();
+  if (!text || /@\S/.test(text)) {
+    return null;
+  }
+  for (const candidate of room.participants) {
+    if (candidate.id === participant.id || !canRoleReceiveHandoffFromMessage(message, candidate.id)) {
+      continue;
+    }
+    const matchedName = handoffMatchedRoleName(text, candidate);
+    if (!matchedName) {
+      continue;
+    }
+    const index = text.toLowerCase().indexOf(matchedName.toLowerCase());
+    if (index >= 0 && containsRoleHandoffCue(text, index, matchedName.length)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function handoffMatchedRoleName(text: string, participant: RoomParticipant): string | null {
+  const lowerText = text.toLowerCase();
+  const names = [participant.name, participant.packId]
+    .map((name) => name.trim())
+    .filter((name, index, all) => name.length >= 2 && all.indexOf(name) === index);
+  return names.find((name) => lowerText.includes(name.toLowerCase())) ?? null;
+}
+
+function containsRoleHandoffCue(text: string, nameIndex: number, nameLength: number): boolean {
+  const windowText = text.slice(Math.max(0, nameIndex - 24), Math.min(text.length, nameIndex + nameLength + 56));
+  return /[?？]|(?:吗|么|呢|吧|确认|检查|看一下|收到|回答|说说|讲讲|判断|接着|你来|麻烦|帮忙|处理|负责|轮到你|please|can you|could you|check|confirm|answer|respond|your take|what do you think)/i.test(windowText);
+}
+
+function canRoleReceiveHandoffFromMessage(message: ConsoleMessage, roleId: string): boolean {
+  const visibility = message.visibility ?? "public";
+  if (visibility === "public") {
+    return true;
+  }
+  return Boolean(message.visibleTo?.some((target) => target.type === "role" && target.roleId === roleId));
 }
 
 function advanceRoomDiscussionPlanAfterTurn(plan: RoomDiscussionPlan | undefined) {
@@ -7658,7 +7855,7 @@ type RoomProviderSelection = AiProviderCandidate & {
 };
 
 type RoomProviderTurnResult =
-  | { kind: "message"; result: AiProviderResult }
+  | { kind: "message"; result: AiProviderResult; runtimeTurn?: AiTurnRuntimeTurn }
   | { kind: "skipped"; reason: "repeated"; detail: string }
   | null;
 
@@ -7891,7 +8088,7 @@ async function runRoomProviderTurn(
   const participant = result.participant;
   const runtimeState: { outcome: "success" | "failure"; visibleTerminalCommitted: boolean } = {
     outcome: "failure",
-    visibleTerminalCommitted: true,
+    visibleTerminalCommitted: false,
   };
 
   try {
@@ -7951,7 +8148,10 @@ async function runRoomProviderTurn(
     if (!runtimeSubmit.ok) {
       return null;
     }
-    return runtimeSubmit.result;
+  if (runtimeSubmit.result?.kind === "message") {
+    return { ...runtimeSubmit.result, runtimeTurn: runtimeSubmit.turn };
+  }
+  return runtimeSubmit.result;
   } catch (error) {
     recordDiagnostic("error", "Room.ai.provider_turn", {
       roleId: participant.id,
@@ -9046,8 +9246,9 @@ function buildRoomProviderPrompt(
           privateDirective: result.privateDirective?.roleId === participant.id ? result.privateDirective.task : undefined,
           collaboration: result.collaborationTask?.detail ?? consoleState.room.collaborationPlan?.nextPublicAction,
           forbiddenMoves: [
-            "do not schedule another speaker",
+            "do not use backend scheduling language",
             "do not use @mentions in the message body",
+            "do not create a public scheduling command",
             "do not address Director from a role reply",
             "do not repeat room setup instructions",
             "do not expose private directives or faction huddle details",
@@ -9215,7 +9416,8 @@ function buildLocalRoomSpeakerPrompt(
       privateDirective: result.privateDirective?.roleId === participant.id ? result.privateDirective.task : undefined,
       collaboration: result.collaborationTask?.detail ?? consoleState.room.collaborationPlan?.nextPublicAction,
       forbiddenMoves: [
-        "do not schedule another speaker",
+        "do not use backend scheduling language",
+        "do not use @mentions in the message body",
         "do not repeat setup instructions",
         "do not expose private directives",
       ],
@@ -9381,7 +9583,7 @@ function buildCompactRoomSpeakerPrompt(
     userInput ? `The user just said: "${trimRoomPromptLine(userInput, 96)}".` : "",
     `Task: ${goal}.`,
     topicShiftLine,
-    "Use only information visible to this role. Do not schedule others or mention Director, system rules, or backend judgement.",
+    "Use only information visible to this role. Do not use backend scheduling language, @mentions, Director, system rules, or backend judgement. You may naturally ask another visible character by name if their reply is needed.",
     "Reply naturally in one or two short sentences. Do not repeat the user's exact words.",
   ].filter(Boolean).join(" ");
 }
@@ -9566,22 +9768,82 @@ function primeRoomAutoTimer(
   syncRoomAutoTimer();
 }
 
-function syncRoomAutoTimer() {
-  clearRoomAutoScheduledTimer();
+function continuousSoftRetryDelayMs(): number {
+  return Math.min(Math.max(Math.floor(getRoomDelayMs(consoleState.room) / 2), 250), 750);
+}
 
-  if (
-    !canRunForegroundRoomFlow() ||
-    !consoleState.room.isOpen ||
-    !hasRunnableRoomAutoWork() ||
-    !consoleState.room.autoSpeechState.nextTurnAt
-  ) {
+function canRunRoomAutoHardGate(): boolean {
+  return canRunForegroundRoomFlow() && consoleState.room.isOpen;
+}
+
+function shouldRetryContinuousSoftIdle(): boolean {
+  return (
+    canRunForegroundRoomFlow() &&
+    consoleState.room.isOpen &&
+    consoleState.room.autoChat &&
+    consoleState.room.advancePolicy === "continuous"
+  );
+}
+
+function scheduleContinuousRetry(reason: string, delayMs = continuousSoftRetryDelayMs()): void {
+  primeRoomAutoTimer(
+    consoleState.room.autoSpeechState.lastReason ?? "idle_auto",
+    false,
+    consoleState.room.autoSpeechState.pendingFollowup,
+    { delayMs },
+  );
+  recordDiagnostic("info", "RoomAuto.flowDriver", {
+    action: "continuous_soft_retry_queued",
+    reason,
+    delayMs,
+  });
+}
+
+function syncRoomAutoTimer() {
+  if (!canRunRoomAutoHardGate()) {
+    clearRoomAutoScheduledTimer();
+    return;
+  }
+
+  if (!consoleState.room.autoSpeechState.nextTurnAt) {
+    if (shouldRetryContinuousSoftIdle()) {
+      scheduleContinuousRetry("missing_next_turn", 0);
+      return;
+    }
+    clearRoomAutoScheduledTimer();
+    return;
+  }
+
+  if (!hasRunnableRoomAutoWork()) {
+    if (shouldRetryContinuousSoftIdle()) {
+      const delay = continuousSoftRetryDelayMs();
+      consoleState = reduceConsoleState(consoleState, {
+        type: "room.setAutoSpeechStatus",
+        status: "cooling_down",
+        nextTurnAt: Date.now() + delay,
+        lastReason: consoleState.room.autoSpeechState.lastReason ?? "idle_auto",
+        resetCounters: false,
+        pendingFollowup: consoleState.room.autoSpeechState.pendingFollowup,
+      });
+      clearRoomAutoScheduledTimer();
+      roomAutoTimer = window.setTimeout(runRoomAutoTurn, delay);
+      recordDiagnostic("info", "RoomAuto.flowDriver", {
+        action: "continuous_soft_retry_queued",
+        reason: "no_runnable_work_timer_sync",
+        delayMs: delay,
+      });
+      return;
+    }
+    clearRoomAutoScheduledTimer();
     return;
   }
 
   const delay = Math.max(0, consoleState.room.autoSpeechState.nextTurnAt - Date.now());
   if (roomAutoImmediateDispatchTimer && delay === 0) {
+    clearRoomAutoScheduledTimer();
     return;
   }
+  clearRoomAutoScheduledTimer();
   roomAutoTimer = window.setTimeout(runRoomAutoTurn, delay);
 }
 
@@ -9606,9 +9868,16 @@ function ensureRoomAutoProgress(reason: string) {
   if (
     !canRunForegroundRoomFlow() ||
     !consoleState.room.autoChat ||
-    consoleState.room.advancePolicy !== "continuous" ||
-    !hasRunnableRoomAutoWork()
+    consoleState.room.advancePolicy !== "continuous"
   ) {
+    return;
+  }
+  if (!hasRunnableRoomAutoWork()) {
+    scheduleContinuousRetry("watchdog_no_runnable_work");
+    recordDiagnostic("info", "RoomAuto.timerWatchdog", {
+      reason,
+      action: "retry_no_runnable_work",
+    });
     return;
   }
   if (autoSpeechState.status === "waiting_user") {
@@ -9619,6 +9888,11 @@ function ensureRoomAutoProgress(reason: string) {
   if (autoSpeechState.status === "paused") {
     primeRoomAutoTimer(autoSpeechState.lastReason ?? "idle_auto", false, autoSpeechState.pendingFollowup, { delayMs: 0 });
     recordDiagnostic("info", "RoomAuto.timerWatchdog", { reason, action: "recover_soft_paused_queue" });
+    return;
+  }
+  if (autoSpeechState.status === "blocked" && !isHardContinuousStopReason(autoSpeechState.lastReason)) {
+    primeRoomAutoTimer(autoSpeechState.lastReason ?? "idle_auto", false, autoSpeechState.pendingFollowup, { delayMs: 0 });
+    recordDiagnostic("info", "RoomAuto.timerWatchdog", { reason, action: "soft_blocked_to_queue" });
     return;
   }
   if (autoSpeechState.status !== "cooling_down" && autoSpeechState.status !== "running") {
@@ -9748,11 +10022,19 @@ async function runRoomAutoTurn() {
     return;
   }
   if (!hasRunnableRoomAutoWork()) {
+    if (isContinuousRoomFlow(consoleState.room)) {
+      scheduleContinuousRetry("no_runnable_work");
+      return;
+    }
     syncRoomAutoTimer();
     requestRender("room_auto_no_runnable_work", { kind: "status" });
     return;
   }
   if (consoleTurnEngine.activeTurn?.status === "pending") {
+    if (isContinuousRoomFlow(consoleState.room)) {
+      scheduleContinuousRetry("runtime_busy", 250);
+      return;
+    }
     primeRoomAutoTimer(consoleState.room.autoSpeechState.lastReason ?? "idle_auto", false, undefined, { delayMs: 250 });
     requestRender("room_auto_turn_busy", { kind: "status" });
     return;
@@ -10624,6 +10906,77 @@ function commitRoomTimelineMessage(message: ConsoleMessage, reason: string) {
   });
 }
 
+function markRoomProviderTurnVisibleCommitted(providerTurn: RoomProviderTurnResult) {
+  if (providerTurn?.kind !== "message") {
+    return;
+  }
+  aiTurnRuntime.markVisibleTerminalCommitted(providerTurn.runtimeTurn);
+}
+
+function isVisibleRoomTimelineCommit(result: ReturnType<typeof commitRoomTimelineMessage>) {
+  return !("ok" in result && result.ok === false) && result.visible !== false;
+}
+
+function scheduleRoomTimelineCommitFlush(messageId: string, reason: string, attempt = 0) {
+  requestRender(reason, { kind: "message" });
+  window.setTimeout(() => {
+    ensureRoomTimelineMessageRendered(messageId, reason, attempt);
+  }, attempt === 0 ? 40 : 120);
+}
+
+function ensureRoomTimelineMessageRendered(messageId: string, reason: string, attempt: number) {
+  const timeline = document.querySelector<HTMLElement>(".room-surface-timeline");
+  const rendered = Boolean(timeline?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`));
+  if (rendered) {
+    return;
+  }
+  if (attempt >= 5) {
+    recordDiagnostic("warn", "Room.timeline.flushRetryExhausted", {
+      messageId,
+      reason,
+    });
+    return;
+  }
+  notifyRoomTimelineUpdated();
+  scheduleRoomTimelineCommitFlush(messageId, reason, attempt + 1);
+}
+
+function isRuntimeTimelineMessage(value: unknown): value is ConsoleMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const message = value as Partial<ConsoleMessage>;
+  return (
+    typeof message.id === "string" &&
+    typeof message.text === "string" &&
+    typeof message.speaker === "string" &&
+    typeof message.kind === "string"
+  );
+}
+
+function commitRoomRuntimeTimelineMessages(messages?: unknown[]) {
+  let committed = 0;
+  for (const candidate of messages ?? []) {
+    if (!isRuntimeTimelineMessage(candidate)) {
+      recordDiagnostic("warn", "Room.runtimeTimeline.invalidMessage", {
+        type: typeof candidate,
+      });
+      continue;
+    }
+    const result = commitRoomTimelineMessage(candidate, "room_runtime_effect_timeline");
+    if (isVisibleRoomTimelineCommit(result)) {
+      committed += 1;
+      scheduleRoomTimelineCommitFlush(candidate.id, "room_runtime_effect_timeline");
+    } else {
+      recordDiagnostic("error", "Room.runtimeTimeline.commitFailed", {
+        messageId: candidate.id,
+        reason: result.reason ?? "unknown",
+      });
+    }
+  }
+  return committed;
+}
+
 function validateRoomTimelineChannelVisibility(message: ConsoleMessage): string | null {
   const publicMessage = (message.visibility ?? "public") === "public";
   if (publicMessage && isTargetingDirector(message.target)) {
@@ -10697,14 +11050,36 @@ function commitRoomDiagnosticPatch(
 }
 
 function applyRoomRuntimeResult(result: RoomRuntimeResult<unknown>) {
+  const continuousRuntimeBusy =
+    !result.ok &&
+    result.reason === "active_room_runtime" &&
+    isContinuousRoomFlow(consoleState.room);
+
   if (!result.ok && result.reason === "active_room_runtime") {
-    const continuousFlowActive = consoleState.room.isOpen && consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous";
     commitRoomDiagnosticPatch({
-      currentFocus: continuousFlowActive
+      currentFocus: continuousRuntimeBusy
         ? "Room is still applying the previous step; auto flow remains queued."
         : "Room is still applying the previous step.",
-      stopReason: continuousFlowActive ? undefined : "waiting_user",
+      stopReason: continuousRuntimeBusy ? undefined : "waiting_user",
     }, "room_runtime_active_operation");
+  }
+  if (continuousRuntimeBusy) {
+    for (const diagnostic of result.effect.diagnostics ?? result.diagnostics ?? []) {
+      recordDiagnostic(diagnostic.level, diagnostic.event, diagnostic.detail);
+    }
+    recordDiagnostic("info", "RoomAuto.flowDriver", {
+      action: "runtime_busy_retry_queued",
+      reason: result.reason,
+      activeOperationId: result.activeOperationId ?? null,
+      retryMs: 250,
+    });
+    primeRoomAutoTimer(
+      consoleState.room.autoSpeechState.lastReason ?? "idle_auto",
+      false,
+      consoleState.room.autoSpeechState.pendingFollowup ?? null,
+      { delayMs: 250 },
+    );
+    return;
   }
   const effect: RoomRuntimeEffect = {
     ...result.effect,
@@ -10715,9 +11090,7 @@ function applyRoomRuntimeResult(result: RoomRuntimeResult<unknown>) {
     nextTimerAction:
       result.effect.nextTimerAction ??
       result.nextTimerAction ??
-      (!result.ok && result.reason === "active_room_runtime" && consoleState.room.autoChat && consoleState.room.advancePolicy === "continuous"
-        ? "sync"
-        : undefined),
+      undefined,
     diagnostics: result.effect.diagnostics ?? result.diagnostics,
   };
   if (effect.inspectorPatch) {
@@ -10736,6 +11109,7 @@ function applyRoomRuntimeEffect(effect: RoomRuntimeEffect = {}) {
   for (const diagnostic of effect.diagnostics ?? []) {
     recordDiagnostic(diagnostic.level, diagnostic.event, diagnostic.detail);
   }
+  commitRoomRuntimeTimelineMessages(effect.timelineMessages);
   if (effect.nextTimerAction === "sync") {
     syncRoomAutoTimer();
   } else if (
